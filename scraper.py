@@ -4,6 +4,7 @@ import time
 import datetime
 import logging
 import requests
+import pytz
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 from supabase import create_client, Client
@@ -13,16 +14,35 @@ from typing import List, Dict, Optional, Any
 import urllib.parse
 
 # --- Logging Configuration ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler()]
-)
+# Use KST for logging
+class KSTFormatter(logging.Formatter):
+    def converter(self, timestamp):
+        dt = datetime.datetime.fromtimestamp(timestamp)
+        return dt.astimezone(pytz.timezone('Asia/Seoul'))
+
+    def formatTime(self, record, datefmt=None):
+        dt = self.converter(record.created)
+        if datefmt:
+            s = dt.strftime(datefmt)
+        else:
+            try:
+                s = dt.isoformat(timespec='milliseconds')
+            except TypeError:
+                s = dt.isoformat()
+        return s
+
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+handler = logging.StreamHandler()
+handler.setFormatter(KSTFormatter('%(asctime)s - %(levelname)s - %(message)s'))
+logger.handlers = []
+logger.addHandler(handler)
+logger.propagate = False
 
 # --- Constants ---
 CONFIG_FILE = 'config.json'
 GEMINI_MODEL = 'gemini-1.5-flash'
+KST = pytz.timezone('Asia/Seoul')
 
 class NoticeScraper:
     def __init__(self):
@@ -114,17 +134,18 @@ class NoticeScraper:
 
         try:
             model = genai.GenerativeModel(GEMINI_MODEL)
-            # JSON output prompt
+            # Enhanced Prompt
             prompt = (
                 f"Analyze this university notice and return a JSON object.\n"
                 f"1. 'useful': boolean. Is this useful for students? (True/False)\n"
-                f"2. 'category': string. Choose one: '장학', '학사', '취업', '일반'.\n"
+                f"   - CRITICAL: Mark as TRUE if it relates to: Scholarships, Jobs, Academic Schedule, "
+                f"Graduation Requirements, Reserve Forces(예비군), Civil Defense(민방위), "
+                f"Dormitory(Entry/Exit, Menu), or Student Benefits.\n"
+                f"2. 'category': string. Choose one: '장학', '학사', '취업', 'dormitory', '일반'.\n"
                 f"3. 'summary': string. 3 bullet points in Korean, noun-ending (~함).\n"
-                f"Content:\n{text[:3000]}"
+                f"Content:\n{text[:4000]}"
             )
-            # Force JSON response (Gemini 1.5 Flash supports this via prompt engineering usually, 
-            # but let's use response_mime_type if available or just parse text)
-            # For simplicity and compatibility, we'll ask for JSON string and parse it.
+            
             response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
             time.sleep(4)
             return json.loads(response.text)
@@ -132,27 +153,54 @@ class NoticeScraper:
             logger.error(f"AI Analysis failed: {e}")
             return {"useful": True, "category": "일반", "summary": "AI Error"}
 
-    def send_telegram(self, message: str, topic_id: int = None, is_error: bool = False):
+    def escape_markdown_v2(self, text: str) -> str:
+        escape_chars = r'_*[]()~`>#+-=|{}.!'
+        return ''.join(f'\\{char}' if char in escape_chars else char for char in text)
+
+    def send_telegram(self, message: str, topic_id: int = None, is_error: bool = False, 
+                      buttons: List[Dict] = None, photo_url: str = None):
         if not self.telegram_token or not self.chat_id:
             logger.warning("Telegram credentials missing.")
             return
 
-        url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
+        # Endpoint selection
+        endpoint = "sendMessage"
+        if photo_url:
+            endpoint = "sendPhoto"
+
+        url = f"https://api.telegram.org/bot{self.telegram_token}/{endpoint}"
+        
         payload = {
             'chat_id': self.chat_id,
-            'text': message,
             'parse_mode': 'MarkdownV2' if not is_error else 'HTML',
-            'disable_web_page_preview': True
         }
+        
+        if photo_url:
+            payload['photo'] = photo_url
+            payload['caption'] = message
+        else:
+            payload['text'] = message
+            payload['disable_web_page_preview'] = True
+
         if topic_id:
             payload['message_thread_id'] = topic_id
+
+        if buttons:
+            inline_keyboard = []
+            for btn in buttons:
+                inline_keyboard.append([{
+                    "text": btn['text'],
+                    "url": btn['url']
+                }])
+            payload['reply_markup'] = json.dumps({"inline_keyboard": inline_keyboard})
 
         try:
             response = self.session.post(url, json=payload)
             response.raise_for_status()
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
-            if not is_error:
+            # Fallback for Markdown error
+            if not is_error and 'parse_mode' in payload:
                 payload['parse_mode'] = None
                 try:
                     self.session.post(url, json=payload)
@@ -161,16 +209,15 @@ class NoticeScraper:
 
     def process_weekly_briefing(self, target: Dict):
         # Run only on Sunday (0=Monday, 6=Sunday)
-        if datetime.datetime.today().weekday() != 6:
+        now_kst = datetime.datetime.now(KST)
+        if now_kst.weekday() != 6:
             return
 
         logger.info(f"Processing Weekly Briefing for {target['name']}...")
         html = self.fetch_page(target['url'])
         if not html: return
 
-        # For calendar, we just dump the text to AI
         soup = BeautifulSoup(html, 'html.parser')
-        # Try to find the table or content box
         content = soup.select_one('.b-content-box') or soup.select_one('table')
         
         if not content:
@@ -181,7 +228,7 @@ class NoticeScraper:
         
         try:
             model = genai.GenerativeModel(GEMINI_MODEL)
-            today = datetime.date.today()
+            today = now_kst.date()
             next_week = today + datetime.timedelta(days=7)
             
             prompt = (
@@ -197,7 +244,6 @@ class NoticeScraper:
             response = model.generate_content(prompt)
             summary = response.text.strip()
             
-            # Send Message
             topic_id = self.config.get('topic_map', {}).get('학사', 0)
             msg = (
                 f"📅 *주간 학사 일정 브리핑*\n"
@@ -209,6 +255,50 @@ class NoticeScraper:
             
         except Exception as e:
             logger.error(f"Weekly Briefing failed: {e}")
+
+    def process_daily_menu(self, target: Dict):
+        # Run only at 08:00 AM KST (approximate check, assuming hourly cron)
+        now_kst = datetime.datetime.now(KST)
+        if now_kst.hour != 8:
+            return
+
+        logger.info(f"Processing Daily Menu for {target['name']}...")
+        html = self.fetch_page(target['url'])
+        if not html: return
+
+        soup = BeautifulSoup(html, 'html.parser')
+        content = soup.select_one('.b-content-box') or soup.select_one('table')
+        
+        if not content:
+            return
+
+        text = content.get_text(separator=' ', strip=True)
+        
+        try:
+            model = genai.GenerativeModel(GEMINI_MODEL)
+            today_str = now_kst.strftime("%Y-%m-%d")
+            
+            prompt = (
+                f"Here is the dormitory menu schedule.\n"
+                f"Today is {today_str}.\n"
+                f"Task: Extract and summarize ONLY today's Breakfast, Lunch, and Dinner menu.\n"
+                f"Output Format: Korean, Clean format (Morning: ..., Lunch: ..., Dinner: ...).\n"
+                f"Content:\n{text[:5000]}"
+            )
+            
+            response = model.generate_content(prompt)
+            summary = response.text.strip()
+            
+            topic_id = self.config.get('topic_map', {}).get('dormitory', 0)
+            msg = (
+                f"🍚 *오늘의 기숙사 식단* ({today_str})\n\n"
+                f"{self.escape_markdown_v2(summary)}\n\n"
+                f"[전체 식단 보기]({target['url']}) \\#기숙사 \\#식단"
+            )
+            self.send_telegram(msg, topic_id=topic_id)
+            
+        except Exception as e:
+            logger.error(f"Daily Menu failed: {e}")
 
     def parse_list(self, html: str, last_id: Optional[str]) -> List[Dict]:
         soup = BeautifulSoup(html, 'html.parser')
@@ -231,8 +321,6 @@ class NoticeScraper:
                 article_id = qs.get('articleNo', [None])[0]
                 
                 # Sticky Post Detection
-                # If article_id is None, it might be a sticky post or invalid.
-                # Also check the first column for '공지' text or icon
                 first_col_text = cols[0].get_text(strip=True)
                 if not article_id or '공지' in first_col_text:
                     continue
@@ -240,21 +328,36 @@ class NoticeScraper:
                 if last_id and article_id == last_id:
                     break
 
-                # Check attachment
-                is_attach = False
-                if row.select('.b-file-btn') or row.select('.b-icon-file'):
-                    is_attach = True
-                else:
-                    for img in row.find_all('img'):
-                        if 'file' in img.get('src', '').lower():
-                            is_attach = True
-                            break
+                # Extract Attachments for Buttons
+                attachments = []
+                # Check for file links in the row (often in a specific column or hidden div)
+                # YU CMS often puts file links in a dropdown or separate column.
+                # Let's look for any 'fileDownload' links in the row
+                file_links = row.select('a[href*="fileDownload"]')
+                for fl in file_links:
+                    f_name = fl.get_text(strip=True) or "첨부파일"
+                    f_url = urllib.parse.urljoin("https://hcms.yu.ac.kr", fl.get('href')) # Base URL might vary
+                    if 'hcms' not in f_url and 'yu.ac.kr' not in f_url:
+                         # Try to fix relative URL if base is missing
+                         pass 
+                    attachments.append({"text": f"📄 {f_name}", "url": f_url})
+
+                # Check for Image
+                image_url = None
+                imgs = row.find_all('img')
+                for img in imgs:
+                    src = img.get('src', '')
+                    if 'file' not in src.lower() and 'icon' not in src.lower():
+                        # Likely a content image
+                        image_url = urllib.parse.urljoin("https://hcms.yu.ac.kr", src)
+                        break
 
                 new_items.append({
                     'id': article_id,
                     'title': title,
                     'link': link,
-                    'has_attach': is_attach
+                    'attachments': attachments,
+                    'image_url': image_url
                 })
             except Exception as e:
                 logger.error(f"Error parsing row: {e}")
@@ -265,9 +368,13 @@ class NoticeScraper:
     def run(self):
         try:
             for target in self.config['targets']:
-                # Special handling for Calendar
-                if target.get('type') == 'calendar':
+                # Special handling
+                t_type = target.get('type')
+                if t_type == 'calendar':
                     self.process_weekly_briefing(target)
+                    continue
+                elif t_type == 'menu':
+                    self.process_daily_menu(target)
                     continue
 
                 logger.info(f"Checking {target['name']}...")
@@ -277,7 +384,6 @@ class NoticeScraper:
                 
                 if not html: continue
 
-                # No keywords passed, we filter by AI later
                 new_items = self.parse_list(html, last_id)
                 
                 if not new_items:
@@ -290,12 +396,9 @@ class NoticeScraper:
                     # AI Analysis
                     analysis = self.get_ai_analysis(full_url, target['content_selector'])
                     
-                    # Filter if not useful (optional, user said "AI Logic (remove keyword filtering)", 
-                    # implying we rely on AI 'useful' flag or just categorize everything.
-                    # Let's trust 'useful' flag but default to True if unsure.
                     if not analysis.get('useful', True):
                         logger.info(f"Skipping {item['title']} (AI deemed not useful)")
-                        self.update_last_id(target['key'], item['id']) # Mark as seen
+                        self.update_last_id(target['key'], item['id'])
                         continue
 
                     category = analysis.get('category', '일반')
@@ -309,20 +412,30 @@ class NoticeScraper:
                     safe_name = self.escape_markdown_v2(target['name'])
                     safe_cat = self.escape_markdown_v2(category)
                     
-                    attach_mark = " 📎[첨부파일]" if item['has_attach'] else ""
-                    safe_attach = self.escape_markdown_v2(attach_mark)
-                    
                     safe_summary = self.escape_markdown_v2(summary)
                     summary_section = f"\n\n🤖 *AI 요약 ({safe_cat})*\n{safe_summary}"
 
                     msg = (
                         f"*{safe_name}*\n"
-                        f"[{safe_title}]({full_url}){safe_attach}\n"
+                        f"[{safe_title}]({full_url})\n"
                         f"{summary_section}\n"
                         f"\\#알림 \\#{safe_cat}"
                     )
                     
-                    self.send_telegram(msg, topic_id=topic_id)
+                    # Fix attachment URLs (add base_url if needed)
+                    # For simplicity, we assume parse_list did its best, but we might need target['base_url']
+                    final_buttons = []
+                    for btn in item['attachments']:
+                        if btn['url'].startswith('/'):
+                            btn['url'] = urllib.parse.urljoin(target['base_url'], btn['url'])
+                        final_buttons.append(btn)
+
+                    self.send_telegram(
+                        msg, 
+                        topic_id=topic_id, 
+                        buttons=final_buttons,
+                        photo_url=item['image_url']
+                    )
                     
                     self.update_last_id(target['key'], item['id'])
                     time.sleep(1)

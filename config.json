@@ -3,7 +3,8 @@
         "장학": 2,
         "학사": 4,
         "취업": 6,
-        "일반": 8
+        "일반": 8,
+        "dormitory": 15
     },
     "targets": [
         {
@@ -34,6 +35,21 @@
             "base_url": "https://hcms.yu.ac.kr",
             "content_selector": ".b-content-box",
             "type": "calendar"
+        },
+        {
+            "key": "dorm_notice",
+            "name": "🏠 기숙사 공지",
+            "url": "https://www.yu.ac.kr/dormi/community/notice.do",
+            "base_url": "https://www.yu.ac.kr",
+            "content_selector": ".b-content-box"
+        },
+        {
+            "key": "dorm_menu",
+            "name": "🍚 기숙사 식단",
+            "url": "https://www.yu.ac.kr/dormi/community/menu.do",
+            "base_url": "https://www.yu.ac.kr",
+            "content_selector": ".b-content-box",
+            "type": "menu"
         }
     ],
     "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
