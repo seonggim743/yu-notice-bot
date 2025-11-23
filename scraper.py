@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import datetime
 import logging
 import requests
 from bs4 import BeautifulSoup
@@ -158,6 +159,57 @@ class NoticeScraper:
                 except:
                     pass
 
+    def process_weekly_briefing(self, target: Dict):
+        # Run only on Sunday (0=Monday, 6=Sunday)
+        if datetime.datetime.today().weekday() != 6:
+            return
+
+        logger.info(f"Processing Weekly Briefing for {target['name']}...")
+        html = self.fetch_page(target['url'])
+        if not html: return
+
+        # For calendar, we just dump the text to AI
+        soup = BeautifulSoup(html, 'html.parser')
+        # Try to find the table or content box
+        content = soup.select_one('.b-content-box') or soup.select_one('table')
+        
+        if not content:
+            logger.warning("No content found for calendar.")
+            return
+
+        text = content.get_text(separator=' ', strip=True)
+        
+        try:
+            model = genai.GenerativeModel(GEMINI_MODEL)
+            today = datetime.date.today()
+            next_week = today + datetime.timedelta(days=7)
+            
+            prompt = (
+                f"Here is the academic calendar list.\n"
+                f"Current Date: {today}\n"
+                f"Target Period: {today} ~ {next_week}\n\n"
+                f"Task: Extract and summarize the schedule for the Target Period.\n"
+                f"Output Format: Korean, Bullet points.\n"
+                f"If there are no events in this period, say '이번 주 학사 일정은 없습니다.'\n\n"
+                f"Content:\n{text[:5000]}"
+            )
+            
+            response = model.generate_content(prompt)
+            summary = response.text.strip()
+            
+            # Send Message
+            topic_id = self.config.get('topic_map', {}).get('학사', 0)
+            msg = (
+                f"📅 *주간 학사 일정 브리핑*\n"
+                f"({today} ~ {next_week})\n\n"
+                f"{self.escape_markdown_v2(summary)}\n\n"
+                f"[전체 일정 보기]({target['url']}) \\#학사 \\#일정"
+            )
+            self.send_telegram(msg, topic_id=topic_id)
+            
+        except Exception as e:
+            logger.error(f"Weekly Briefing failed: {e}")
+
     def parse_list(self, html: str, last_id: Optional[str]) -> List[Dict]:
         soup = BeautifulSoup(html, 'html.parser')
         new_items = []
@@ -178,8 +230,12 @@ class NoticeScraper:
                 qs = urllib.parse.parse_qs(parsed_url.query)
                 article_id = qs.get('articleNo', [None])[0]
                 
-                if not article_id:
-                    article_id = title 
+                # Sticky Post Detection
+                # If article_id is None, it might be a sticky post or invalid.
+                # Also check the first column for '공지' text or icon
+                first_col_text = cols[0].get_text(strip=True)
+                if not article_id or '공지' in first_col_text:
+                    continue
 
                 if last_id and article_id == last_id:
                     break
@@ -209,6 +265,11 @@ class NoticeScraper:
     def run(self):
         try:
             for target in self.config['targets']:
+                # Special handling for Calendar
+                if target.get('type') == 'calendar':
+                    self.process_weekly_briefing(target)
+                    continue
+
                 logger.info(f"Checking {target['name']}...")
                 
                 last_id = self.get_last_id(target['key'])

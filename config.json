@@ -19,6 +19,21 @@
             "url": "https://www.yu.ac.kr/cse/community/notice.do",
             "base_url": "https://www.yu.ac.kr",
             "content_selector": ".b-content-box"
+        },
+        {
+            "key": "bachelor_guide",
+            "name": "🎓 학사 안내",
+            "url": "https://hcms.yu.ac.kr/main/bachelor/bachelor-guide.do",
+            "base_url": "https://hcms.yu.ac.kr",
+            "content_selector": ".b-content-box"
+        },
+        {
+            "key": "calendar",
+            "name": "📅 학사 일정",
+            "url": "https://hcms.yu.ac.kr/main/bachelor/calendar.do?mode=list",
+            "base_url": "https://hcms.yu.ac.kr",
+            "content_selector": ".b-content-box",
+            "type": "calendar"
         }
     ],
     "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
