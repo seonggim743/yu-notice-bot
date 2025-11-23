@@ -1,0 +1,20 @@
+{
+    "keywords": ["장학", "SW", "인턴", "채용", "공모전", "대회"],
+    "targets": [
+        {
+            "key": "yu_news",
+            "name": "📢 영남대 대학 뉴스",
+            "url": "https://hcms.yu.ac.kr/main/intro/yu-news.do",
+            "base_url": "https://hcms.yu.ac.kr",
+            "content_selector": ".b-content-box"
+        },
+        {
+            "key": "cse_notice",
+            "name": "💻 컴공 공지사항",
+            "url": "https://www.yu.ac.kr/cse/community/notice.do",
+            "base_url": "https://www.yu.ac.kr",
+            "content_selector": ".b-content-box"
+        }
+    ],
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+}
