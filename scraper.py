@@ -41,7 +41,7 @@ logger.propagate = False
 
 # --- Constants ---
 CONFIG_FILE = 'config.json'
-GEMINI_MODEL = 'gemini-1.5-flash'
+GEMINI_MODEL = 'gemini-2.0-flash-exp'
 KST = pytz.timezone('Asia/Seoul')
 
 class NoticeScraper:
