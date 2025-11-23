@@ -94,43 +94,44 @@ class NoticeScraper:
             logger.error(f"Failed to fetch {url}: {e}")
             return None
 
-    def get_ai_summary(self, url: str, selector: str) -> Optional[str]:
+    def get_ai_analysis(self, url: str, selector: str) -> Dict[str, Any]:
         if not os.environ.get('GEMINI_API_KEY'):
-            return None
+            return {"useful": True, "category": "일반", "summary": "AI Key Missing"}
 
         html = self.fetch_page(url)
         if not html:
-            return None
+            return {"useful": False, "category": "일반", "summary": "Fetch Failed"}
 
         soup = BeautifulSoup(html, 'html.parser')
         content_div = soup.select_one(selector)
         if not content_div:
-            return None
+            return {"useful": False, "category": "일반", "summary": "Content Not Found"}
 
         text = content_div.get_text(separator=' ', strip=True)
         if len(text) < 50:
-            return None
+            return {"useful": False, "category": "일반", "summary": "Text too short"}
 
         try:
             model = genai.GenerativeModel(GEMINI_MODEL)
+            # JSON output prompt
             prompt = (
-                f"이 공지사항 내용을 한국어로 요약해줘. "
-                f"텔레그램 알림용이므로 3개의 불렛 포인트(•)로 요약하고, "
-                f"문장은 명사형(~함, ~임)으로 끝내줘.\n\n"
-                f"내용:\n{text[:3000]}"
+                f"Analyze this university notice and return a JSON object.\n"
+                f"1. 'useful': boolean. Is this useful for students? (True/False)\n"
+                f"2. 'category': string. Choose one: '장학', '학사', '취업', '일반'.\n"
+                f"3. 'summary': string. 3 bullet points in Korean, noun-ending (~함).\n"
+                f"Content:\n{text[:3000]}"
             )
-            response = model.generate_content(prompt)
-            time.sleep(4) # Rate limiting
-            return response.text.strip()
+            # Force JSON response (Gemini 1.5 Flash supports this via prompt engineering usually, 
+            # but let's use response_mime_type if available or just parse text)
+            # For simplicity and compatibility, we'll ask for JSON string and parse it.
+            response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+            time.sleep(4)
+            return json.loads(response.text)
         except Exception as e:
-            logger.error(f"AI Summary failed: {e}")
-            return None
+            logger.error(f"AI Analysis failed: {e}")
+            return {"useful": True, "category": "일반", "summary": "AI Error"}
 
-    def escape_markdown_v2(self, text: str) -> str:
-        escape_chars = r'_*[]()~`>#+-=|{}.!'
-        return ''.join(f'\\{char}' if char in escape_chars else char for char in text)
-
-    def send_telegram(self, message: str, is_error: bool = False):
+    def send_telegram(self, message: str, topic_id: int = None, is_error: bool = False):
         if not self.telegram_token or not self.chat_id:
             logger.warning("Telegram credentials missing.")
             return
@@ -142,7 +143,9 @@ class NoticeScraper:
             'parse_mode': 'MarkdownV2' if not is_error else 'HTML',
             'disable_web_page_preview': True
         }
-        
+        if topic_id:
+            payload['message_thread_id'] = topic_id
+
         try:
             response = self.session.post(url, json=payload)
             response.raise_for_status()
@@ -155,7 +158,7 @@ class NoticeScraper:
                 except:
                     pass
 
-    def parse_list(self, html: str, last_id: Optional[str], keywords: List[str]) -> List[Dict]:
+    def parse_list(self, html: str, last_id: Optional[str]) -> List[Dict]:
         soup = BeautifulSoup(html, 'html.parser')
         new_items = []
         rows = soup.select('table tbody tr')
@@ -176,15 +179,10 @@ class NoticeScraper:
                 article_id = qs.get('articleNo', [None])[0]
                 
                 if not article_id:
-                    article_id = title # Fallback
+                    article_id = title 
 
-                # Stop if we reached the last seen ID
-                # Note: This assumes the list is ordered by date DESC
                 if last_id and article_id == last_id:
                     break
-
-                if not any(k in title for k in keywords):
-                    continue
 
                 # Check attachment
                 is_attach = False
@@ -218,45 +216,54 @@ class NoticeScraper:
                 
                 if not html: continue
 
-                new_items = self.parse_list(html, last_id, self.config['keywords'])
+                # No keywords passed, we filter by AI later
+                new_items = self.parse_list(html, last_id)
                 
                 if not new_items:
                     logger.info("No new items found.")
                     continue
 
-                # Process oldest first
                 for item in reversed(new_items):
                     full_url = urllib.parse.urljoin(target['url'], item['link'])
+                    
+                    # AI Analysis
+                    analysis = self.get_ai_analysis(full_url, target['content_selector'])
+                    
+                    # Filter if not useful (optional, user said "AI Logic (remove keyword filtering)", 
+                    # implying we rely on AI 'useful' flag or just categorize everything.
+                    # Let's trust 'useful' flag but default to True if unsure.
+                    if not analysis.get('useful', True):
+                        logger.info(f"Skipping {item['title']} (AI deemed not useful)")
+                        self.update_last_id(target['key'], item['id']) # Mark as seen
+                        continue
+
+                    category = analysis.get('category', '일반')
+                    summary = analysis.get('summary', '')
+                    
+                    # Get Topic ID
+                    topic_id = self.config.get('topic_map', {}).get(category, 0)
                     
                     # Prepare Message
                     safe_title = self.escape_markdown_v2(item['title'])
                     safe_name = self.escape_markdown_v2(target['name'])
+                    safe_cat = self.escape_markdown_v2(category)
                     
                     attach_mark = " 📎[첨부파일]" if item['has_attach'] else ""
                     safe_attach = self.escape_markdown_v2(attach_mark)
                     
-                    hashtags = [f"#{k}" for k in self.config['keywords'] if k in item['title']]
-                    safe_hashtags = " ".join([self.escape_markdown_v2(tag) for tag in hashtags])
-                    
-                    # AI Summary
-                    summary_section = ""
-                    summary = self.get_ai_summary(full_url, target['content_selector'])
-                    if summary:
-                        safe_summary = self.escape_markdown_v2(summary)
-                        summary_section = f"\n\n🤖 *AI 3줄 요약*\n{safe_summary}"
+                    safe_summary = self.escape_markdown_v2(summary)
+                    summary_section = f"\n\n🤖 *AI 요약 ({safe_cat})*\n{safe_summary}"
 
                     msg = (
                         f"*{safe_name}*\n"
                         f"[{safe_title}]({full_url}){safe_attach}\n"
                         f"{summary_section}\n"
-                        f"{safe_hashtags} \\#알림"
+                        f"\\#알림 \\#{safe_cat}"
                     )
                     
-                    self.send_telegram(msg)
+                    self.send_telegram(msg, topic_id=topic_id)
                     
-                    # Update last ID immediately to avoid duplicate alerts if crash happens
                     self.update_last_id(target['key'], item['id'])
-                    
                     time.sleep(1)
 
         except Exception as e:
