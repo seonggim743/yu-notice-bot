@@ -44,25 +44,6 @@ def save_state(state):
     with open(STATE_FILE, 'w', encoding='utf-8') as f:
         json.dump(state, f, ensure_ascii=False, indent=4)
 
-def send_telegram_message(message):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        print("Telegram token or Chat ID missing. Skipping message.")
-        print(f"Message: {message}")
-        return
-
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        'chat_id': CHAT_ID,
-        'text': message,
-        'parse_mode': 'HTML',
-        'disable_web_page_preview': True
-    }
-    try:
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
-    except Exception as e:
-        print(f"Failed to send Telegram message: {e}")
-
 def has_attachment(row):
     # Check for common attachment indicators
     # 1. Image with 'file' or 'attach' in src or alt
@@ -81,6 +62,41 @@ def has_attachment(row):
     if row.select('.b-file-btn') or row.select('.b-icon-file'):
         return True
         
+    return False
+
+def escape_markdown_v2(text):
+    """
+    Escapes special characters for Telegram MarkdownV2.
+    """
+    escape_chars = r'_*[]()~`>#+-=|{}.!'
+    return ''.join(f'\\{char}' if char in escape_chars else char for char in text)
+
+def send_telegram_message(message, is_error=False):
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        print("Telegram token or Chat ID missing. Skipping message.")
+        print(f"Message: {message}")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        'chat_id': CHAT_ID,
+        'text': message,
+        'parse_mode': 'MarkdownV2' if not is_error else 'HTML', # Use HTML for simple error messages
+        'disable_web_page_preview': True
+    }
+    try:
+        response = requests.post(url, json=payload)
+        response.raise_for_status()
+    except Exception as e:
+        print(f"Failed to send Telegram message: {e}")
+        # If MarkdownV2 fails, try sending as plain text to ensure delivery
+        if not is_error:
+            payload['parse_mode'] = None
+            try:
+                requests.post(url, json=payload)
+            except:
+                pass
+
     return False
 
 def parse_yu_news(html, seen_ids):
@@ -149,45 +165,72 @@ def parse_yu_news(html, seen_ids):
     return new_posts
 
 def main():
-    state = load_state()
-    
-    for target in TARGETS:
-        print(f"Checking {target['key']}...")
-        try:
-            response = requests.get(target['url'], headers=HEADERS, timeout=10)
-            response.raise_for_status()
-            
-            # Currently using the same parser for both as they share the CMS platform usually
-            # If they differ significantly, we can split the logic
-            new_items = parse_yu_news(response.text, state[target['key']])
-            
-            # Process new items (oldest first to maintain order in chat)
-            for item in reversed(new_items):
-                # Construct absolute URL
-                import urllib.parse
-                full_url = urllib.parse.urljoin(target['url'], item['link'])
+    try:
+        state = load_state()
+        
+        for target in TARGETS:
+            print(f"Checking {target['key']}...")
+            try:
+                response = requests.get(target['url'], headers=HEADERS, timeout=10)
+                response.raise_for_status()
                 
-                attach_mark = " 📎[첨부파일]" if item['has_attach'] else ""
+                new_items = parse_yu_news(response.text, state[target['key']])
                 
-                msg = (
-                    f"<b>{target['name']}</b>\n"
-                    f"<a href='{full_url}'>{item['title']}</a>{attach_mark}\n"
-                    f"#알림"
-                )
-                
-                send_telegram_message(msg)
-                state[target['key']].append(item['id'])
-                
-                # Keep state manageable (last 100 IDs)
-                if len(state[target['key']]) > 100:
-                    state[target['key']] = state[target['key']][-100:]
+                for item in reversed(new_items):
+                    import urllib.parse
+                    full_url = urllib.parse.urljoin(target['url'], item['link'])
                     
-                time.sleep(1) # Rate limit for Telegram
+                    # MarkdownV2 Formatting
+                    # Bold Title: *Title*
+                    # Link: [Text](URL)
+                    # Hashtag: \#Keyword (escaped)
+                    
+                    safe_title = escape_markdown_v2(item['title'])
+                    safe_name = escape_markdown_v2(target['name'])
+                    safe_url = escape_markdown_v2(full_url) # URL usually doesn't need escaping in () but good practice if it has )
+                    
+                    # Actually, for [text](url), the url part should NOT be escaped with backslashes generally, 
+                    # but ) needs escaping if present. However, standard URLs are usually safe.
+                    # Let's just escape the title and name.
+                    
+                    attach_mark = " 📎[첨부파일]" if item['has_attach'] else ""
+                    safe_attach = escape_markdown_v2(attach_mark)
+                    
+                    # Identify keywords for hashtags
+                    hashtags = []
+                    for k in KEYWORDS:
+                        if k in item['title']:
+                            hashtags.append(f"#{k}")
+                    
+                    safe_hashtags = " ".join([escape_markdown_v2(tag) for tag in hashtags])
+                    
+                    msg = (
+                        f"*{safe_name}*\n"
+                        f"[{safe_title}]({full_url}){safe_attach}\n"
+                        f"{safe_hashtags} \\#알림"
+                    )
+                    
+                    send_telegram_message(msg)
+                    state[target['key']].append(item['id'])
+                    
+                    if len(state[target['key']]) > 100:
+                        state[target['key']] = state[target['key']][-100:]
+                        
+                    time.sleep(1)
+                    
+            except Exception as e:
+                print(f"Error scraping {target['name']}: {e}")
+                # Optional: Send warning for individual target failure? 
+                # User asked for "Global logic" error, but individual failure is also bad.
+                # Let's keep it simple as requested: Global try-except.
+                raise e # Re-raise to trigger global handler
                 
-        except Exception as e:
-            print(f"Error scraping {target['name']}: {e}")
-            
-    save_state(state)
+        save_state(state)
+        
+    except Exception as e:
+        error_msg = f"🚨 <b>[에러 발생]</b>\n<pre>{str(e)}</pre>"
+        send_telegram_message(error_msg, is_error=True)
+        raise # Fail the action
 
 if __name__ == "__main__":
     main()
