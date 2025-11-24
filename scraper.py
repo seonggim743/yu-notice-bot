@@ -16,7 +16,7 @@ from typing import List, Dict, Optional, Any
 import urllib.parse
 from dotenv import load_dotenv
 
-from models import BotConfig, NoticeItem, ScraperState, TargetConfig
+from models import BotConfig, NoticeItem, ScraperState, TargetConfig, Attachment
 
 # --- Configuration ---
 load_dotenv()
@@ -102,7 +102,7 @@ class NoticeScraper:
     def _save_state(self):
         if not self.supabase: return
         try:
-            state_dict = self.state.dict()
+            state_dict = self.state.model_dump()
             for key, value in state_dict.items():
                 val_str = json.dumps(value, ensure_ascii=False, default=str)
                 data = {'site_name': f"STATE_{key}", 'last_post_id': val_str}
@@ -420,7 +420,7 @@ class NoticeScraper:
                 f"#알림 #{category}"
             )
 
-            buttons = [b.dict() for b in item.attachments]
+            buttons = [b.model_dump() for b in item.attachments]
             
             # UX: Add Calendar Button
             if analysis.get('end_date'):
