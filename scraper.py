@@ -167,6 +167,7 @@ class NoticeScraper:
                 f"   - End sentences with noun-endings (~함).\n"
                 f"   - Use structured format ONLY if applicable (e.g., '- 일시: ...', '- 대상: ...').\n"
                 f"   - Otherwise, use natural bullet points starting with a hyphen (-).\n"
+                f"   - IMPORTANT: If this is a Dormitory Schedule announcement, extract dates in format 'MM/DD (Day) Event'.\n"
                 f"Content:\n{text[:4000]}"
             )
             
@@ -490,15 +491,6 @@ class NoticeScraper:
         safe_title = self.escape_html(title)
         
         # Add Day of Week to Header
-        # Note: The title usually contains the date range, but we add the current day for context?
-        # User request: "다음 식단표부터는 연도월일 다음 괄호로 무슨 요일인지도 표기할 것."
-        # Since this is the *weekly* menu post, the "date" is usually a range.
-        # However, the user might mean the *notification date* or the *menu date*.
-        # Given it's a "Weekly Menu" post, I will add the *current* day of week to the notification header
-        # to indicate when this notification was sent/detected.
-        # OR, if the user means the *content* of the menu, I can't change the image.
-        # I will assume they mean the Telegram Message Header.
-        
         today_str = now_kst.strftime('%Y-%m-%d')
         weekday_str = self.get_korean_weekday(now_kst)
         
@@ -556,13 +548,41 @@ class NoticeScraper:
                 qs = urllib.parse.parse_qs(parsed_url.query)
                 article_id = qs.get('articleNo', [None])[0]
                 
-                # Sticky Post Detection
-                first_col_text = cols[0].get_text(strip=True)
-                if not article_id or '공지' in first_col_text:
-                    continue
+                if not article_id: continue
 
-                if last_id and article_id == last_id:
-                    break
+                # Sticky Post Detection
+                # Check for class 'b-top-box' or 'b-notice' icon in first column
+                is_sticky = False
+                if 'b-top-box' in row.get('class', []):
+                    is_sticky = True
+                else:
+                    first_col = cols[0]
+                    if first_col.find(class_='b-notice') or '공지' in first_col.get_text():
+                        is_sticky = True
+
+                # Logic:
+                # 1. Sticky: If new (id > last_id), add. If old, continue (don't break).
+                # 2. Normal: If new (id > last_id), add. If old, break (stop scanning).
+                
+                is_new = False
+                if not last_id:
+                    is_new = True
+                else:
+                    # Compare IDs (String comparison works for these numeric IDs usually, but int is safer if pure numbers)
+                    # Assuming IDs are numeric strings
+                    try:
+                        if int(article_id) > int(last_id):
+                            is_new = True
+                    except ValueError:
+                        if article_id != last_id: # Fallback
+                            is_new = True
+
+                if is_sticky:
+                    if not is_new:
+                        continue # Skip old sticky, keep looking
+                else:
+                    if not is_new:
+                        break # Stop scanning normal posts
 
                 # Extract Attachments for Buttons (Strict Deduplication)
                 attachments = []
@@ -600,10 +620,13 @@ class NoticeScraper:
                 logger.error(f"Error parsing row: {e}")
                 continue
         
+        # Sort by ID to ensure chronological processing (Oldest -> Newest)
+        # Since we iterated top-down (Newest -> Oldest), we reverse it in run(), but sorting here is safer.
+        new_items.sort(key=lambda x: int(x['id']) if x['id'].isdigit() else x['id'])
         return new_items
 
     def run(self):
-        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 11 (DAILY ACADEMIC + WEEKLY BRIEF + FIXES)")
+        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 12 (STICKY FIX + EXAM PRIORITY)")
         processed_ids = set() # Deduplication set for this run
 
         try:
@@ -632,7 +655,8 @@ class NoticeScraper:
                     logger.info("No new items found.")
                     continue
 
-                for item in reversed(new_items):
+                # new_items is already sorted Oldest -> Newest by parse_list
+                for item in new_items:
                     # Deduplication Check
                     unique_key = f"{target['key']}_{item['id']}"
                     if unique_key in processed_ids:
@@ -687,9 +711,18 @@ class NoticeScraper:
                     
                     topic_id = self.config.get('topic_map', {}).get(category, 0)
                     
+                    # Exam Priority Logic
+                    is_exam = "시험" in item['title']
+                    if is_exam:
+                        safe_cat = "시험/학사" # Force category display
+                        # Ensure topic is Academic if not already
+                        if topic_id == 0 or category == '일반':
+                             topic_id = self.config.get('topic_map', {}).get('학사', 4)
+                    else:
+                        safe_cat = self.escape_html(category)
+
                     safe_title = self.escape_html(item['title'])
                     safe_name = self.escape_html(target['name'])
-                    safe_cat = self.escape_html(category)
                     safe_summary = self.escape_html(str(summary))
                     
                     if summary:
@@ -706,7 +739,8 @@ class NoticeScraper:
                     
                     # Fix attachment URLs & Grouping
                     final_buttons = []
-                    if len(item['attachments']) > 2:
+                    # Disable grouping if it's an Exam post
+                    if len(item['attachments']) > 2 and not is_exam:
                         final_buttons.append({
                             "text": f"📂 첨부파일 {len(item['attachments'])}개 보기",
                             "url": full_url
