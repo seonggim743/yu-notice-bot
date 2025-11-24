@@ -41,7 +41,7 @@ logger.propagate = False
 
 # --- Constants ---
 CONFIG_FILE = 'config.json'
-GEMINI_MODEL = 'gemini-2.0-flash-exp'
+GEMINI_MODEL = 'gemini-2.5-flash'
 KST = pytz.timezone('Asia/Seoul')
 
 class NoticeScraper:
@@ -133,6 +133,7 @@ class NoticeScraper:
             return {"useful": False, "category": "일반", "summary": "Text too short"}
 
         try:
+            time.sleep(10) # Rate limiting (Safety)
             model = genai.GenerativeModel(GEMINI_MODEL)
             # Enhanced Prompt
             prompt = (
@@ -147,11 +148,12 @@ class NoticeScraper:
             )
             
             response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-            time.sleep(4)
+            time.sleep(10) # Rate limiting (Safety)
             return json.loads(response.text)
         except Exception as e:
             logger.error(f"AI Analysis failed: {e}")
-            return {"useful": True, "category": "일반", "summary": "AI Error"}
+            # Fallback: Return useful=True so it gets sent, but empty summary
+            return {"useful": True, "category": "일반", "summary": ""}
 
     def escape_markdown_v2(self, text: str) -> str:
         escape_chars = r'_*[]()~`>#+-=|{}.!'
@@ -197,15 +199,23 @@ class NoticeScraper:
         try:
             response = self.session.post(url, json=payload)
             response.raise_for_status()
-        except Exception as e:
-            logger.error(f"Failed to send Telegram message: {e}")
+            time.sleep(10) # Rate limiting (Safety)
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 404:
+                logger.error("TELEGRAM_TOKEN이 올바른지 확인하세요 (404 Not Found).")
+            else:
+                logger.error(f"Failed to send Telegram message: {e}")
+            
             # Fallback for Markdown error
             if not is_error and 'parse_mode' in payload:
                 payload['parse_mode'] = None
                 try:
                     self.session.post(url, json=payload)
+                    time.sleep(10)
                 except:
                     pass
+        except Exception as e:
+            logger.error(f"Failed to send Telegram message: {e}")
 
     def process_weekly_briefing(self, target: Dict):
         # Run only on Sunday (0=Monday, 6=Sunday)
@@ -227,6 +237,7 @@ class NoticeScraper:
         text = content.get_text(separator=' ', strip=True)
         
         try:
+            time.sleep(10)
             model = genai.GenerativeModel(GEMINI_MODEL)
             today = now_kst.date()
             next_week = today + datetime.timedelta(days=7)
@@ -242,6 +253,7 @@ class NoticeScraper:
             )
             
             response = model.generate_content(prompt)
+            time.sleep(10)
             summary = response.text.strip()
             
             topic_id = self.config.get('topic_map', {}).get('학사', 0)
@@ -284,6 +296,7 @@ class NoticeScraper:
         text = content.get_text(separator=' ', strip=True)
         
         try:
+            time.sleep(10)
             model = genai.GenerativeModel(GEMINI_MODEL)
             display_date = now_kst.strftime("%Y-%m-%d")
             
@@ -296,6 +309,7 @@ class NoticeScraper:
             )
             
             response = model.generate_content(prompt)
+            time.sleep(10)
             summary = response.text.strip()
             
             topic_id = self.config.get('topic_map', {}).get('dormitory', 0)
@@ -425,7 +439,11 @@ class NoticeScraper:
                     safe_cat = self.escape_markdown_v2(category)
                     
                     safe_summary = self.escape_markdown_v2(summary)
-                    summary_section = f"\n\n🤖 *AI 요약 ({safe_cat})*\n{safe_summary}"
+                    
+                    if summary:
+                        summary_section = f"\n\n🤖 *AI 요약 ({safe_cat})*\n{safe_summary}"
+                    else:
+                        summary_section = ""
 
                     msg = (
                         f"*{safe_name}*\n"
@@ -450,7 +468,7 @@ class NoticeScraper:
                     )
                     
                     self.update_last_id(target['key'], item['id'])
-                    time.sleep(1)
+                    time.sleep(10) # Rate limiting (Safety)
 
         except Exception as e:
             error_msg = f"🚨 <b>[에러 발생]</b>\n<pre>{str(e)}</pre>"
