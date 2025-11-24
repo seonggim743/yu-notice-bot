@@ -156,10 +156,31 @@ class NoticeScraper:
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(None, lambda: model.generate_content(prompt, generation_config={"response_mime_type": "application/json"}))
             
+            # Token Tracking
+            try:
+                usage = response.usage_metadata
+                self._save_token_usage(usage.prompt_token_count, usage.candidates_token_count)
+            except Exception as e:
+                logger.error(f"Failed to save token usage: {e}")
+
             return json.loads(response.text)
         except Exception as e:
             logger.error(f"AI Analysis failed: {e}")
             return {"useful": True, "category": "일반", "summary": ""}
+
+    def _save_token_usage(self, prompt_tokens: int, completion_tokens: int):
+        if not self.supabase: return
+        try:
+            data = {
+                'timestamp': datetime.datetime.now(KST).isoformat(),
+                'prompt_tokens': prompt_tokens,
+                'completion_tokens': completion_tokens,
+                'total_tokens': prompt_tokens + completion_tokens,
+                'model': GEMINI_MODEL
+            }
+            self.supabase.table('token_usage').insert(data).execute()
+        except Exception as e:
+            logger.error(f"Token usage insert failed: {e}")
 
     def escape_html(self, text: str) -> str:
         return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
@@ -189,11 +210,35 @@ class NoticeScraper:
     async def send_health_check(self, session: aiohttp.ClientSession):
         """Sends a daily health check message to the admin/dev channel."""
         now = datetime.datetime.now(KST)
+        
+        # Token Stats
+        token_msg = "Token Usage: N/A"
+        if self.supabase:
+            try:
+                yesterday = (now - datetime.timedelta(days=1)).date()
+                today = now.date()
+                
+                # Yesterday's usage
+                start = datetime.datetime.combine(yesterday, datetime.time.min).isoformat()
+                end = datetime.datetime.combine(today, datetime.time.min).isoformat()
+                
+                resp_yesterday = self.supabase.table('token_usage').select('total_tokens').gte('timestamp', start).lt('timestamp', end).execute()
+                total_yesterday = sum(row['total_tokens'] for row in resp_yesterday.data)
+                
+                # Total usage (All time)
+                resp_total = self.supabase.table('token_usage').select('total_tokens').execute()
+                total_all = sum(row['total_tokens'] for row in resp_total.data)
+                
+                token_msg = f"Token Usage:\n- Yesterday: {total_yesterday}\n- Total: {total_all}"
+            except Exception as e:
+                logger.error(f"Failed to fetch token stats: {e}")
+
         msg = (
             f"✅ <b>System Health Check</b>\n"
             f"Time: {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
             f"Status: Online\n"
-            f"Supabase: {'Connected' if self.supabase else 'Disconnected'}"
+            f"Supabase: {'Connected' if self.supabase else 'Disconnected'}\n"
+            f"{token_msg}"
         )
         await self.send_telegram(session, msg, self.config.topic_map.get('일반'))
 
@@ -265,7 +310,7 @@ class NoticeScraper:
                 if not title_link: continue
 
                 title = title_link.get_text(strip=True)
-                title = re.sub(r'^\d+\s*', '', title) 
+                # title = re.sub(r'^\d+\s*', '', title)  <-- Removed to prevent stripping years (e.g. 2025학년도) 
                 link = title_link.get('href')
                 
                 parsed_url = urllib.parse.urlparse(link)
@@ -400,7 +445,7 @@ class NoticeScraper:
             summary = analysis.get('summary', '')
             if isinstance(summary, list): summary = '\n'.join(summary)
             
-            is_exam = any(k in item.title for k in ["시험", "중간고사", "기말고사"])
+            is_exam = any(k in item.title for k in ["시험", "중간고사", "기말고사", "강의평가"])
             if is_exam:
                 category = "시험/학사"
                 analysis['end_date'] = analysis.get('end_date')
@@ -497,6 +542,13 @@ class NoticeScraper:
                         model = genai.GenerativeModel(GEMINI_MODEL)
                         loop = asyncio.get_running_loop()
                         response = await loop.run_in_executor(None, lambda: model.generate_content(prompt))
+                        
+                        # Token Tracking (Weekly)
+                        try:
+                            usage = response.usage_metadata
+                            self._save_token_usage(usage.prompt_token_count, usage.candidates_token_count)
+                        except: pass
+
                         summary = response.text.strip()
                     except Exception as e:
                         logger.error(f"Weekly AI failed: {e}")
@@ -514,11 +566,11 @@ class NoticeScraper:
         if now.hour >= 6 and self.state.last_calendar_check_morning != today_str:
             check_type = 'morning'
             target_date = now.date()
-            label = "(오늘)"
+            label = f"(오늘 {target_date.strftime('%m/%d')})"
         elif now.hour >= 18 and self.state.last_calendar_check_evening != today_str:
             check_type = 'evening'
             target_date = now.date() + datetime.timedelta(days=1)
-            label = "(내일)"
+            label = f"(내일 {target_date.strftime('%m/%d')})"
 
         if check_type:
             html = await self.fetch_page(session, target.url)
@@ -532,6 +584,13 @@ class NoticeScraper:
                     model = genai.GenerativeModel(GEMINI_MODEL)
                     loop = asyncio.get_running_loop()
                     response = await loop.run_in_executor(None, lambda: model.generate_content(prompt, generation_config={"response_mime_type": "application/json"}))
+                    
+                    # Token Tracking (Calendar)
+                    try:
+                        usage = response.usage_metadata
+                        self._save_token_usage(usage.prompt_token_count, usage.candidates_token_count)
+                    except: pass
+
                     result = json.loads(response.text)
                 except Exception as e:
                     logger.error(f"Calendar AI failed: {e}")
