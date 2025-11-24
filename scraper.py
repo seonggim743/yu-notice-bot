@@ -407,6 +407,10 @@ class NoticeScraper:
 
             topic_id = self.config.topic_map.get(category, 0)
             if is_exam and topic_id == 0: topic_id = self.config.topic_map.get('학사', 4)
+            
+            # Force Dormitory Topic
+            if target.key == 'dorm_notice':
+                topic_id = self.config.topic_map.get('dormitory', 15)
 
             safe_title = self.escape_html(item.title)
             safe_summary = self.escape_html(str(summary))
