@@ -411,8 +411,6 @@ class NoticeScraper:
             safe_title = self.escape_html(item.title)
             safe_summary = self.escape_html(str(summary))
             
-            prefix = "🔔 <b>[수정]</b> " if is_modified else ""
-            
             msg = (
                 f"{prefix}<b>{self.escape_html(target.name)}</b>\n"
                 f"<a href='{full_url}'>{safe_title}</a>\n"
@@ -420,6 +418,8 @@ class NoticeScraper:
                 f"#알림 #{category}"
             )
 
+            buttons = []
+            
             # UX: Add Calendar Button
             if analysis.get('end_date'):
                 cal_url = self.generate_calendar_url(item.title, analysis['end_date'])
