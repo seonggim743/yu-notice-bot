@@ -217,6 +217,19 @@ class NoticeScraper:
                         logger.error(f"Fallback failed: {fallback_e}")
             else:
                 logger.error(f"Failed to send Telegram message: {e}")
+                
+            # Fallback to General Topic (if topic_id was used and failed)
+            if topic_id and not is_error:
+                logger.info("Attempting Fallback to General Topic...")
+                if 'message_thread_id' in payload:
+                    del payload['message_thread_id']
+                try:
+                    self.session.post(url, json=payload)
+                    logger.info("Fallback to General Topic successful.")
+                    time.sleep(10)
+                except Exception as general_e:
+                    logger.error(f"General Topic Fallback failed: {general_e}")
+
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
 
@@ -296,12 +309,30 @@ class NoticeScraper:
         if not content:
             return
 
+        # Image Extraction Logic
+        image_url = None
+        img_tag = content.find('img')
+        if img_tag:
+            src = img_tag.get('src', '')
+            if src:
+                image_url = urllib.parse.urljoin(target['url'], src)
+
+        display_date = now_kst.strftime("%Y-%m-%d")
+        topic_id = self.config.get('topic_map', {}).get('dormitory', 0)
+
+        if image_url:
+            logger.info(f"Found menu image: {image_url}")
+            msg = f"🍚 *오늘의 기숙사 식단표* ({display_date})"
+            self.send_telegram(msg, topic_id=topic_id, photo_url=image_url)
+            self.update_last_id(target['key'], today_str)
+            return
+
+        # Fallback to Text Summary if no image
         text = content.get_text(separator=' ', strip=True)
         
         try:
             time.sleep(10)
             model = genai.GenerativeModel(GEMINI_MODEL)
-            display_date = now_kst.strftime("%Y-%m-%d")
             
             prompt = (
                 f"Here is the dormitory menu schedule.\n"
@@ -315,7 +346,6 @@ class NoticeScraper:
             time.sleep(10)
             summary = response.text.strip()
             
-            topic_id = self.config.get('topic_map', {}).get('dormitory', 0)
             msg = (
                 f"🍚 *오늘의 기숙사 식단* ({display_date})\n\n"
                 f"{self.escape_markdown_v2(summary)}\n\n"
