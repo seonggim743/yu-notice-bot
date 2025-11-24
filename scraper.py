@@ -155,12 +155,8 @@ class NoticeScraper:
             # Fallback: Return useful=True so it gets sent, but empty summary
             return {"useful": True, "category": "일반", "summary": ""}
 
-    def escape_markdown(self, text: str) -> str:
-        # Escape all MarkdownV2 special characters
-        special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
-        for char in special_chars:
-            text = text.replace(char, f'\\{char}')
-        return text
+    def escape_html(self, text: str) -> str:
+        return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
     def send_telegram(self, message: str, topic_id: int = None, is_error: bool = False, 
                       buttons: List[Dict] = None, photo_url: str = None):
@@ -175,10 +171,10 @@ class NoticeScraper:
 
         url = f"https://api.telegram.org/bot{self.telegram_token}/{endpoint}"
         
-        # MarkdownV2 Mode
+        # HTML Mode
         payload = {
             'chat_id': self.chat_id,
-            'parse_mode': 'MarkdownV2',
+            'parse_mode': 'HTML',
         }
         
         if photo_url:
@@ -213,7 +209,7 @@ class NoticeScraper:
                 
                 # Smart Fallback: Retry with Plain Text (KEEP TOPIC ID)
                 if not is_error:
-                    logger.info("Attempting Smart Fallback (Plain Text) [MarkdownV2 FAILED]...")
+                    logger.info("Attempting Smart Fallback (Plain Text) [HTML FAILED]...")
                     payload['parse_mode'] = None
                     try:
                         self.session.post(url, json=payload)
@@ -268,10 +264,10 @@ class NoticeScraper:
             
             topic_id = self.config.get('topic_map', {}).get('학사', 0)
             msg = (
-                f"📅 *주간 학사 일정 브리핑*\n"
-                f"({self.escape_markdown(str(today))} ~ {self.escape_markdown(str(next_week))})\n\n"
-                f"{self.escape_markdown(summary)}\n\n"
-                f"[전체 일정 보기]({target['url']}) \\#학사 \\#일정"
+                f"📅 <b>주간 학사 일정 브리핑</b>\n"
+                f"({today} ~ {next_week})\n\n"
+                f"{self.escape_html(summary)}\n\n"
+                f"<a href='{target['url']}'>[전체 일정 보기]</a> #학사 #일정"
             )
             self.send_telegram(msg, topic_id=topic_id)
             
@@ -279,7 +275,7 @@ class NoticeScraper:
             logger.error(f"Weekly Briefing failed: {e}")
 
     def process_daily_menu(self, target: Dict):
-        # 1. Start Time Check: 07:00 ~ 23:00 KST (Widened for testing)
+        # 1. Start Time Check: 07:00 ~ 23:00 KST
         now_kst = datetime.datetime.now(KST)
         if not (7 <= now_kst.hour <= 23):
             logger.info(f"Skipping Daily Menu (Current time {now_kst.hour}h is outside 07-23h window)")
@@ -287,24 +283,54 @@ class NoticeScraper:
 
         logger.info(f"Processing Daily Menu for {target['name']}...")
         
-        # 2. Idempotency Check (Prevent Duplicates)
-        today_str = now_kst.strftime("%Y%m%d")
-        last_sent_date = self.get_last_id(target['key'])
-        
-        if last_sent_date == today_str:
-            logger.info(f"Today's menu ({today_str}) already sent. Skipping.")
-            return
-
+        # 2. Fetch List Page
         html = self.fetch_page(target['url'])
         if not html: return
 
         soup = BeautifulSoup(html, 'html.parser')
-        content = soup.select_one('.b-content-box') or soup.select_one('table')
-        
-        if not content:
+        # Find the first post in the table
+        first_row = soup.select_one('table tbody tr')
+        if not first_row:
+            logger.warning("No rows found in menu board.")
             return
 
-        # Image Extraction Logic
+        title_link = first_row.select_one('a')
+        if not title_link:
+            return
+
+        title = title_link.get_text(strip=True)
+        link = title_link.get('href')
+        
+        # Extract Article ID for Idempotency
+        parsed_url = urllib.parse.urlparse(link)
+        qs = urllib.parse.parse_qs(parsed_url.query)
+        article_id = qs.get('articleNo', [None])[0]
+
+        if not article_id:
+            logger.warning("Could not extract articleNo from menu link.")
+            return
+
+        # 3. Idempotency Check
+        last_sent_id = self.get_last_id(target['key'])
+        if last_sent_id == article_id:
+            logger.info(f"Menu post {article_id} already sent. Skipping.")
+            return
+
+        logger.info(f"Found new menu post: {title} ({article_id})")
+
+        # 4. Fetch Detail Page
+        full_url = urllib.parse.urljoin(target['url'], link)
+        detail_html = self.fetch_page(full_url)
+        if not detail_html: return
+
+        detail_soup = BeautifulSoup(detail_html, 'html.parser')
+        content = detail_soup.select_one('.b-content-box')
+        
+        if not content:
+            logger.warning("No content found in menu detail page.")
+            return
+
+        # 5. Extract Image
         image_url = None
         img_tag = content.find('img')
         if img_tag:
@@ -317,16 +343,14 @@ class NoticeScraper:
 
         if image_url:
             logger.info(f"Found menu image: {image_url}")
-            # User requested link to the board/list, assuming target['url'] is the board
             msg = (
-                f"🍚 *오늘의 기숙사 식단표* ({self.escape_markdown(display_date)})\n\n"
-                f"[식단 게시판 바로가기]({target['url']})"
+                f"🍚 <b>기숙사 식단표</b> ({display_date})\n\n"
+                f"<a href='{full_url}'>[식단 게시판 바로가기]</a>"
             )
             self.send_telegram(msg, topic_id=topic_id, photo_url=image_url)
-            self.update_last_id(target['key'], today_str)
-            return
+            self.update_last_id(target['key'], article_id)
         else:
-            logger.warning("No menu image found. Skipping notification as per user request.")
+            logger.warning("No menu image found in the post.")
 
     def parse_list(self, html: str, last_id: Optional[str]) -> List[Dict]:
         soup = BeautifulSoup(html, 'html.parser')
@@ -362,7 +386,6 @@ class NoticeScraper:
                 for fl in file_links:
                     f_name = fl.get_text(strip=True) or "첨부파일"
                     # Fix: Ensure correct base URL for attachments
-                    # Usually href is like /common/fileDownload.do?...
                     f_url = urllib.parse.urljoin("https://hcms.yu.ac.kr", fl.get('href'))
                     attachments.append({"text": f"📄 {f_name}", "url": f_url})
 
@@ -389,7 +412,7 @@ class NoticeScraper:
         return new_items
 
     def run(self):
-        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 5 (MARKDOWNV2 + DEDUP)")
+        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 6 (HTML + DORM CRAWL)")
         processed_ids = set() # Deduplication set for this run
 
         try:
@@ -444,22 +467,22 @@ class NoticeScraper:
                     # Get Topic ID
                     topic_id = self.config.get('topic_map', {}).get(category, 0)
                     
-                    # Prepare Message (MarkdownV2)
-                    safe_title = self.escape_markdown(item['title'])
-                    safe_name = self.escape_markdown(target['name'])
-                    safe_cat = self.escape_markdown(category)
-                    safe_summary = self.escape_markdown(str(summary))
+                    # Prepare Message (HTML)
+                    safe_title = self.escape_html(item['title'])
+                    safe_name = self.escape_html(target['name'])
+                    safe_cat = self.escape_html(category)
+                    safe_summary = self.escape_html(str(summary))
                     
                     if summary:
-                        summary_section = f"\n\n🤖 *AI 요약 ({safe_cat})*\n{safe_summary}"
+                        summary_section = f"\n\n🤖 <b>AI 요약 ({safe_cat})</b>\n{safe_summary}"
                     else:
                         summary_section = ""
 
                     msg = (
-                        f"*{safe_name}*\n"
-                        f"[{safe_title}]({full_url})\n"
+                        f"<b>{safe_name}</b>\n"
+                        f"<a href='{full_url}'>{safe_title}</a>\n"
                         f"{summary_section}\n"
-                        f"\\#알림 \\#{safe_cat}"
+                        f"#알림 #{safe_cat}"
                     )
                     
                     # Fix attachment URLs
@@ -480,7 +503,7 @@ class NoticeScraper:
                     time.sleep(10) # Rate limiting (Safety)
 
         except Exception as e:
-            error_msg = f"🚨 *[에러 발생]*\n```\n{str(e)}\n```"
+            error_msg = f"🚨 <b>[에러 발생]</b>\n<pre>{str(e)}</pre>"
             self.send_telegram(error_msg, is_error=True)
             raise
 
