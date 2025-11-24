@@ -174,7 +174,7 @@ class NoticeScraper:
         # Default to HTML
         payload = {
             'chat_id': self.chat_id,
-            'parse_mode': 'HTML' if not is_error else 'HTML',
+            'parse_mode': 'HTML', # Enforce HTML
         }
         
         if photo_url:
@@ -197,6 +197,9 @@ class NoticeScraper:
             payload['reply_markup'] = json.dumps({"inline_keyboard": inline_keyboard})
 
         try:
+            # DEBUG: Log the payload to verify parse_mode
+            # logger.info(f"Sending payload: {json.dumps(payload, ensure_ascii=False)}")
+            
             response = self.session.post(url, json=payload)
             response.raise_for_status()
             time.sleep(10) # Rate limiting (Safety)
@@ -205,9 +208,11 @@ class NoticeScraper:
                 logger.error("TELEGRAM_TOKEN이 올바른지 확인하세요 (404 Not Found).")
             elif e.response.status_code == 400:
                 logger.error(f"Telegram 400 Error (Bad Request): {e.response.text}")
+                logger.error(f"Failed Payload: {json.dumps(payload, ensure_ascii=False)}") # Log payload on error
+                
                 # Smart Fallback: Retry with Plain Text (KEEP TOPIC ID)
                 if not is_error:
-                    logger.info("Attempting Smart Fallback (Plain Text) with Topic ID...")
+                    logger.info("Attempting Smart Fallback (Plain Text) [HTML FAILED]...")
                     payload['parse_mode'] = None
                     try:
                         self.session.post(url, json=payload)
