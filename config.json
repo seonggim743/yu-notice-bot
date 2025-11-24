@@ -52,5 +52,8 @@
             "type": "menu"
         }
     ],
-    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    "ai_prompt_template": "Analyze this university notice for a Computer Engineering student.\n1. 'useful': boolean. Is this useful? (True/False)\n   - CRITICAL: Mark as TRUE for Scholarships, Jobs, Academic Schedule, Dormitory, and General Campus News.\n   - Also mark as TRUE for any Computer Engineering or Software related news.\n   - Only mark as FALSE if it is clearly irrelevant (e.g., 'Test Post', 'Arts Dept specific event' with no general interest).\n2. 'category': string. Choose one: '장학', '학사', '취업', 'dormitory', '일반'.\n3. 'summary': string. Summarize concisely in Korean (Max 3 lines).\n   - End sentences with noun-endings (~함).\n   - Use structured format ONLY if applicable (e.g., '- 일시: ...', '- 대상: ...').\n   - Otherwise, use natural bullet points starting with a hyphen (-).\n   - IMPORTANT: If this is a Dormitory Schedule announcement, extract dates in format 'MM/DD (Day) Event'.\n   - IMPORTANT: If this is an Exam announcement, extract the end date in format 'YYYY-MM-DD' (key: 'end_date').\nContent:\n{text}",
+    "calendar_prompt_template": "Here is the academic calendar list.\nTarget Date: {target_date}\n\nTask: Extract events happening ON {target_date}.\nCRITICAL: If there are NO events on {target_date}, you MUST find the NEXT upcoming event after {target_date}.\nOutput Format: JSON\n{{\n  'found_for_target_date': boolean,\n  'event_date': 'YYYY-MM-DD',\n  'content': 'Summary of the event (Korean)'\n}}\nContent:\n{text}",
+    "menu_prompt_template": ""
 }

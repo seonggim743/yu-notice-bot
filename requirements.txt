@@ -3,3 +3,6 @@ beautifulsoup4
 google-generativeai
 supabase
 pytz
+pydantic
+aiohttp
+python-dotenv
