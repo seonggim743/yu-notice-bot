@@ -168,6 +168,7 @@ class NoticeScraper:
                 f"   - Use structured format ONLY if applicable (e.g., '- 일시: ...', '- 대상: ...').\n"
                 f"   - Otherwise, use natural bullet points starting with a hyphen (-).\n"
                 f"   - IMPORTANT: If this is a Dormitory Schedule announcement, extract dates in format 'MM/DD (Day) Event'.\n"
+                f"   - IMPORTANT: If this is an Exam announcement, extract the end date in format 'YYYY-MM-DD' (key: 'end_date').\n"
                 f"Content:\n{text[:4000]}"
             )
             
@@ -290,11 +291,11 @@ class NoticeScraper:
         return weekdays[date_obj.weekday()]
 
     def process_weekly_briefing(self, target: Dict):
-        # Run only on Sunday (6) between 18:00 and 19:00
+        # Run only on Sunday (6) after 18:00
         now_kst = datetime.datetime.now(KST)
         if now_kst.weekday() != 6:
             return
-        if not (18 <= now_kst.hour <= 19):
+        if now_kst.hour < 18:
             return
 
         # Check State to run only once
@@ -354,8 +355,8 @@ class NoticeScraper:
 
     def process_daily_calendar_check(self, target: Dict):
         # Daily Academic Schedule Check
-        # Morning (06-07): Today's Schedule
-        # Evening (18-19): Tomorrow's Schedule
+        # Morning (After 06:00): Today's Schedule
+        # Evening (After 18:00): Tomorrow's Schedule
         
         now_kst = datetime.datetime.now(KST)
         hour = now_kst.hour
@@ -363,21 +364,29 @@ class NoticeScraper:
         
         check_type = None
         target_date = None
+        state_key = None
         
-        if 6 <= hour <= 7:
-            check_type = 'morning'
-            target_date = now_kst.date()
-            state_key = 'last_calendar_check_morning'
-        elif 18 <= hour <= 19:
-            check_type = 'evening'
-            target_date = now_kst.date() + datetime.timedelta(days=1)
-            state_key = 'last_calendar_check_evening'
-        else:
-            return # Not in time window
+        # Robust Logic: Check if we passed the time threshold and haven't run yet
+        if hour >= 6:
+            # Check Morning
+            if self.state.get('last_calendar_check_morning') != today_str:
+                check_type = 'morning'
+                target_date = now_kst.date()
+                state_key = 'last_calendar_check_morning'
+        
+        # If morning is done or not applicable, check evening
+        # Note: We can do both if the script runs late (e.g. at 19:00, it might do morning then evening)
+        # But usually we want to prioritize or do one. Let's allow sequential checks.
+        
+        if not check_type and hour >= 18:
+            # Check Evening
+            if self.state.get('last_calendar_check_evening') != today_str:
+                check_type = 'evening'
+                target_date = now_kst.date() + datetime.timedelta(days=1)
+                state_key = 'last_calendar_check_evening'
 
-        if self.state.get(state_key) == today_str:
-            logger.info(f"Daily calendar check ({check_type}) already done today.")
-            return
+        if not check_type:
+            return # Nothing to do
 
         logger.info(f"Processing Daily Calendar Check ({check_type}) for {target_date}...")
         
@@ -406,9 +415,6 @@ class NoticeScraper:
             response = model.generate_content(prompt)
             time.sleep(10)
             summary = response.text.strip()
-            
-            # If AI says "일정이 없습니다" (or similar), we still send it as requested by user
-            # "학사 일정 및 안내 모두 그 주나 없는 하루는 일정이 없다고 고지"
             
             topic_id = self.config.get('topic_map', {}).get('학사', 0)
             
@@ -626,8 +632,36 @@ class NoticeScraper:
         return new_items
 
     def run(self):
-        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 12 (STICKY FIX + EXAM PRIORITY)")
+        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 13 (ROBUST ALERTS + EXAM PINNING)")
         processed_ids = set() # Deduplication set for this run
+        
+        # Check for Expired Pinned Exams
+        pinned_exams = self.state.get('pinned_exams', [])
+        active_pinned_exams = []
+        now_date = datetime.datetime.now(KST).date()
+        
+        for pin in pinned_exams:
+            end_date_str = pin.get('end_date')
+            msg_id = pin.get('message_id')
+            
+            is_expired = False
+            if end_date_str:
+                try:
+                    end_date = datetime.datetime.strptime(end_date_str, '%Y-%m-%d').date()
+                    if now_date > end_date:
+                        is_expired = True
+                except ValueError:
+                    pass # Invalid date format, keep it or expire? Keep for safety.
+            
+            if is_expired:
+                logger.info(f"Unpinning expired exam message {msg_id} (End Date: {end_date_str})")
+                self.unpin_message(msg_id)
+            else:
+                active_pinned_exams.append(pin)
+        
+        if len(pinned_exams) != len(active_pinned_exams):
+            self.state['pinned_exams'] = active_pinned_exams
+            self._save_state()
 
         try:
             for target in self.config['targets']:
@@ -636,7 +670,7 @@ class NoticeScraper:
                 if t_type == 'calendar':
                     self.process_weekly_briefing(target)
                     self.process_daily_calendar_check(target)
-                    continue
+                    # DO NOT CONTINUE - Allow fallthrough to parse_list for new posts
                 elif t_type == 'menu':
                     self.process_daily_menu(target)
                     continue
@@ -749,13 +783,28 @@ class NoticeScraper:
                         for btn in item['attachments']:
                             final_buttons.append(btn)
 
-                    self.send_telegram(
+                    msg_id = self.send_telegram(
                         msg, 
                         topic_id=topic_id, 
                         buttons=final_buttons,
                         photo_data=final_image_data # Send bytes
                     )
                     
+                    # Pin Exam Posts
+                    if is_exam and msg_id:
+                        end_date = analysis.get('end_date')
+                        if end_date:
+                            self.pin_message(msg_id)
+                            # Save to state for auto-unpinning
+                            current_pinned = self.state.get('pinned_exams', [])
+                            current_pinned.append({
+                                'message_id': msg_id,
+                                'end_date': end_date
+                            })
+                            self.state['pinned_exams'] = current_pinned
+                            self._save_state()
+                            logger.info(f"Pinned Exam Post {msg_id} (Expires: {end_date})")
+
                     self.update_last_id(target['key'], item['id'])
                     time.sleep(10) # Rate limiting (Safety)
 
