@@ -203,17 +203,20 @@ class NoticeScraper:
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 404:
                 logger.error("TELEGRAM_TOKEN이 올바른지 확인하세요 (404 Not Found).")
+            elif e.response.status_code == 400:
+                logger.error(f"Telegram 400 Error (Bad Request): {e.response.text}")
+                # Smart Fallback: Retry with Plain Text
+                if not is_error:
+                    logger.info("Attempting Smart Fallback (Plain Text)...")
+                    payload['parse_mode'] = None
+                    try:
+                        self.session.post(url, json=payload)
+                        logger.info("Fallback message sent successfully.")
+                        time.sleep(10)
+                    except Exception as fallback_e:
+                        logger.error(f"Fallback failed: {fallback_e}")
             else:
                 logger.error(f"Failed to send Telegram message: {e}")
-            
-            # Fallback for Markdown error
-            if not is_error and 'parse_mode' in payload:
-                payload['parse_mode'] = None
-                try:
-                    self.session.post(url, json=payload)
-                    time.sleep(10)
-                except:
-                    pass
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
 
