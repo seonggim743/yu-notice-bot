@@ -317,42 +317,16 @@ class NoticeScraper:
 
         if image_url:
             logger.info(f"Found menu image: {image_url}")
-            msg = f"🍚 <b>오늘의 기숙사 식단표</b> ({display_date})"
+            # User requested link to the board/list, assuming target['url'] is the board
+            msg = (
+                f"🍚 <b>오늘의 기숙사 식단표</b> ({display_date})\n\n"
+                f"<a href='{target['url']}'>[식단 게시판 바로가기]</a>"
+            )
             self.send_telegram(msg, topic_id=topic_id, photo_url=image_url)
             self.update_last_id(target['key'], today_str)
             return
-
-        # Fallback to Text Summary if no image
-        text = content.get_text(separator=' ', strip=True)
-        
-        try:
-            time.sleep(10)
-            model = genai.GenerativeModel(GEMINI_MODEL)
-            
-            prompt = (
-                f"Here is the dormitory menu schedule.\n"
-                f"Today is {display_date}.\n"
-                f"Task: Extract and summarize ONLY today's Breakfast, Lunch, and Dinner menu.\n"
-                f"Output Format: Korean, Clean format (Morning: ..., Lunch: ..., Dinner: ...).\n"
-                f"Content:\n{text[:5000]}"
-            )
-            
-            response = model.generate_content(prompt)
-            time.sleep(10)
-            summary = response.text.strip()
-            
-            msg = (
-                f"🍚 <b>오늘의 기숙사 식단</b> ({display_date})\n\n"
-                f"{self.escape_html(summary)}\n\n"
-                f"<a href='{target['url']}'>[전체 식단 보기]</a> #기숙사 #식단"
-            )
-            self.send_telegram(msg, topic_id=topic_id)
-            
-            # 3. Update State (Mark as sent for today)
-            self.update_last_id(target['key'], today_str)
-            
-        except Exception as e:
-            logger.error(f"Daily Menu failed: {e}")
+        else:
+            logger.warning("No menu image found. Skipping notification as per user request.")
 
     def parse_list(self, html: str, last_id: Optional[str]) -> List[Dict]:
         soup = BeautifulSoup(html, 'html.parser')
@@ -413,7 +387,7 @@ class NoticeScraper:
         return new_items
 
     def run(self):
-        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 3 (HTML FORCE MODE)")
+        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 4 (FIX LIST ERROR)")
         try:
             for target in self.config['targets']:
                 # Special handling
@@ -452,6 +426,10 @@ class NoticeScraper:
                     category = analysis.get('category', '일반')
                     summary = analysis.get('summary', '')
                     
+                    # Fix: Handle list summary
+                    if isinstance(summary, list):
+                        summary = '\n'.join(summary)
+                    
                     # Get Topic ID
                     topic_id = self.config.get('topic_map', {}).get(category, 0)
                     
@@ -460,7 +438,7 @@ class NoticeScraper:
                     safe_name = self.escape_html(target['name'])
                     safe_cat = self.escape_html(category)
                     
-                    safe_summary = self.escape_html(summary)
+                    safe_summary = self.escape_html(str(summary)) # Ensure string
                     
                     if summary:
                         summary_section = f"\n\n🤖 <b>AI 요약 ({safe_cat})</b>\n{safe_summary}"
