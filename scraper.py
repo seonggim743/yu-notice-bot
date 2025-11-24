@@ -41,12 +41,14 @@ logger.propagate = False
 
 # --- Constants ---
 CONFIG_FILE = 'config.json'
+STATE_FILE = 'state.json'
 GEMINI_MODEL = 'gemini-2.5-flash'
 KST = pytz.timezone('Asia/Seoul')
 
 class NoticeScraper:
     def __init__(self):
         self.config = self._load_config()
+        self.state = self._load_state()
         self.session = self._init_session()
         self.supabase = self._init_supabase()
         self._init_gemini()
@@ -61,6 +63,20 @@ class NoticeScraper:
         except FileNotFoundError:
             logger.error(f"Config file {CONFIG_FILE} not found.")
             raise
+
+    def _load_state(self) -> Dict[str, Any]:
+        try:
+            with open(STATE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return {}
+
+    def _save_state(self):
+        try:
+            with open(STATE_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self.state, f, indent=4, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Failed to save state: {e}")
 
     def _init_session(self) -> requests.Session:
         session = requests.Session()
@@ -135,7 +151,7 @@ class NoticeScraper:
         try:
             time.sleep(10) # Rate limiting (Safety)
             model = genai.GenerativeModel(GEMINI_MODEL)
-            # Enhanced Prompt with User Persona & Formatting
+            # Enhanced Prompt with User Persona & Flexible Formatting
             prompt = (
                 f"Analyze this university notice for a Computer Engineering student.\n"
                 f"1. 'useful': boolean. Is this useful? (True/False)\n"
@@ -145,8 +161,8 @@ class NoticeScraper:
                 f"2. 'category': string. Choose one: '장학', '학사', '취업', 'dormitory', '일반'.\n"
                 f"3. 'summary': string. Summarize concisely in Korean (Max 3 lines).\n"
                 f"   - End sentences with noun-endings (~함).\n"
-                f"   - Use structured format if applicable: '- 일시: 2024.01.01 ~ 01.05', '- 대상: 재학생 전원'.\n"
-                f"   - Start each line with a hyphen (-).\n"
+                f"   - Use structured format ONLY if applicable (e.g., '- 일시: ...', '- 대상: ...').\n"
+                f"   - Otherwise, use natural bullet points starting with a hyphen (-).\n"
                 f"Content:\n{text[:4000]}"
             )
             
@@ -161,11 +177,31 @@ class NoticeScraper:
     def escape_html(self, text: str) -> str:
         return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
+    def pin_message(self, message_id: int):
+        if not self.telegram_token or not self.chat_id: return
+        url = f"https://api.telegram.org/bot{self.telegram_token}/pinChatMessage"
+        payload = {'chat_id': self.chat_id, 'message_id': message_id}
+        try:
+            self.session.post(url, json=payload)
+            logger.info(f"Pinned message {message_id}")
+        except Exception as e:
+            logger.error(f"Failed to pin message: {e}")
+
+    def unpin_message(self, message_id: int):
+        if not self.telegram_token or not self.chat_id: return
+        url = f"https://api.telegram.org/bot{self.telegram_token}/unpinChatMessage"
+        payload = {'chat_id': self.chat_id, 'message_id': message_id}
+        try:
+            self.session.post(url, json=payload)
+            logger.info(f"Unpinned message {message_id}")
+        except Exception as e:
+            logger.error(f"Failed to unpin message: {e}")
+
     def send_telegram(self, message: str, topic_id: int = None, is_error: bool = False, 
-                      buttons: List[Dict] = None, photo_url: str = None, photo_data: bytes = None):
+                      buttons: List[Dict] = None, photo_url: str = None, photo_data: bytes = None) -> Optional[int]:
         if not self.telegram_token or not self.chat_id:
             logger.warning("Telegram credentials missing.")
-            return
+            return None
 
         # Endpoint selection
         endpoint = "sendMessage"
@@ -212,7 +248,10 @@ class NoticeScraper:
                 response = self.session.post(url, json=payload)
                 
             response.raise_for_status()
+            result = response.json()
             time.sleep(10) # Rate limiting (Safety)
+            return result.get('result', {}).get('message_id')
+            
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 404:
                 logger.error("TELEGRAM_TOKEN이 올바른지 확인하세요 (404 Not Found).")
@@ -239,6 +278,7 @@ class NoticeScraper:
 
         except Exception as e:
             logger.error(f"Failed to send Telegram message: {e}")
+        return None
 
     def process_weekly_briefing(self, target: Dict):
         # Run only on Sunday (0=Monday, 6=Sunday)
@@ -292,13 +332,13 @@ class NoticeScraper:
             logger.error(f"Weekly Briefing failed: {e}")
 
     def process_daily_menu(self, target: Dict):
-        # 1. Start Time Check: 07:00 ~ 23:00 KST
+        # 1. Schedule Check: Fri(4), Sat(5), Sun(6) only
         now_kst = datetime.datetime.now(KST)
-        if not (7 <= now_kst.hour <= 23):
-            logger.info(f"Skipping Daily Menu (Current time {now_kst.hour}h is outside 07-23h window)")
+        if now_kst.weekday() not in [4, 5, 6]:
+            logger.info("Skipping Menu Check (Not Fri-Sun).")
             return
 
-        logger.info(f"Processing Daily Menu for {target['name']}...")
+        logger.info(f"Processing Weekly Menu for {target['name']}...")
         
         # 2. Fetch List Page
         html = self.fetch_page(target['url'])
@@ -312,8 +352,7 @@ class NoticeScraper:
             return
 
         title_link = first_row.select_one('a')
-        if not title_link:
-            return
+        if not title_link: return
 
         title = title_link.get_text(strip=True)
         link = title_link.get('href')
@@ -323,17 +362,22 @@ class NoticeScraper:
         qs = urllib.parse.parse_qs(parsed_url.query)
         article_id = qs.get('articleNo', [None])[0]
 
-        if not article_id:
-            logger.warning("Could not extract articleNo from menu link.")
-            return
+        if not article_id: return
 
         # 3. Idempotency Check
         last_sent_id = self.get_last_id(target['key'])
+        
+        # Sunday Night Missing Alert (If still no new menu by Sun 22:00)
+        if now_kst.weekday() == 6 and now_kst.hour >= 22:
+             if last_sent_id == article_id:
+                 # Check if we already alerted about missing menu? (Optional, skipping for simplicity)
+                 pass
+
         if last_sent_id == article_id:
             logger.info(f"Menu post {article_id} already sent. Skipping.")
             return
 
-        logger.info(f"Found new menu post: {title} ({article_id})")
+        logger.info(f"Found new weekly menu post: {title} ({article_id})")
 
         # 4. Fetch Detail Page
         full_url = urllib.parse.urljoin(target['url'], link)
@@ -343,9 +387,7 @@ class NoticeScraper:
         detail_soup = BeautifulSoup(detail_html, 'html.parser')
         content = detail_soup.select_one('.b-content-box')
         
-        if not content:
-            logger.warning("No content found in menu detail page.")
-            return
+        if not content: return
 
         # 5. Extract Image and Download
         image_url = None
@@ -355,8 +397,8 @@ class NoticeScraper:
             if src:
                 image_url = urllib.parse.urljoin(target['url'], src)
 
-        display_date = now_kst.strftime("%Y-%m-%d")
         topic_id = self.config.get('topic_map', {}).get('dormitory', 0)
+        safe_title = self.escape_html(title)
 
         if image_url:
             logger.info(f"Found menu image: {image_url}")
@@ -368,12 +410,24 @@ class NoticeScraper:
                 img_data = img_response.content
                 
                 msg = (
-                    f"🍚 <b>기숙사 식단표</b> ({display_date})\n\n"
+                    f"🍚 <b>{safe_title}</b>\n\n"
                     f"<a href='{full_url}'>[식단 게시판 바로가기]</a>"
                 )
                 # Send with bytes
-                self.send_telegram(msg, topic_id=topic_id, photo_data=img_data)
-                self.update_last_id(target['key'], article_id)
+                msg_id = self.send_telegram(msg, topic_id=topic_id, photo_data=img_data)
+                
+                if msg_id:
+                    self.update_last_id(target['key'], article_id)
+                    
+                    # Pinning Logic
+                    old_pin_id = self.state.get('last_pinned_menu_id')
+                    if old_pin_id:
+                        self.unpin_message(old_pin_id)
+                    
+                    self.pin_message(msg_id)
+                    self.state['last_pinned_menu_id'] = msg_id
+                    self._save_state()
+
             except Exception as e:
                 logger.error(f"Failed to download/send menu image: {e}")
         else:
@@ -407,13 +461,19 @@ class NoticeScraper:
                 if last_id and article_id == last_id:
                     break
 
-                # Extract Attachments for Buttons
+                # Extract Attachments for Buttons (Strict Deduplication)
                 attachments = []
+                seen_urls = set()
                 file_links = row.select('a[href*="fileDownload"]')
+                
                 for fl in file_links:
                     f_name = fl.get_text(strip=True) or "첨부파일"
-                    # Fix: Ensure correct base URL for attachments
                     f_url = urllib.parse.urljoin("https://hcms.yu.ac.kr", fl.get('href'))
+                    
+                    if f_url in seen_urls:
+                        continue
+                    
+                    seen_urls.add(f_url)
                     attachments.append({"text": f"📄 {f_name}", "url": f_url})
 
                 # Check for Image
@@ -439,7 +499,7 @@ class NoticeScraper:
         return new_items
 
     def run(self):
-        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 8 (IMG REFERER + AI FORMAT)")
+        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 9 (PINNING + WEEKLY MENU + DEDUP)")
         processed_ids = set() # Deduplication set for this run
 
         try:
