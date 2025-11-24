@@ -413,6 +413,7 @@ class NoticeScraper:
         return new_items
 
     def run(self):
+        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 3 (HTML FORCE MODE)")
         try:
             for target in self.config['targets']:
                 # Special handling
