@@ -493,6 +493,20 @@ class NoticeScraper:
                 text = soup.get_text(strip=True)
                 prompt = self.config.calendar_prompt_template.format(target_date=target_date, text=text[:4000])
                 
+                try:
+                    model = genai.GenerativeModel(GEMINI_MODEL)
+                    loop = asyncio.get_running_loop()
+                    response = await loop.run_in_executor(None, lambda: model.generate_content(prompt, generation_config={"response_mime_type": "application/json"}))
+                    result = json.loads(response.text)
+                except Exception as e:
+                    logger.error(f"Calendar AI failed: {e}")
+                    result = {}
+                
+                summary = result.get('content', '일정이 없습니다.')
+                event_date = result.get('event_date', str(target_date))
+                
+                msg = f"📅 <b>학사 일정 ({event_date})</b>\n\n{summary}\n\n<a href='{target.url}'>[전체 보기]</a>"
+
                 # Calendar Button for Daily Schedule
                 buttons = []
                 if event_date and summary != '일정이 없습니다.':
