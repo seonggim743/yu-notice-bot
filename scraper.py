@@ -284,10 +284,22 @@ class NoticeScraper:
             logger.error(f"Failed to send Telegram message: {e}")
         return None
 
+    def get_korean_weekday(self, date_obj) -> str:
+        weekdays = ["월", "화", "수", "목", "금", "토", "일"]
+        return weekdays[date_obj.weekday()]
+
     def process_weekly_briefing(self, target: Dict):
-        # Run only on Sunday (0=Monday, 6=Sunday)
+        # Run only on Sunday (6) between 18:00 and 19:00
         now_kst = datetime.datetime.now(KST)
         if now_kst.weekday() != 6:
+            return
+        if not (18 <= now_kst.hour <= 19):
+            return
+
+        # Check State to run only once
+        today_str = now_kst.strftime('%Y-%m-%d')
+        if self.state.get('last_weekly_briefing') == today_str:
+            logger.info("Weekly briefing already sent today.")
             return
 
         logger.info(f"Processing Weekly Briefing for {target['name']}...")
@@ -332,12 +344,93 @@ class NoticeScraper:
             )
             self.send_telegram(msg, topic_id=topic_id)
             
+            # Update State
+            self.state['last_weekly_briefing'] = today_str
+            self._save_state()
+            
         except Exception as e:
             logger.error(f"Weekly Briefing failed: {e}")
 
+    def process_daily_calendar_check(self, target: Dict):
+        # Daily Academic Schedule Check
+        # Morning (06-07): Today's Schedule
+        # Evening (18-19): Tomorrow's Schedule
+        
+        now_kst = datetime.datetime.now(KST)
+        hour = now_kst.hour
+        today_str = now_kst.strftime('%Y-%m-%d')
+        
+        check_type = None
+        target_date = None
+        
+        if 6 <= hour <= 7:
+            check_type = 'morning'
+            target_date = now_kst.date()
+            state_key = 'last_calendar_check_morning'
+        elif 18 <= hour <= 19:
+            check_type = 'evening'
+            target_date = now_kst.date() + datetime.timedelta(days=1)
+            state_key = 'last_calendar_check_evening'
+        else:
+            return # Not in time window
+
+        if self.state.get(state_key) == today_str:
+            logger.info(f"Daily calendar check ({check_type}) already done today.")
+            return
+
+        logger.info(f"Processing Daily Calendar Check ({check_type}) for {target_date}...")
+        
+        html = self.fetch_page(target['url'])
+        if not html: return
+
+        soup = BeautifulSoup(html, 'html.parser')
+        content = soup.select_one('.b-content-box') or soup.select_one('table')
+        if not content: return
+
+        text = content.get_text(separator=' ', strip=True)
+
+        try:
+            time.sleep(10)
+            model = genai.GenerativeModel(GEMINI_MODEL)
+            
+            prompt = (
+                f"Here is the academic calendar list.\n"
+                f"Target Date: {target_date}\n\n"
+                f"Task: Extract events happening ON {target_date}.\n"
+                f"Output Format: Korean, Bullet points with hyphens (-).\n"
+                f"If there are no events on this specific day, explicitly say '일정이 없습니다.'\n\n"
+                f"Content:\n{text[:5000]}"
+            )
+            
+            response = model.generate_content(prompt)
+            time.sleep(10)
+            summary = response.text.strip()
+            
+            # If AI says "일정이 없습니다" (or similar), we still send it as requested by user
+            # "학사 일정 및 안내 모두 그 주나 없는 하루는 일정이 없다고 고지"
+            
+            topic_id = self.config.get('topic_map', {}).get('학사', 0)
+            
+            title_prefix = "오늘의" if check_type == 'morning' else "내일의"
+            weekday_str = self.get_korean_weekday(target_date)
+            
+            msg = (
+                f"📅 <b>{title_prefix} 학사 일정</b>\n"
+                f"({target_date} {weekday_str})\n\n"
+                f"{self.escape_html(summary)}\n\n"
+                f"<a href='{target['url']}'>[전체 일정 보기]</a> #학사 #일정"
+            )
+            self.send_telegram(msg, topic_id=topic_id)
+            
+            # Update State
+            self.state[state_key] = today_str
+            self._save_state()
+
+        except Exception as e:
+            logger.error(f"Daily Calendar Check failed: {e}")
+
     def process_daily_menu(self, target: Dict):
         # 1. Schedule Check: Run Daily (No restriction)
-        # Late uploads are handled by the daily check + idempotency.
         now_kst = datetime.datetime.now(KST)
         
         logger.info(f"Processing Weekly Menu for {target['name']}...")
@@ -395,7 +488,20 @@ class NoticeScraper:
 
         topic_id = self.config.get('topic_map', {}).get('dormitory', 0)
         safe_title = self.escape_html(title)
-
+        
+        # Add Day of Week to Header
+        # Note: The title usually contains the date range, but we add the current day for context?
+        # User request: "다음 식단표부터는 연도월일 다음 괄호로 무슨 요일인지도 표기할 것."
+        # Since this is the *weekly* menu post, the "date" is usually a range.
+        # However, the user might mean the *notification date* or the *menu date*.
+        # Given it's a "Weekly Menu" post, I will add the *current* day of week to the notification header
+        # to indicate when this notification was sent/detected.
+        # OR, if the user means the *content* of the menu, I can't change the image.
+        # I will assume they mean the Telegram Message Header.
+        
+        today_str = now_kst.strftime('%Y-%m-%d')
+        weekday_str = self.get_korean_weekday(now_kst)
+        
         if image_url:
             logger.info(f"Found menu image: {image_url}")
             try:
@@ -406,7 +512,8 @@ class NoticeScraper:
                 img_data = img_response.content
                 
                 msg = (
-                    f"🍚 <b>{safe_title}</b>\n\n"
+                    f"🍚 <b>{safe_title}</b>\n"
+                    f"({today_str} {weekday_str})\n\n"
                     f"<a href='{full_url}'>[식단 게시판 바로가기]</a>"
                 )
                 # Send with bytes
@@ -429,7 +536,7 @@ class NoticeScraper:
         else:
             logger.warning("No menu image found in the post.")
 
-    def parse_list(self, html: str, last_id: Optional[str], base_url: str) -> List[Dict]:
+    def parse_list(self, html: str, last_id: Optional[str], current_page_url: str) -> List[Dict]:
         soup = BeautifulSoup(html, 'html.parser')
         new_items = []
         rows = soup.select('table tbody tr')
@@ -464,8 +571,8 @@ class NoticeScraper:
                 
                 for fl in file_links:
                     f_name = fl.get_text(strip=True) or "첨부파일"
-                    # Use base_url from config
-                    f_url = urllib.parse.urljoin(base_url, fl.get('href'))
+                    # Use current_page_url for robust relative link resolution
+                    f_url = urllib.parse.urljoin(current_page_url, fl.get('href'))
                     
                     if f_url in seen_urls:
                         continue
@@ -479,7 +586,7 @@ class NoticeScraper:
                 for img in imgs:
                     src = img.get('src', '')
                     if 'file' not in src.lower() and 'icon' not in src.lower():
-                        image_url = urllib.parse.urljoin(base_url, src)
+                        image_url = urllib.parse.urljoin(current_page_url, src)
                         break
 
                 new_items.append({
@@ -496,7 +603,7 @@ class NoticeScraper:
         return new_items
 
     def run(self):
-        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 10 (IMG EXTRACT + LATE MENU)")
+        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 11 (DAILY ACADEMIC + WEEKLY BRIEF + FIXES)")
         processed_ids = set() # Deduplication set for this run
 
         try:
@@ -505,6 +612,7 @@ class NoticeScraper:
                 t_type = target.get('type')
                 if t_type == 'calendar':
                     self.process_weekly_briefing(target)
+                    self.process_daily_calendar_check(target)
                     continue
                 elif t_type == 'menu':
                     self.process_daily_menu(target)
@@ -517,8 +625,8 @@ class NoticeScraper:
                 
                 if not html: continue
 
-                # Pass base_url to parse_list
-                new_items = self.parse_list(html, last_id, target['base_url'])
+                # Pass target['url'] (current page) as base for parse_list
+                new_items = self.parse_list(html, last_id, target['url'])
                 
                 if not new_items:
                     logger.info("No new items found.")
@@ -605,8 +713,6 @@ class NoticeScraper:
                         })
                     else:
                         for btn in item['attachments']:
-                            # Already resolved in parse_list, but double check?
-                            # parse_list uses base_url, so it should be fine.
                             final_buttons.append(btn)
 
                     self.send_telegram(
