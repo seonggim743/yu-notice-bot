@@ -547,6 +547,76 @@ class NoticeScraper:
                         self.state.last_daily_summary = today
                         self._save_state()
 
+            # Check for User Commands (/search)
+            await self.check_commands(session)
+
+    async def search_notices(self, keyword: str) -> str:
+        if not self.supabase: return "데이터베이스 연결 실패"
+        try:
+            # Search in 'title' column, order by created_at desc, limit 5
+            response = self.supabase.table('notices').select('*').ilike('title', f'%{keyword}%').order('created_at', desc=True).limit(5).execute()
+            
+            if not response.data:
+                return f"🔍 '{keyword}'에 대한 검색 결과가 없습니다."
+            
+            lines = [f"🔍 <b>'{keyword}' 검색 결과 (최근 5건)</b>"]
+            for item in response.data:
+                date_str = datetime.datetime.fromisoformat(item['created_at']).strftime('%Y-%m-%d')
+                lines.append(f"- [{date_str}] <a href='{item['url']}'>{self.escape_html(item['title'])}</a>")
+            
+            return "\n\n".join(lines)
+        except Exception as e:
+            logger.error(f"Search failed: {e}")
+            return "검색 중 오류가 발생했습니다."
+
+    async def check_commands(self, session: aiohttp.ClientSession):
+        if not self.telegram_token: return
+        
+        offset = self.state.last_update_id + 1 if self.state.last_update_id else 0
+        url = f"https://api.telegram.org/bot{self.telegram_token}/getUpdates?offset={offset}&timeout=10&allowed_updates=['message']"
+        
+        try:
+            async with session.get(url) as resp:
+                if resp.status != 200: return
+                data = await resp.json()
+                
+                if not data.get('ok'): return
+                
+                updates = data.get('result', [])
+                if not updates: return
+                
+                max_update_id = offset
+                for update in updates:
+                    update_id = update['update_id']
+                    max_update_id = max(max_update_id, update_id)
+                    
+                    message = update.get('message', {})
+                    text = message.get('text', '').strip()
+                    chat_id = message.get('chat', {}).get('id')
+                    
+                    if not text or not chat_id: continue
+                    
+                    if text.startswith('/search'):
+                        parts = text.split(maxsplit=1)
+                        if len(parts) < 2:
+                            reply = "🔍 검색어를 입력해주세요.\n예: `/search 장학`"
+                        else:
+                            keyword = parts[1]
+                            reply = await self.search_notices(keyword)
+                        
+                        # Send Reply
+                        send_url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
+                        payload = {'chat_id': chat_id, 'text': reply, 'parse_mode': 'HTML', 'disable_web_page_preview': 'true'}
+                        async with session.post(send_url, json=payload) as send_resp:
+                            pass
+                
+                if max_update_id > offset:
+                    self.state.last_update_id = max_update_id
+                    self._save_state()
+                    
+        except Exception as e:
+            logger.error(f"Command check failed: {e}")
+
 if __name__ == "__main__":
     scraper = NoticeScraper()
     asyncio.run(scraper.run())
