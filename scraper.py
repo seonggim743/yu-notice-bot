@@ -493,21 +493,6 @@ class NoticeScraper:
                 text = soup.get_text(strip=True)
                 prompt = self.config.calendar_prompt_template.format(target_date=target_date, text=text[:4000])
                 
-                analysis = await self.get_ai_analysis(text, prompt) # Use helper
-                # Note: get_ai_analysis expects text and template. 
-                # But here prompt is already formatted. 
-                # Let's adjust get_ai_analysis to handle pre-formatted? 
-                # Or just use raw call.
-                model = genai.GenerativeModel(GEMINI_MODEL)
-                loop = asyncio.get_running_loop()
-                response = await loop.run_in_executor(None, lambda: model.generate_content(prompt, generation_config={"response_mime_type": "application/json"}))
-                result = json.loads(response.text)
-                
-                summary = result.get('content', '일정이 없습니다.')
-                event_date = result.get('event_date', str(target_date))
-                
-                msg = f"📅 <b>학사 일정 ({event_date})</b>\n\n{summary}\n\n<a href='{target.url}'>[전체 보기]</a>"
-                
                 # Calendar Button for Daily Schedule
                 buttons = []
                 if event_date and summary != '일정이 없습니다.':
