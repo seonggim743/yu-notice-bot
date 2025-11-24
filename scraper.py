@@ -131,11 +131,15 @@ class NoticeScraper:
             logger.error(f"Failed to fetch {url}: {e}")
             return None
 
-    def get_ai_analysis(self, url: str, selector: str) -> Dict[str, Any]:
+    def get_ai_analysis(self, url: str, selector: str, html_content: str = None) -> Dict[str, Any]:
         if not os.environ.get('GEMINI_API_KEY'):
             return {"useful": True, "category": "일반", "summary": "AI Key Missing"}
 
-        html = self.fetch_page(url)
+        if html_content:
+            html = html_content
+        else:
+            html = self.fetch_page(url)
+            
         if not html:
             return {"useful": False, "category": "일반", "summary": "Fetch Failed"}
 
@@ -332,12 +336,10 @@ class NoticeScraper:
             logger.error(f"Weekly Briefing failed: {e}")
 
     def process_daily_menu(self, target: Dict):
-        # 1. Schedule Check: Fri(4), Sat(5), Sun(6) only
+        # 1. Schedule Check: Run Daily (No restriction)
+        # Late uploads are handled by the daily check + idempotency.
         now_kst = datetime.datetime.now(KST)
-        if now_kst.weekday() not in [4, 5, 6]:
-            logger.info("Skipping Menu Check (Not Fri-Sun).")
-            return
-
+        
         logger.info(f"Processing Weekly Menu for {target['name']}...")
         
         # 2. Fetch List Page
@@ -367,12 +369,6 @@ class NoticeScraper:
         # 3. Idempotency Check
         last_sent_id = self.get_last_id(target['key'])
         
-        # Sunday Night Missing Alert (If still no new menu by Sun 22:00)
-        if now_kst.weekday() == 6 and now_kst.hour >= 22:
-             if last_sent_id == article_id:
-                 # Check if we already alerted about missing menu? (Optional, skipping for simplicity)
-                 pass
-
         if last_sent_id == article_id:
             logger.info(f"Menu post {article_id} already sent. Skipping.")
             return
@@ -433,7 +429,7 @@ class NoticeScraper:
         else:
             logger.warning("No menu image found in the post.")
 
-    def parse_list(self, html: str, last_id: Optional[str]) -> List[Dict]:
+    def parse_list(self, html: str, last_id: Optional[str], base_url: str) -> List[Dict]:
         soup = BeautifulSoup(html, 'html.parser')
         new_items = []
         rows = soup.select('table tbody tr')
@@ -468,7 +464,8 @@ class NoticeScraper:
                 
                 for fl in file_links:
                     f_name = fl.get_text(strip=True) or "첨부파일"
-                    f_url = urllib.parse.urljoin("https://hcms.yu.ac.kr", fl.get('href'))
+                    # Use base_url from config
+                    f_url = urllib.parse.urljoin(base_url, fl.get('href'))
                     
                     if f_url in seen_urls:
                         continue
@@ -476,13 +473,13 @@ class NoticeScraper:
                     seen_urls.add(f_url)
                     attachments.append({"text": f"📄 {f_name}", "url": f_url})
 
-                # Check for Image
+                # Check for Image (List View)
                 image_url = None
                 imgs = row.find_all('img')
                 for img in imgs:
                     src = img.get('src', '')
                     if 'file' not in src.lower() and 'icon' not in src.lower():
-                        image_url = urllib.parse.urljoin("https://hcms.yu.ac.kr", src)
+                        image_url = urllib.parse.urljoin(base_url, src)
                         break
 
                 new_items.append({
@@ -499,7 +496,7 @@ class NoticeScraper:
         return new_items
 
     def run(self):
-        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 9 (PINNING + WEEKLY MENU + DEDUP)")
+        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 10 (IMG EXTRACT + LATE MENU)")
         processed_ids = set() # Deduplication set for this run
 
         try:
@@ -520,7 +517,8 @@ class NoticeScraper:
                 
                 if not html: continue
 
-                new_items = self.parse_list(html, last_id)
+                # Pass base_url to parse_list
+                new_items = self.parse_list(html, last_id, target['base_url'])
                 
                 if not new_items:
                     logger.info("No new items found.")
@@ -536,8 +534,37 @@ class NoticeScraper:
 
                     full_url = urllib.parse.urljoin(target['url'], item['link'])
                     
-                    # AI Analysis
-                    analysis = self.get_ai_analysis(full_url, target['content_selector'])
+                    # Fetch Detail Page for AI & Image Extraction
+                    detail_html = self.fetch_page(full_url)
+                    
+                    # Extract Image from Content if not in List
+                    final_image_data = None
+                    final_image_url = item['image_url']
+                    
+                    if detail_html:
+                        detail_soup = BeautifulSoup(detail_html, 'html.parser')
+                        content_div = detail_soup.select_one(target['content_selector'])
+                        if content_div:
+                            # If no image from list, try content
+                            if not final_image_url:
+                                img_tag = content_div.find('img')
+                                if img_tag:
+                                    src = img_tag.get('src', '')
+                                    if src and 'file' not in src.lower() and 'icon' not in src.lower():
+                                        final_image_url = urllib.parse.urljoin(target['base_url'], src)
+                    
+                    # Download Image if exists
+                    if final_image_url:
+                        try:
+                            headers = {'Referer': full_url}
+                            img_resp = self.session.get(final_image_url, headers=headers)
+                            img_resp.raise_for_status()
+                            final_image_data = img_resp.content
+                        except Exception as e:
+                            logger.error(f"Failed to download image {final_image_url}: {e}")
+
+                    # AI Analysis (Reuse detail_html)
+                    analysis = self.get_ai_analysis(full_url, target['content_selector'], html_content=detail_html)
                     
                     if not analysis.get('useful', True):
                         logger.info(f"Skipping {item['title']} (AI deemed not useful)")
@@ -547,14 +574,11 @@ class NoticeScraper:
                     category = analysis.get('category', '일반')
                     summary = analysis.get('summary', '')
                     
-                    # Fix: Handle list summary
                     if isinstance(summary, list):
                         summary = '\n'.join(summary)
                     
-                    # Get Topic ID
                     topic_id = self.config.get('topic_map', {}).get(category, 0)
                     
-                    # Prepare Message (HTML)
                     safe_title = self.escape_html(item['title'])
                     safe_name = self.escape_html(target['name'])
                     safe_cat = self.escape_html(category)
@@ -575,23 +599,21 @@ class NoticeScraper:
                     # Fix attachment URLs & Grouping
                     final_buttons = []
                     if len(item['attachments']) > 2:
-                        # Group attachments
                         final_buttons.append({
                             "text": f"📂 첨부파일 {len(item['attachments'])}개 보기",
                             "url": full_url
                         })
                     else:
-                        # Show individual buttons
                         for btn in item['attachments']:
-                            if btn['url'].startswith('/'):
-                                btn['url'] = urllib.parse.urljoin(target['base_url'], btn['url'])
+                            # Already resolved in parse_list, but double check?
+                            # parse_list uses base_url, so it should be fine.
                             final_buttons.append(btn)
 
                     self.send_telegram(
                         msg, 
                         topic_id=topic_id, 
                         buttons=final_buttons,
-                        photo_url=item['image_url']
+                        photo_data=final_image_data # Send bytes
                     )
                     
                     self.update_last_id(target['key'], item['id'])
