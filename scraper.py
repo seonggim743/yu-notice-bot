@@ -135,15 +135,15 @@ class NoticeScraper:
         try:
             time.sleep(10) # Rate limiting (Safety)
             model = genai.GenerativeModel(GEMINI_MODEL)
-            # Enhanced Prompt
+            # Enhanced Prompt with User Persona
             prompt = (
-                f"Analyze this university notice and return a JSON object.\n"
-                f"1. 'useful': boolean. Is this useful for students? (True/False)\n"
-                f"   - CRITICAL: Mark as TRUE if it relates to: Scholarships, Jobs, Academic Schedule, "
-                f"Graduation Requirements, Reserve Forces(예비군), Civil Defense(민방위), "
-                f"Dormitory(Entry/Exit, Menu), or Student Benefits.\n"
+                f"Analyze this university notice for a Computer Engineering student.\n"
+                f"1. 'useful': boolean. Is this useful? (True/False)\n"
+                f"   - CRITICAL: Mark as TRUE for Scholarships, Jobs, Academic Schedule, Dormitory, and General Campus News.\n"
+                f"   - Also mark as TRUE for any Computer Engineering or Software related news.\n"
+                f"   - Only mark as FALSE if it is clearly irrelevant (e.g., 'Test Post', 'Arts Dept specific event' with no general interest).\n"
                 f"2. 'category': string. Choose one: '장학', '학사', '취업', 'dormitory', '일반'.\n"
-                f"3. 'summary': string. 3 bullet points in Korean, noun-ending (~함).\n"
+                f"3. 'summary': string. 3 bullet points in Korean. MUST start each line with a hyphen (-).\n"
                 f"Content:\n{text[:4000]}"
             )
             
@@ -159,31 +159,24 @@ class NoticeScraper:
         return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
     def send_telegram(self, message: str, topic_id: int = None, is_error: bool = False, 
-                      buttons: List[Dict] = None, photo_url: str = None):
+                      buttons: List[Dict] = None, photo_url: str = None, photo_data: bytes = None):
         if not self.telegram_token or not self.chat_id:
             logger.warning("Telegram credentials missing.")
             return
 
         # Endpoint selection
         endpoint = "sendMessage"
-        if photo_url:
+        if photo_url or photo_data:
             endpoint = "sendPhoto"
 
         url = f"https://api.telegram.org/bot{self.telegram_token}/{endpoint}"
         
-        # HTML Mode
+        # Base Payload
         payload = {
             'chat_id': self.chat_id,
             'parse_mode': 'HTML',
         }
         
-        if photo_url:
-            payload['photo'] = photo_url
-            payload['caption'] = message
-        else:
-            payload['text'] = message
-            payload['disable_web_page_preview'] = True
-
         if topic_id:
             payload['message_thread_id'] = topic_id
 
@@ -196,8 +189,25 @@ class NoticeScraper:
                 }])
             payload['reply_markup'] = json.dumps({"inline_keyboard": inline_keyboard})
 
+        # Handle Photo (URL vs Bytes)
+        files = None
+        if photo_data:
+            files = {'photo': photo_data}
+            payload['caption'] = message
+        elif photo_url:
+            payload['photo'] = photo_url
+            payload['caption'] = message
+        else:
+            payload['text'] = message
+            payload['disable_web_page_preview'] = True
+
         try:
-            response = self.session.post(url, json=payload)
+            if files:
+                # When using files, payload must be sent as 'data', not 'json'
+                response = self.session.post(url, data=payload, files=files)
+            else:
+                response = self.session.post(url, json=payload)
+                
             response.raise_for_status()
             time.sleep(10) # Rate limiting (Safety)
         except requests.exceptions.HTTPError as e:
@@ -205,14 +215,18 @@ class NoticeScraper:
                 logger.error("TELEGRAM_TOKEN이 올바른지 확인하세요 (404 Not Found).")
             elif e.response.status_code == 400:
                 logger.error(f"Telegram 400 Error (Bad Request): {e.response.text}")
-                logger.error(f"Actual Request Body: {e.request.body}")
+                if not files:
+                    logger.error(f"Actual Request Body: {e.request.body}")
                 
                 # Smart Fallback: Retry with Plain Text (KEEP TOPIC ID)
                 if not is_error:
                     logger.info("Attempting Smart Fallback (Plain Text) [HTML FAILED]...")
                     payload['parse_mode'] = None
                     try:
-                        self.session.post(url, json=payload)
+                        if files:
+                            self.session.post(url, data=payload, files=files)
+                        else:
+                            self.session.post(url, json=payload)
                         logger.info("Fallback message sent successfully.")
                         time.sleep(10)
                     except Exception as fallback_e:
@@ -253,7 +267,7 @@ class NoticeScraper:
                 f"Current Date: {today}\n"
                 f"Target Period: {today} ~ {next_week}\n\n"
                 f"Task: Extract and summarize the schedule for the Target Period.\n"
-                f"Output Format: Korean, Bullet points.\n"
+                f"Output Format: Korean, Bullet points with hyphens (-).\n"
                 f"If there are no events in this period, say '이번 주 학사 일정은 없습니다.'\n\n"
                 f"Content:\n{text[:5000]}"
             )
@@ -330,7 +344,7 @@ class NoticeScraper:
             logger.warning("No content found in menu detail page.")
             return
 
-        # 5. Extract Image
+        # 5. Extract Image and Download
         image_url = None
         img_tag = content.find('img')
         if img_tag:
@@ -343,12 +357,21 @@ class NoticeScraper:
 
         if image_url:
             logger.info(f"Found menu image: {image_url}")
-            msg = (
-                f"🍚 <b>기숙사 식단표</b> ({display_date})\n\n"
-                f"<a href='{full_url}'>[식단 게시판 바로가기]</a>"
-            )
-            self.send_telegram(msg, topic_id=topic_id, photo_url=image_url)
-            self.update_last_id(target['key'], article_id)
+            try:
+                # Download image bytes
+                img_response = self.session.get(image_url)
+                img_response.raise_for_status()
+                img_data = img_response.content
+                
+                msg = (
+                    f"🍚 <b>기숙사 식단표</b> ({display_date})\n\n"
+                    f"<a href='{full_url}'>[식단 게시판 바로가기]</a>"
+                )
+                # Send with bytes
+                self.send_telegram(msg, topic_id=topic_id, photo_data=img_data)
+                self.update_last_id(target['key'], article_id)
+            except Exception as e:
+                logger.error(f"Failed to download/send menu image: {e}")
         else:
             logger.warning("No menu image found in the post.")
 
@@ -412,7 +435,7 @@ class NoticeScraper:
         return new_items
 
     def run(self):
-        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 6 (HTML + DORM CRAWL)")
+        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 7 (AI REFINE + ATTACH GROUP + IMG UPLOAD)")
         processed_ids = set() # Deduplication set for this run
 
         try:
@@ -485,12 +508,20 @@ class NoticeScraper:
                         f"#알림 #{safe_cat}"
                     )
                     
-                    # Fix attachment URLs
+                    # Fix attachment URLs & Grouping
                     final_buttons = []
-                    for btn in item['attachments']:
-                        if btn['url'].startswith('/'):
-                            btn['url'] = urllib.parse.urljoin(target['base_url'], btn['url'])
-                        final_buttons.append(btn)
+                    if len(item['attachments']) > 2:
+                        # Group attachments
+                        final_buttons.append({
+                            "text": f"📂 첨부파일 {len(item['attachments'])}개 보기",
+                            "url": full_url
+                        })
+                    else:
+                        # Show individual buttons
+                        for btn in item['attachments']:
+                            if btn['url'].startswith('/'):
+                                btn['url'] = urllib.parse.urljoin(target['base_url'], btn['url'])
+                            final_buttons.append(btn)
 
                     self.send_telegram(
                         msg, 
