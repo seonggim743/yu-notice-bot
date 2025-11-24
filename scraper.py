@@ -420,20 +420,33 @@ class NoticeScraper:
                 f"#알림 #{category}"
             )
 
-            buttons = [b.model_dump() for b in item.attachments]
-            
             # UX: Add Calendar Button
             if analysis.get('end_date'):
                 cal_url = self.generate_calendar_url(item.title, analysis['end_date'])
                 if cal_url:
                     buttons.append({"text": "📅 캘린더 등록", "url": cal_url})
 
-            if len(buttons) > 2 and not is_exam:
-                new_buttons = [{"text": f"📂 첨부파일 {len(item.attachments)}개 보기", "url": full_url}]
-                if analysis.get('end_date'):
-                     cal_url = self.generate_calendar_url(item.title, analysis['end_date'])
-                     if cal_url: new_buttons.append({"text": "📅 캘린더 등록", "url": cal_url})
-                buttons = new_buttons
+            # UX: Attachment Preview
+            preview_url = None
+            # 1. Try to find native preview link in detail page
+            if detail_html:
+                soup_detail = BeautifulSoup(detail_html, 'html.parser')
+                # Look for '미리보기' text or common preview classes
+                preview_node = soup_detail.find('a', string=re.compile('미리보기')) or \
+                               soup_detail.find('a', class_=re.compile('preview', re.I)) or \
+                               soup_detail.find('a', href=re.compile('preview', re.I))
+                
+                if preview_node and preview_node.get('href'):
+                    preview_url = urllib.parse.urljoin(full_url, preview_node.get('href'))
+
+            # 2. If no native preview, use Google Docs Viewer for the first attachment
+            if not preview_url and item.attachments:
+                # Use the first attachment
+                first_url = item.attachments[0].url
+                preview_url = f"https://docs.google.com/viewer?url={urllib.parse.quote(first_url)}&embedded=true"
+
+            if preview_url:
+                 buttons.append({"text": "🔍 첨부파일 미리보기", "url": preview_url})
 
             msg_id = await self.send_telegram(session, msg, topic_id, buttons, photo_data)
 
@@ -453,65 +466,6 @@ class NoticeScraper:
                     self._save_state()
 
             # Update Legacy Last ID for backward compatibility (optional)
-            self.update_last_id(target.key, item.id)
-            await asyncio.sleep(2)
-
-    async def process_calendar(self, session: aiohttp.ClientSession, target: TargetConfig):
-        # ... (Same as Phase 1, omitted for brevity but should be included)
-        # For this tool call, I'll keep the previous implementation or a placeholder if it was working.
-        # Re-implementing the core logic briefly.
-        now = datetime.datetime.now(KST)
-        today_str = now.strftime('%Y-%m-%d')
-        
-        # Weekly
-        if now.weekday() == 6 and now.hour >= 18:
-            if self.state.last_weekly_briefing != today_str:
-                html = await self.fetch_page(session, target.url)
-                if html:
-                    soup = BeautifulSoup(html, 'html.parser')
-                    text = soup.get_text(strip=True)
-                    prompt = f"Summarize weekly schedule for {now.date()} ~ {now.date() + datetime.timedelta(days=7)}. Content: {text[:4000]}"
-                    # ... AI call ...
-                    # Skipping full implementation to focus on CDC logic, assuming user has the previous code or I can copy-paste if needed.
-                    # Actually, I should provide the full code.
-                    pass 
-
-        # Daily
-        check_type = None
-        target_date = None
-        if now.hour >= 6 and self.state.last_calendar_check_morning != today_str:
-            check_type = 'morning'
-            target_date = now.date()
-        elif now.hour >= 18 and self.state.last_calendar_check_evening != today_str:
-            check_type = 'evening'
-            target_date = now.date() + datetime.timedelta(days=1)
-
-        if check_type:
-            html = await self.fetch_page(session, target.url)
-            if html:
-                soup = BeautifulSoup(html, 'html.parser')
-                text = soup.get_text(strip=True)
-                prompt = self.config.calendar_prompt_template.format(target_date=target_date, text=text[:4000])
-                
-                try:
-                    model = genai.GenerativeModel(GEMINI_MODEL)
-                    loop = asyncio.get_running_loop()
-                    response = await loop.run_in_executor(None, lambda: model.generate_content(prompt, generation_config={"response_mime_type": "application/json"}))
-                    result = json.loads(response.text)
-                except Exception as e:
-                    logger.error(f"Calendar AI failed: {e}")
-                    result = {}
-                
-                summary = result.get('content', '일정이 없습니다.')
-                event_date = result.get('event_date', str(target_date))
-                
-                msg = f"📅 <b>학사 일정 ({event_date})</b>\n\n{summary}\n\n<a href='{target.url}'>[전체 보기]</a>"
-
-                # Calendar Button for Daily Schedule
-                buttons = []
-                if event_date and summary != '일정이 없습니다.':
-                     cal_url = self.generate_calendar_url(f"학사 일정: {summary[:20]}...", event_date)
-                     if cal_url: buttons.append({"text": "📅 캘린더 등록", "url": cal_url})
 
                 await self.send_telegram(session, msg, self.config.topic_map.get('학사'), buttons=buttons)
                 
@@ -575,7 +529,16 @@ class NoticeScraper:
                         
                     buffer = self.state.daily_notices_buffer
                     if buffer.get('date') == today and buffer.get('items'):
-                        msg = "📢 <b>오늘의 공지 요약</b>\n\n" + "\n".join(buffer['items'])
+                        # Count categories
+                        counts = {}
+                        for item in buffer['items']:
+                            match = re.match(r'\[(.*?)\]', item)
+                            if match:
+                                cat = match.group(1)
+                                counts[cat] = counts.get(cat, 0) + 1
+                        
+                        summary_lines = [f"- {k}: {v}건" for k, v in counts.items()]
+                        msg = "📢 <b>오늘의 공지 요약</b>\n\n" + "\n".join(summary_lines)
                         await self.send_telegram(session, msg, self.config.topic_map.get('일반'))
                         self.state.last_daily_summary = today
                         self._save_state()
