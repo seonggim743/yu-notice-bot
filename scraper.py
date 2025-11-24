@@ -470,6 +470,84 @@ class NoticeScraper:
                     self._save_state()
 
             # Update Legacy Last ID for backward compatibility (optional)
+            self.update_last_id(target.key, item.id)
+            await asyncio.sleep(2)
+
+    async def process_calendar(self, session: aiohttp.ClientSession, target: TargetConfig):
+        # 1. Weekly Briefing (Sunday 18:00+)
+        now = datetime.datetime.now(KST)
+        today_str = now.strftime('%Y-%m-%d')
+        
+        if now.weekday() == 6 and now.hour >= 18:
+            if self.state.last_weekly_briefing != today_str:
+                html = await self.fetch_page(session, target.url)
+                if html:
+                    soup = BeautifulSoup(html, 'html.parser')
+                    text = soup.get_text(strip=True)
+                    
+                    start_date = now.date()
+                    end_date = now.date() + datetime.timedelta(days=7)
+                    prompt = (
+                        f"Summarize weekly schedule for {start_date} ~ {end_date}.\n"
+                        f"Content: {text[:4000]}\n"
+                        f"Output Format: 'MM/DD (Day): Event' (Korean)"
+                    )
+                    
+                    try:
+                        model = genai.GenerativeModel(GEMINI_MODEL)
+                        loop = asyncio.get_running_loop()
+                        response = await loop.run_in_executor(None, lambda: model.generate_content(prompt))
+                        summary = response.text.strip()
+                    except Exception as e:
+                        logger.error(f"Weekly AI failed: {e}")
+                        summary = "주간 일정 요약 실패"
+
+                    msg = f"📅 <b>주간 학사 일정 ({start_date} ~ {end_date})</b>\n\n{summary}\n\n<a href='{target.url}'>[전체 보기]</a>"
+                    await self.send_telegram(session, msg, self.config.topic_map.get('학사'))
+                    self.state.last_weekly_briefing = today_str
+                    self._save_state()
+
+        # 2. Daily Check
+        check_type = None
+        target_date = None
+        label = ""
+        if now.hour >= 6 and self.state.last_calendar_check_morning != today_str:
+            check_type = 'morning'
+            target_date = now.date()
+            label = "(오늘)"
+        elif now.hour >= 18 and self.state.last_calendar_check_evening != today_str:
+            check_type = 'evening'
+            target_date = now.date() + datetime.timedelta(days=1)
+            label = "(내일)"
+
+        if check_type:
+            html = await self.fetch_page(session, target.url)
+            if html:
+                soup = BeautifulSoup(html, 'html.parser')
+                text = soup.get_text(strip=True)
+                
+                prompt = self.config.calendar_prompt_template.format(target_date=target_date, text=text[:4000])
+                
+                try:
+                    model = genai.GenerativeModel(GEMINI_MODEL)
+                    loop = asyncio.get_running_loop()
+                    response = await loop.run_in_executor(None, lambda: model.generate_content(prompt, generation_config={"response_mime_type": "application/json"}))
+                    result = json.loads(response.text)
+                except Exception as e:
+                    logger.error(f"Calendar AI failed: {e}")
+                    result = {}
+                
+                summary = result.get('content', '일정이 없습니다.')
+                event_date = result.get('event_date', str(target_date))
+                
+                msg = f"📅 <b>학사 일정 {label}</b>\n\n{summary}\n\n<a href='{target.url}'>[전체 보기]</a>"
+
+                # Calendar Button for Daily Schedule
+                buttons = []
+                if event_date and summary != '일정이 없습니다.':
+                     title_text = summary if len(summary) < 30 else summary[:30] + "..."
+                     cal_url = self.generate_calendar_url(f"학사 일정: {title_text}", event_date)
+                     if cal_url: buttons.append({"text": "📅 캘린더 등록", "url": cal_url})
 
                 await self.send_telegram(session, msg, self.config.topic_map.get('학사'), buttons=buttons)
                 
