@@ -439,6 +439,9 @@ class NoticeScraper:
 
             if msg_id:
                 today = datetime.datetime.now(KST).strftime('%Y-%m-%d')
+                if not self.state.daily_notices_buffer:
+                    self.state.daily_notices_buffer = {}
+                
                 if self.state.daily_notices_buffer.get('date') != today:
                     self.state.daily_notices_buffer = {'date': today, 'items': []}
                 self.state.daily_notices_buffer['items'].append(f"[{category}] <a href='{full_url}'>{safe_title}</a>")
@@ -568,6 +571,9 @@ class NoticeScraper:
             if datetime.datetime.now(KST).hour >= 18:
                 today = datetime.datetime.now(KST).strftime('%Y-%m-%d')
                 if self.state.last_daily_summary != today:
+                    if not self.state.daily_notices_buffer:
+                        self.state.daily_notices_buffer = {}
+                        
                     buffer = self.state.daily_notices_buffer
                     if buffer.get('date') == today and buffer.get('items'):
                         msg = "📢 <b>오늘의 공지 요약</b>\n\n" + "\n".join(buffer['items'])
