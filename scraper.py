@@ -257,12 +257,21 @@ class NoticeScraper:
             logger.error(f"Weekly Briefing failed: {e}")
 
     def process_daily_menu(self, target: Dict):
-        # Run only at 08:00 AM KST (approximate check, assuming hourly cron)
+        # 1. Start Time Check: 07:00 ~ 10:00 KST
         now_kst = datetime.datetime.now(KST)
-        if now_kst.hour != 8:
+        if not (7 <= now_kst.hour <= 10):
             return
 
         logger.info(f"Processing Daily Menu for {target['name']}...")
+        
+        # 2. Idempotency Check (Prevent Duplicates)
+        today_str = now_kst.strftime("%Y%m%d")
+        last_sent_date = self.get_last_id(target['key'])
+        
+        if last_sent_date == today_str:
+            logger.info(f"Today's menu ({today_str}) already sent. Skipping.")
+            return
+
         html = self.fetch_page(target['url'])
         if not html: return
 
@@ -276,11 +285,11 @@ class NoticeScraper:
         
         try:
             model = genai.GenerativeModel(GEMINI_MODEL)
-            today_str = now_kst.strftime("%Y-%m-%d")
+            display_date = now_kst.strftime("%Y-%m-%d")
             
             prompt = (
                 f"Here is the dormitory menu schedule.\n"
-                f"Today is {today_str}.\n"
+                f"Today is {display_date}.\n"
                 f"Task: Extract and summarize ONLY today's Breakfast, Lunch, and Dinner menu.\n"
                 f"Output Format: Korean, Clean format (Morning: ..., Lunch: ..., Dinner: ...).\n"
                 f"Content:\n{text[:5000]}"
@@ -291,11 +300,14 @@ class NoticeScraper:
             
             topic_id = self.config.get('topic_map', {}).get('dormitory', 0)
             msg = (
-                f"🍚 *오늘의 기숙사 식단* ({today_str})\n\n"
+                f"🍚 *오늘의 기숙사 식단* ({display_date})\n\n"
                 f"{self.escape_markdown_v2(summary)}\n\n"
                 f"[전체 식단 보기]({target['url']}) \\#기숙사 \\#식단"
             )
             self.send_telegram(msg, topic_id=topic_id)
+            
+            # 3. Update State (Mark as sent for today)
+            self.update_last_id(target['key'], today_str)
             
         except Exception as e:
             logger.error(f"Daily Menu failed: {e}")
