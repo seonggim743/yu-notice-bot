@@ -135,7 +135,7 @@ class NoticeScraper:
         try:
             time.sleep(10) # Rate limiting (Safety)
             model = genai.GenerativeModel(GEMINI_MODEL)
-            # Enhanced Prompt with User Persona
+            # Enhanced Prompt with User Persona & Formatting
             prompt = (
                 f"Analyze this university notice for a Computer Engineering student.\n"
                 f"1. 'useful': boolean. Is this useful? (True/False)\n"
@@ -143,7 +143,10 @@ class NoticeScraper:
                 f"   - Also mark as TRUE for any Computer Engineering or Software related news.\n"
                 f"   - Only mark as FALSE if it is clearly irrelevant (e.g., 'Test Post', 'Arts Dept specific event' with no general interest).\n"
                 f"2. 'category': string. Choose one: '장학', '학사', '취업', 'dormitory', '일반'.\n"
-                f"3. 'summary': string. 3 bullet points in Korean. MUST start each line with a hyphen (-).\n"
+                f"3. 'summary': string. Summarize concisely in Korean (Max 3 lines).\n"
+                f"   - End sentences with noun-endings (~함).\n"
+                f"   - Use structured format if applicable: '- 일시: 2024.01.01 ~ 01.05', '- 대상: 재학생 전원'.\n"
+                f"   - Start each line with a hyphen (-).\n"
                 f"Content:\n{text[:4000]}"
             )
             
@@ -358,8 +361,9 @@ class NoticeScraper:
         if image_url:
             logger.info(f"Found menu image: {image_url}")
             try:
-                # Download image bytes
-                img_response = self.session.get(image_url)
+                # Download image bytes with Referer
+                headers = {'Referer': full_url}
+                img_response = self.session.get(image_url, headers=headers)
                 img_response.raise_for_status()
                 img_data = img_response.content
                 
@@ -435,7 +439,7 @@ class NoticeScraper:
         return new_items
 
     def run(self):
-        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 7 (AI REFINE + ATTACH GROUP + IMG UPLOAD)")
+        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 8 (IMG REFERER + AI FORMAT)")
         processed_ids = set() # Deduplication set for this run
 
         try:
