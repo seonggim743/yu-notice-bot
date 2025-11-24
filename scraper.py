@@ -208,7 +208,8 @@ class NoticeScraper:
                 logger.error("TELEGRAM_TOKEN이 올바른지 확인하세요 (404 Not Found).")
             elif e.response.status_code == 400:
                 logger.error(f"Telegram 400 Error (Bad Request): {e.response.text}")
-                logger.error(f"Failed Payload: {json.dumps(payload, ensure_ascii=False)}") # Log payload on error
+                # Log the actual request body sent
+                logger.error(f"Actual Request Body: {e.request.body}")
                 
                 # Smart Fallback: Retry with Plain Text (KEEP TOPIC ID)
                 if not is_error:
@@ -278,9 +279,10 @@ class NoticeScraper:
             logger.error(f"Weekly Briefing failed: {e}")
 
     def process_daily_menu(self, target: Dict):
-        # 1. Start Time Check: 07:00 ~ 10:00 KST
+        # 1. Start Time Check: 07:00 ~ 23:00 KST (Widened for testing)
         now_kst = datetime.datetime.now(KST)
-        if not (7 <= now_kst.hour <= 10):
+        if not (7 <= now_kst.hour <= 23):
+            logger.info(f"Skipping Daily Menu (Current time {now_kst.hour}h is outside 07-23h window)")
             return
 
         logger.info(f"Processing Daily Menu for {target['name']}...")
