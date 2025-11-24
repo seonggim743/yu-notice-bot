@@ -155,8 +155,12 @@ class NoticeScraper:
             # Fallback: Return useful=True so it gets sent, but empty summary
             return {"useful": True, "category": "일반", "summary": ""}
 
-    def escape_html(self, text: str) -> str:
-        return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    def escape_markdown(self, text: str) -> str:
+        # Escape all MarkdownV2 special characters
+        special_chars = ['_', '*', '[', ']', '(', ')', '~', '`', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+        for char in special_chars:
+            text = text.replace(char, f'\\{char}')
+        return text
 
     def send_telegram(self, message: str, topic_id: int = None, is_error: bool = False, 
                       buttons: List[Dict] = None, photo_url: str = None):
@@ -171,10 +175,10 @@ class NoticeScraper:
 
         url = f"https://api.telegram.org/bot{self.telegram_token}/{endpoint}"
         
-        # Default to HTML
+        # MarkdownV2 Mode
         payload = {
             'chat_id': self.chat_id,
-            'parse_mode': 'HTML', # Enforce HTML
+            'parse_mode': 'MarkdownV2',
         }
         
         if photo_url:
@@ -197,9 +201,6 @@ class NoticeScraper:
             payload['reply_markup'] = json.dumps({"inline_keyboard": inline_keyboard})
 
         try:
-            # DEBUG: Log the payload to verify parse_mode
-            # logger.info(f"Sending payload: {json.dumps(payload, ensure_ascii=False)}")
-            
             response = self.session.post(url, json=payload)
             response.raise_for_status()
             time.sleep(10) # Rate limiting (Safety)
@@ -208,12 +209,11 @@ class NoticeScraper:
                 logger.error("TELEGRAM_TOKEN이 올바른지 확인하세요 (404 Not Found).")
             elif e.response.status_code == 400:
                 logger.error(f"Telegram 400 Error (Bad Request): {e.response.text}")
-                # Log the actual request body sent
                 logger.error(f"Actual Request Body: {e.request.body}")
                 
                 # Smart Fallback: Retry with Plain Text (KEEP TOPIC ID)
                 if not is_error:
-                    logger.info("Attempting Smart Fallback (Plain Text) [HTML FAILED]...")
+                    logger.info("Attempting Smart Fallback (Plain Text) [MarkdownV2 FAILED]...")
                     payload['parse_mode'] = None
                     try:
                         self.session.post(url, json=payload)
@@ -268,10 +268,10 @@ class NoticeScraper:
             
             topic_id = self.config.get('topic_map', {}).get('학사', 0)
             msg = (
-                f"📅 <b>주간 학사 일정 브리핑</b>\n"
-                f"({today} ~ {next_week})\n\n"
-                f"{self.escape_html(summary)}\n\n"
-                f"<a href='{target['url']}'>[전체 일정 보기]</a> #학사 #일정"
+                f"📅 *주간 학사 일정 브리핑*\n"
+                f"({self.escape_markdown(str(today))} ~ {self.escape_markdown(str(next_week))})\n\n"
+                f"{self.escape_markdown(summary)}\n\n"
+                f"[전체 일정 보기]({target['url']}) \\#학사 \\#일정"
             )
             self.send_telegram(msg, topic_id=topic_id)
             
@@ -319,8 +319,8 @@ class NoticeScraper:
             logger.info(f"Found menu image: {image_url}")
             # User requested link to the board/list, assuming target['url'] is the board
             msg = (
-                f"🍚 <b>오늘의 기숙사 식단표</b> ({display_date})\n\n"
-                f"<a href='{target['url']}'>[식단 게시판 바로가기]</a>"
+                f"🍚 *오늘의 기숙사 식단표* ({self.escape_markdown(display_date)})\n\n"
+                f"[식단 게시판 바로가기]({target['url']})"
             )
             self.send_telegram(msg, topic_id=topic_id, photo_url=image_url)
             self.update_last_id(target['key'], today_str)
@@ -361,6 +361,8 @@ class NoticeScraper:
                 file_links = row.select('a[href*="fileDownload"]')
                 for fl in file_links:
                     f_name = fl.get_text(strip=True) or "첨부파일"
+                    # Fix: Ensure correct base URL for attachments
+                    # Usually href is like /common/fileDownload.do?...
                     f_url = urllib.parse.urljoin("https://hcms.yu.ac.kr", fl.get('href'))
                     attachments.append({"text": f"📄 {f_name}", "url": f_url})
 
@@ -387,7 +389,9 @@ class NoticeScraper:
         return new_items
 
     def run(self):
-        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 4 (FIX LIST ERROR)")
+        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 5 (MARKDOWNV2 + DEDUP)")
+        processed_ids = set() # Deduplication set for this run
+
         try:
             for target in self.config['targets']:
                 # Special handling
@@ -413,6 +417,13 @@ class NoticeScraper:
                     continue
 
                 for item in reversed(new_items):
+                    # Deduplication Check
+                    unique_key = f"{target['key']}_{item['id']}"
+                    if unique_key in processed_ids:
+                        logger.info(f"Skipping duplicate item: {item['title']}")
+                        continue
+                    processed_ids.add(unique_key)
+
                     full_url = urllib.parse.urljoin(target['url'], item['link'])
                     
                     # AI Analysis
@@ -433,23 +444,22 @@ class NoticeScraper:
                     # Get Topic ID
                     topic_id = self.config.get('topic_map', {}).get(category, 0)
                     
-                    # Prepare Message
-                    safe_title = self.escape_html(item['title'])
-                    safe_name = self.escape_html(target['name'])
-                    safe_cat = self.escape_html(category)
-                    
-                    safe_summary = self.escape_html(str(summary)) # Ensure string
+                    # Prepare Message (MarkdownV2)
+                    safe_title = self.escape_markdown(item['title'])
+                    safe_name = self.escape_markdown(target['name'])
+                    safe_cat = self.escape_markdown(category)
+                    safe_summary = self.escape_markdown(str(summary))
                     
                     if summary:
-                        summary_section = f"\n\n🤖 <b>AI 요약 ({safe_cat})</b>\n{safe_summary}"
+                        summary_section = f"\n\n🤖 *AI 요약 ({safe_cat})*\n{safe_summary}"
                     else:
                         summary_section = ""
 
                     msg = (
-                        f"<b>{safe_name}</b>\n"
-                        f"<a href='{full_url}'>{safe_title}</a>\n"
+                        f"*{safe_name}*\n"
+                        f"[{safe_title}]({full_url})\n"
                         f"{summary_section}\n"
-                        f"#알림 #{safe_cat}"
+                        f"\\#알림 \\#{safe_cat}"
                     )
                     
                     # Fix attachment URLs
@@ -470,7 +480,7 @@ class NoticeScraper:
                     time.sleep(10) # Rate limiting (Safety)
 
         except Exception as e:
-            error_msg = f"🚨 <b>[에러 발생]</b>\n<pre>{str(e)}</pre>"
+            error_msg = f"🚨 *[에러 발생]*\n```\n{str(e)}\n```"
             self.send_telegram(error_msg, is_error=True)
             raise
 
