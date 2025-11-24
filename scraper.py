@@ -12,6 +12,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from typing import List, Dict, Optional, Any
 import urllib.parse
+import re
 
 # --- Logging Configuration ---
 # Use KST for logging
@@ -65,16 +66,30 @@ class NoticeScraper:
             raise
 
     def _load_state(self) -> Dict[str, Any]:
+        if not self.supabase:
+            return {}
         try:
-            with open(STATE_FILE, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except FileNotFoundError:
+            response = self.supabase.table('crawling_logs').select('*').execute()
+            state = {}
+            for row in response.data:
+                if row['site_name'].startswith('STATE_'):
+                    key = row['site_name'].replace('STATE_', '', 1)
+                    try:
+                        state[key] = json.loads(row['last_post_id'])
+                    except:
+                        state[key] = row['last_post_id']
+            return state
+        except Exception as e:
+            logger.error(f"Failed to load state: {e}")
             return {}
 
     def _save_state(self):
+        if not self.supabase: return
         try:
-            with open(STATE_FILE, 'w', encoding='utf-8') as f:
-                json.dump(self.state, f, indent=4, ensure_ascii=False)
+            for key, value in self.state.items():
+                val_str = json.dumps(value, ensure_ascii=False)
+                data = {'site_name': f"STATE_{key}", 'last_post_id': val_str}
+                self.supabase.table('crawling_logs').upsert(data).execute()
         except Exception as e:
             logger.error(f"Failed to save state: {e}")
 
@@ -407,23 +422,38 @@ class NoticeScraper:
                 f"Here is the academic calendar list.\n"
                 f"Target Date: {target_date}\n\n"
                 f"Task: Extract events happening ON {target_date}.\n"
-                f"Output Format: Korean, Bullet points with hyphens (-).\n"
-                f"If there are no events on this specific day, explicitly say '일정이 없습니다.'\n\n"
+                f"CRITICAL: If there are NO events on {target_date}, you MUST find the NEXT upcoming event after {target_date}.\n"
+                f"Output Format: JSON\n"
+                f"{{\n"
+                f"  'found_for_target_date': boolean,\n"
+                f"  'event_date': 'YYYY-MM-DD',\n"
+                f"  'content': 'Summary of the event (Korean)'\n"
+                f"}}\n"
                 f"Content:\n{text[:5000]}"
             )
             
-            response = model.generate_content(prompt)
+            response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
             time.sleep(10)
-            summary = response.text.strip()
+            result = json.loads(response.text)
             
+            summary = result.get('content', '')
+            event_date = result.get('event_date', str(target_date))
+            found_target = result.get('found_for_target_date', False)
+            
+            if not summary:
+                summary = "일정이 없습니다."
+
             topic_id = self.config.get('topic_map', {}).get('학사', 0)
             
             title_prefix = "오늘의" if check_type == 'morning' else "내일의"
-            weekday_str = self.get_korean_weekday(target_date)
+            if not found_target:
+                title_prefix = "다음"
+            
+            weekday_str = self.get_korean_weekday(datetime.datetime.strptime(event_date, '%Y-%m-%d').date())
             
             msg = (
                 f"📅 <b>{title_prefix} 학사 일정</b>\n"
-                f"({target_date} {weekday_str})\n\n"
+                f"({event_date} {weekday_str})\n\n"
                 f"{self.escape_html(summary)}\n\n"
                 f"<a href='{target['url']}'>[전체 일정 보기]</a> #학사 #일정"
             )
@@ -548,6 +578,8 @@ class NoticeScraper:
                 if not title_link: continue
 
                 title = title_link.get_text(strip=True)
+                # Clean title: Remove leading numbers if they look like post IDs (e.g. "17"2025...)
+                title = re.sub(r'^\d+\s*', '', title)
                 link = title_link.get('href')
                 
                 parsed_url = urllib.parse.urlparse(link)
@@ -631,8 +663,34 @@ class NoticeScraper:
         new_items.sort(key=lambda x: int(x['id']) if x['id'].isdigit() else x['id'])
         return new_items
 
+    def process_daily_summary(self):
+        # Run in evening (After 18:00)
+        now_kst = datetime.datetime.now(KST)
+        if now_kst.hour < 18: return
+        
+        today_str = now_kst.strftime('%Y-%m-%d')
+        if self.state.get('last_daily_summary') == today_str: return
+        
+        buffer = self.state.get('daily_notices_buffer', {})
+        if buffer.get('date') != today_str or not buffer.get('items'):
+            return # Nothing to summarize
+            
+        items_text = "\n".join(buffer['items'])
+        
+        # Send Summary
+        msg = f"📢 <b>오늘의 공지 요약</b>\n\n{items_text}\n\n#요약"
+        # Send to General topic or a specific one. Using General (8) for now.
+        topic_id = self.config.get('topic_map', {}).get('일반', 8)
+        self.send_telegram(msg, topic_id=topic_id)
+        
+        self.state['last_daily_summary'] = today_str
+        self._save_state()
+
     def run(self):
-        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 13 (ROBUST ALERTS + EXAM PINNING)")
+        logger.info("🚀 SCRAPER VERSION: 2025-11-24 UPDATE 14 (SUPABASE STATE + SUMMARY)")
+        
+        # Check Daily Summary
+        self.process_daily_summary()
         processed_ids = set() # Deduplication set for this run
         
         # Check for Expired Pinned Exams
@@ -746,7 +804,7 @@ class NoticeScraper:
                     topic_id = self.config.get('topic_map', {}).get(category, 0)
                     
                     # Exam Priority Logic
-                    is_exam = "시험" in item['title']
+                    is_exam = any(k in item['title'] for k in ["시험", "중간고사", "기말고사"])
                     if is_exam:
                         safe_cat = "시험/학사" # Force category display
                         # Ensure topic is Academic if not already
@@ -789,6 +847,17 @@ class NoticeScraper:
                         buttons=final_buttons,
                         photo_data=final_image_data # Send bytes
                     )
+                    
+                    # Add to Buffer
+                    if msg_id:
+                        today_str = datetime.datetime.now(KST).strftime('%Y-%m-%d')
+                        buffer = self.state.get('daily_notices_buffer', {})
+                        if buffer.get('date') != today_str:
+                            buffer = {'date': today_str, 'items': []}
+                        
+                        buffer['items'].append(f"[{safe_cat}] <a href='{full_url}'>{safe_title}</a>")
+                        self.state['daily_notices_buffer'] = buffer
+                        self._save_state()
                     
                     # Pin Exam Posts
                     if is_exam and msg_id:
