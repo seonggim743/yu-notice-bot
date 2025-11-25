@@ -313,7 +313,22 @@ class NoticeScraper:
                 if not title_link: continue
 
                 title = title_link.get_text(strip=True)
-                # title = re.sub(r'^\d+\s*', '', title)  <-- Removed to prevent stripping years (e.g. 2025학년도) 
+                
+                # Title Cleaning: Remove index number but keep Year (e.g. 2025...)
+                # Logic: If starts with number, check if it's a year (2000-2100).
+                # If it's a year, keep it. If not (e.g. 17), remove it.
+                match = re.match(r'^(\d+)\s*(.*)', title)
+                if match:
+                    num_str = match.group(1)
+                    rest = match.group(2)
+                    try:
+                        if 2000 <= int(num_str) <= 2100:
+                            pass # Keep the year
+                        else:
+                            title = rest # Remove the index
+                    except:
+                        pass # Keep original if parsing fails
+
                 link = title_link.get('href')
                 
                 parsed_url = urllib.parse.urlparse(link)
@@ -465,10 +480,12 @@ class NoticeScraper:
             
             prefix = "🆕 " if is_new else "🔄 "
             
+            modified_text = "\n(수정됨)" if is_modified else ""
+
             msg = (
                 f"{prefix}<b>{self.escape_html(target.name)}</b>\n"
                 f"<a href='{full_url}'>{safe_title}</a>\n"
-                f"\n🤖 <b>AI 요약 ({category})</b>\n{safe_summary}\n"
+                f"\n🤖 <b>AI 요약 ({category})</b>\n{safe_summary}{modified_text}\n"
                 f"#알림 #{category}"
             )
 
@@ -496,8 +513,10 @@ class NoticeScraper:
             # 2. If no native preview, use Google Docs Viewer for the first attachment
             if not preview_url and item.attachments:
                 # Use the first attachment
-                first_url = item.attachments[0].url
-                preview_url = f"https://docs.google.com/viewer?url={urllib.parse.quote(first_url)}&embedded=true"
+                try:
+                    first_url = item.attachments[0].url
+                    preview_url = f"https://docs.google.com/viewer?url={urllib.parse.quote(first_url)}&embedded=true"
+                except: pass
 
             if preview_url:
                  buttons.append({"text": "🔍 첨부파일 미리보기", "url": preview_url})
