@@ -39,10 +39,20 @@ class KSTFormatter(logging.Formatter):
             return dt.strftime(datefmt)
         return dt.isoformat(timespec='milliseconds')
 
-handler = logging.StreamHandler()
-handler.setFormatter(KSTFormatter('%(asctime)s - %(levelname)s - %(message)s'))
-logger.handlers = []
-logger.addHandler(handler)
+# Logging Configuration
+handlers = [logging.StreamHandler()]
+
+# Add File Handler if NOT in GitHub Actions (Local/Server environment)
+if not os.environ.get('GITHUB_ACTIONS'):
+    from logging.handlers import RotatingFileHandler
+    file_handler = RotatingFileHandler('bot.log', maxBytes=10*1024*1024, backupCount=5, encoding='utf-8')
+    file_handler.setFormatter(KSTFormatter('%(asctime)s - %(levelname)s - %(message)s'))
+    handlers.append(file_handler)
+
+for h in handlers:
+    h.setFormatter(KSTFormatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+logger.handlers = handlers
 logger.propagate = False
 
 CONFIG_FILE = 'config.json'
@@ -249,6 +259,25 @@ class NoticeScraper:
             f"{token_msg}"
         )
         await send_telegram(session, msg, self.config.topic_map.get('일반'))
+
+    async def send_error_report(self, error: Exception):
+        """Sends a critical error report to the developer/admin."""
+        import traceback
+        
+        tb_str = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+        # Truncate if too long for Telegram
+        if len(tb_str) > 3000: tb_str = tb_str[-3000:]
+        
+        msg = (
+            f"🚨 <b>CRITICAL ERROR</b>\n\n"
+            f"<b>Type:</b> {type(error).__name__}\n"
+            f"<b>Message:</b> {str(error)}\n\n"
+            f"<pre>{self.escape_html(tb_str)}</pre>"
+        )
+        
+        # Send to General Topic (ID 1) or fallback to main chat
+        async with aiohttp.ClientSession() as session:
+            await send_telegram(session, msg, self.config.topic_map.get('일반', 1))
 
     async def pin_message(self, session: aiohttp.ClientSession, message_id: int):
         if not self.telegram_token or not self.chat_id: return
@@ -920,74 +949,80 @@ class NoticeScraper:
             logger.error(f"Cleanup failed: {e}")
 
     async def run(self):
-        logger.info("🚀 ASYNC SCRAPER STARTED (CDC + ARCHIVING)")
-        
-        # Retention Policy Check
-        await self.cleanup_old_data()
-
-        # Unpin Expired
-        now_date = datetime.datetime.now(KST).date()
-        active_pins = []
-        async with aiohttp.ClientSession() as session:
-            # Health Check (Morning)
-            if datetime.datetime.now(KST).hour == 8:
-                await self.send_health_check(session)
-
-            for pin in self.state.pinned_exams:
-                try:
-                    end_date = datetime.datetime.strptime(pin['end_date'], '%Y-%m-%d').date()
-                    if now_date > end_date:
-                        await self.unpin_message(session, pin['message_id'])
-                    else:
-                        active_pins.append(pin)
-                except:
-                    active_pins.append(pin)
+        try:
+            logger.info("🚀 ASYNC SCRAPER STARTED (CDC + ARCHIVING)")
             
-            if len(active_pins) != len(self.state.pinned_exams):
-                self.state.pinned_exams = active_pins
-                self._save_state()
+            # Retention Policy Check
+            await self.cleanup_old_data()
 
-            # Process Targets
-            for target in self.config.targets:
-                if target.type == 'calendar':
-                    await self.process_calendar(session, target)
-                elif target.type == 'menu':
-                    await self.process_menu(session, target)
-                else:
-                    await self.process_target(session, target)
+            # Unpin Expired
+            now_date = datetime.datetime.now(KST).date()
+            active_pins = []
+            async with aiohttp.ClientSession() as session:
+                # Health Check (Morning)
+                if datetime.datetime.now(KST).hour == 8:
+                    await self.send_health_check(session)
 
-            # Daily Summary
-            if datetime.datetime.now(KST).hour >= 18:
-                today = datetime.datetime.now(KST).strftime('%Y-%m-%d')
-                if self.state.last_daily_summary != today:
-                    if not self.state.daily_notices_buffer:
-                        self.state.daily_notices_buffer = {}
-                        
-                    buffer = self.state.daily_notices_buffer
-                    if buffer.get('date') == today and buffer.get('items'):
-                        # Group by category
-                        grouped_items = {}
-                        for item in buffer['items']:
-                            # item format: "[category] <a href='...'>title</a>"
-                            match = re.match(r'\[(.*?)\] (.*)', item)
-                            if match:
-                                cat = match.group(1).replace('"', '').replace("'", "")
-                                content = match.group(2)
-                                if cat not in grouped_items: grouped_items[cat] = []
-                                grouped_items[cat].append(content)
-                        
-                        summary_blocks = []
-                        for cat, items in grouped_items.items():
-                            block = f"<b>[{cat}]</b>\n" + "\n".join([f"- {i}" for i in items])
-                            summary_blocks.append(block)
+                for pin in self.state.pinned_exams:
+                    try:
+                        end_date = datetime.datetime.strptime(pin['end_date'], '%Y-%m-%d').date()
+                        if now_date > end_date:
+                            await self.unpin_message(session, pin['message_id'])
+                        else:
+                            active_pins.append(pin)
+                    except:
+                        active_pins.append(pin)
+                
+                if len(active_pins) != len(self.state.pinned_exams):
+                    self.state.pinned_exams = active_pins
+                    self._save_state()
 
-                        msg = "📢 <b>오늘의 공지 요약</b>\n\n" + "\n\n".join(summary_blocks)
-                        await send_telegram(session, msg, self.config.topic_map.get('일반'))
-                        self.state.last_daily_summary = today
-                        self._save_state()
+                # Process Targets
+                for target in self.config.targets:
+                    if target.type == 'calendar':
+                        await self.process_calendar(session, target)
+                    elif target.type == 'menu':
+                        await self.process_menu(session, target)
+                    else:
+                        await self.process_target(session, target)
 
-            # Daily Menu Check
-            await self.check_daily_menu(session)
+                # Daily Summary
+                if datetime.datetime.now(KST).hour >= 18:
+                    today = datetime.datetime.now(KST).strftime('%Y-%m-%d')
+                    if self.state.last_daily_summary != today:
+                        if not self.state.daily_notices_buffer:
+                            self.state.daily_notices_buffer = {}
+                            
+                        buffer = self.state.daily_notices_buffer
+                        if buffer.get('date') == today and buffer.get('items'):
+                            # Group by category
+                            grouped_items = {}
+                            for item in buffer['items']:
+                                # item format: "[category] <a href='...'>title</a>"
+                                match = re.match(r'\[(.*?)\] (.*)', item)
+                                if match:
+                                    cat = match.group(1).replace('"', '').replace("'", "")
+                                    content = match.group(2)
+                                    if cat not in grouped_items: grouped_items[cat] = []
+                                    grouped_items[cat].append(content)
+                            
+                            summary_blocks = []
+                            for cat, items in grouped_items.items():
+                                block = f"<b>[{cat}]</b>\n" + "\n".join([f"- {i}" for i in items])
+                                summary_blocks.append(block)
+
+                            msg = "📢 <b>오늘의 공지 요약</b>\n\n" + "\n\n".join(summary_blocks)
+                            await send_telegram(session, msg, self.config.topic_map.get('일반'))
+                            self.state.last_daily_summary = today
+                            self._save_state()
+
+                # Daily Menu Check
+                await self.check_daily_menu(session)
+
+        except Exception as e:
+            logger.critical(f"🔥 FATAL ERROR: {e}")
+            await self.send_error_report(e)
+            raise
 
             # Check for User Commands (/search) - REMOVED
             # await self.check_commands(session)
