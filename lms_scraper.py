@@ -2,15 +2,14 @@ import os
 import json
 import requests
 import asyncio
+import aiohttp
 import urllib.parse
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import google.generativeai as genai
 
-# Load environment variables
-load_dotenv()
-
-from supabase import create_client, Client
+from supabase import create_client
+from telegram_client import send_telegram
 
 # Load environment variables
 load_dotenv()
@@ -69,31 +68,12 @@ def save_state(supabase, state):
     except Exception as e:
         print(f"⚠️ Failed to save state to Supabase: {e}")
 
-async def send_telegram(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }
-    if "reply_markup" in message:
-        payload["reply_markup"] = message["reply_markup"]
-        payload["text"] = message["text"]
-    
-    try:
-        response = requests.post(url, json=payload)
-        response.raise_for_status()
-    except Exception as e:
-        print(f"⚠️ Telegram send failed: {e}")
-
 def generate_calendar_url(title, date_str):
     """Generates a Google Calendar Add URL."""
     try:
         dt = datetime.strptime(date_str, '%Y-%m-%dT%H:%M:%SZ')
         dt_kst = dt + timedelta(hours=9)
         
-        # Format: YYYYMMDDTHHMMSS
         start = dt_kst.strftime('%Y%m%dT%H%M00')
         end = (dt_kst + timedelta(hours=1)).strftime('%Y%m%dT%H%M00')
         
@@ -110,7 +90,7 @@ def generate_calendar_url(title, date_str):
 def get_ai_summary(text):
     if not GEMINI_API_KEY: return None
     try:
-        model = genai.GenerativeModel('gemini-2.0-flash-exp')
+        model = genai.GenerativeModel('gemini-2.5-flash')
         prompt = f"Summarize this announcement in Korean (3 lines max):\n\n{text[:2000]}"
         response = model.generate_content(prompt)
         return response.text.strip()
@@ -125,7 +105,6 @@ def get_courses():
         response = requests.get(url, headers=headers, params=params)
         response.raise_for_status()
         courses = response.json()
-        # Filter valid courses
         return [c for c in courses if c.get('name') and not c.get('access_restricted_by_date')]
     except Exception as e:
         print(f"❌ Failed to fetch courses: {e}")
@@ -154,7 +133,7 @@ def upsert_notice(supabase, ann, course_name, summary):
             'course_name': course_name,
             'title': ann['title'],
             'url': ann['html_url'],
-            'content': summary, # Storing summary as content for now
+            'content': summary,
             'author': ann['user_name'],
             'posted_at': ann['posted_at']
         }
@@ -175,64 +154,41 @@ def check_assignments(courses, state, supabase=None):
             assignments = response.json()
             
             for asm in assignments:
-                # Upsert to DB regardless of alert status
                 if supabase:
                     upsert_assignment(supabase, asm, course['name'])
-
-                # Skip if submitted
-                # Skip if submitted
-                if asm.get('has_submitted_submissions'):
-                    continue
-                
-                # Skip if no due date
-                if not asm.get('due_at'):
+                if asm.get('has_submitted_submissions') or not asm.get('due_at'):
                     continue
 
                 due_dt = datetime.strptime(asm['due_at'], "%Y-%m-%dT%H:%M:%SZ")
-                # Adjust to KST (Canvas usually returns UTC)
-                due_dt_kst = due_dt + timedelta(hours=9)
-                now_kst = datetime.now() + timedelta(hours=9) # Local time approximation if machine is UTC
-                # Better: just use machine local time if running locally in Korea
-                # Assuming local machine is KST:
-                due_dt_local = due_dt + timedelta(hours=9) # UTC to KST
+                due_dt_local = due_dt + timedelta(hours=9)
                 now_local = datetime.now()
                 
                 time_diff = due_dt_local - now_local
                 days_left = time_diff.days
                 
-                # Alert Logic: 3 days before, 1 day before, or D-Day (less than 24h)
-                # We use a unique key to prevent duplicate alerts ON THE SAME DAY
-                # Key format: "ID_DATE" e.g. "12345_2023-10-25"
                 today_str = now_local.strftime('%Y-%m-%d')
                 alert_key = f"{asm['id']}_{today_str}"
                 
                 if alert_key in state['notified_assignments']:
                     continue
 
-                msg = None
                 if 0 <= days_left <= 3:
-                    if days_left == 0:
-                        msg = f"🚨 <b>[D-Day] 과제 마감 임박!</b>\n"
-                    else:
-                        msg = f"⏳ <b>[D-{days_left}] 과제 마감 알림</b>\n"
+                    prefix = f"🚨 <b>[D-Day] 과제 마감 임박!</b>\n" if days_left == 0 else f"⏳ <b>[D-{days_left}] 과제 마감 알림</b>\n"
                     
-                    msg += (
+                    msg_text = (
+                        f"{prefix}"
                         f"📚 {course['name']}\n"
                         f"📝 <a href='{asm['html_url']}'>{asm['name']}</a>\n"
                         f"⏰ 마감: {due_dt_local.strftime('%m/%d %H:%M')}"
                     )
                     
                     cal_url = generate_calendar_url(f"[과제] {asm['name']}", asm['due_at'])
-                    msg = {
-                        "text": msg_text,
-                        "reply_markup": json.dumps({"inline_keyboard": [[{"text": "📅 캘린더 등록", "url": cal_url}]]}) if cal_url else None
-                    }
-                    alerts.append(msg)
+                    buttons = [{"text": "📅 캘린더 등록", "url": cal_url}] if cal_url else None
+                    alerts.append({"text": msg_text, "buttons": buttons})
                     state['notified_assignments'].append(alert_key)
 
         except Exception as e:
             print(f"⚠️ Error checking assignments for {course['name']}: {e}")
-
     return alerts
 
 def check_announcements(courses, state, supabase=None):
@@ -240,15 +196,11 @@ def check_announcements(courses, state, supabase=None):
     print("📢 Checking Announcements...")
     alerts = []
     
-    # Canvas Announcements API is context_codes based
-    # /api/v1/announcements?context_codes[]=course_123&context_codes[]=course_456
     context_codes = [f"course_{c['id']}" for c in courses]
-    
-    # Split into chunks if too many courses (limit is usually safe though)
     url = f"{BASE_URL}/announcements"
     params = {
         "context_codes[]": context_codes,
-        "start_date": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"), # Check last 7 days
+        "start_date": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
         "active_only": True
     }
     
@@ -260,9 +212,12 @@ def check_announcements(courses, state, supabase=None):
             if str(ann['id']) in state['notified_announcements']:
                 continue
             
-            # Find course name
             course_id = int(ann['context_code'].split('_')[1])
             course_name = next((c['name'] for c in courses if c['id'] == course_id), "Unknown Course")
+            
+            summary = get_ai_summary(ann['message'])
+            if supabase:
+                upsert_notice(supabase, ann, course_name, summary or ann['message'])
             
             msg = (
                 f"📢 <b>[공지] {course_name}</b>\n"
@@ -270,128 +225,14 @@ def check_announcements(courses, state, supabase=None):
                 f"작성자: {ann['user_name']}\n"
                 f"작성일: {ann['posted_at'][:10]}"
             )
-            # AI Summary
-            summary = get_ai_summary(ann['message'])
             if summary:
                 msg += f"\n\n🤖 <b>AI 요약</b>\n{summary}"
-
-            # Upsert to DB
-            if supabase:
-                upsert_notice(supabase, ann, course_name, summary or ann['message'])
-
+            
             alerts.append({"text": msg})
             state['notified_announcements'].append(str(ann['id']))
             
     except Exception as e:
         print(f"⚠️ Error checking announcements: {e}")
-        
-    return alerts
-
-def check_grades(courses, state):
-    """Check for new grades."""
-    print("💯 Checking Grades...")
-    alerts = []
-    
-    for course in courses:
-        # Check submissions for graded items
-        # /api/v1/courses/:course_id/students/submissions
-        url = f"{BASE_URL}/courses/{course['id']}/students/submissions"
-        params = {
-            "student_ids[]": "self",
-            "grouped": True,
-            "include[]": "assignment"
-        }
-        try:
-            response = requests.get(url, headers=headers, params=params)
-            submissions = response.json()
-            
-            if not submissions or not isinstance(submissions, list): continue
-            
-            # submissions is a list of student objects if grouped=True, but with student_ids=self it might be direct list
-            # Actually with student_ids=self, it returns a list of submissions directly if not grouped?
-            # Let's handle list of submissions.
-            
-            # If grouped=True, response is [{user_id:..., submissions:[...]}]
-            # If grouped=False, response is [submission, ...]
-            
-            # Let's try grouped=False for simplicity
-            params['grouped'] = False
-            response = requests.get(url, headers=headers, params=params)
-            submissions = response.json()
-
-            for sub in submissions:
-                if sub.get('grade') and sub.get('graded_at'):
-                    # Unique key: submission_id + grade (to detect changes)
-                    # But submission_id is unique per assignment/user.
-                    # If grade changes, we want to know.
-                    grade_key = f"{sub['id']}_{sub['grade']}"
-                    
-                    # Also check if we already notified this submission ID at all (for initial grade)
-                    # If we want to notify on CHANGE, we need to store the last grade.
-                    # For simplicity, let's just notify if this specific grade_key hasn't been seen.
-                    # This implies if grade changes from A to B, key changes, so we notify.
-                    
-                    if grade_key in state.get('notified_grades', []):
-                        continue
-                        
-                    # Check if it's recent (e.g. graded in last 24h) to avoid spamming old grades on first run?
-                    # Or just rely on state.
-                    
-                    assignment_name = sub.get('assignment', {}).get('name', 'Unknown Assignment')
-                    score = sub.get('score')
-                    grade = sub.get('grade')
-                    
-                    msg = (
-                        f"💯 <b>[성적 알림] {course['name']}</b>\n"
-                        f"📝 {assignment_name}\n"
-                        f"점수: {score} (등급: {grade})"
-                    )
-                    alerts.append({"text": msg})
-                    if 'notified_grades' not in state: state['notified_grades'] = []
-                    state['notified_grades'].append(grade_key)
-
-        except Exception as e:
-            print(f"⚠️ Error checking grades for {course['name']}: {e}")
-            
-    return alerts
-
-def check_files(courses, state):
-    """Check for new files."""
-    print("📂 Checking Files...")
-    alerts = []
-    
-    for course in courses:
-        url = f"{BASE_URL}/courses/{course['id']}/files"
-        params = {
-            "sort": "created_at",
-            "order": "desc",
-            "per_page": 10
-        }
-        try:
-            response = requests.get(url, headers=headers, params=params)
-            files = response.json()
-            
-            for f in files:
-                # Check if created recently (last 24h)
-                created_at = datetime.strptime(f['created_at'], "%Y-%m-%dT%H:%M:%SZ")
-                if datetime.now() - created_at > timedelta(days=1):
-                    continue
-                
-                if str(f['id']) in state.get('notified_files', []):
-                    continue
-                
-                msg = (
-                    f"📂 <b>[자료 업로드] {course['name']}</b>\n"
-                    f"📄 <a href='{f['url']}'>{f['display_name']}</a>\n"
-                    f"크기: {f['size'] // 1024}KB"
-                )
-                alerts.append({"text": msg})
-                if 'notified_files' not in state: state['notified_files'] = []
-                state['notified_files'].append(str(f['id']))
-                
-        except Exception as e:
-            print(f"⚠️ Error checking files for {course['name']}: {e}")
-            
     return alerts
 
 async def main():
@@ -405,25 +246,14 @@ async def main():
         print("No active courses found.")
         return
 
-    # 1. Assignments
-    assignment_msgs = check_assignments(courses, state, supabase)
-    for msg in assignment_msgs:
-        await send_telegram(msg)
-        
-    # 2. Announcements
-    announcement_msgs = check_announcements(courses, state, supabase)
-    for msg in announcement_msgs:
-        await send_telegram(msg)
-        
-    # 3. Grades
-    grade_msgs = check_grades(courses, state)
-    for msg in grade_msgs:
-        await send_telegram(msg)
-
-    # 4. Files
-    file_msgs = check_files(courses, state)
-    for msg in file_msgs:
-        await send_telegram(msg)
+    async with aiohttp.ClientSession() as session:
+        assignment_msgs = check_assignments(courses, state, supabase)
+        for msg in assignment_msgs:
+            await send_telegram(session, msg["text"], buttons=msg.get("buttons"))
+            
+        announcement_msgs = check_announcements(courses, state, supabase)
+        for msg in announcement_msgs:
+            await send_telegram(session, msg["text"])
         
     save_state(supabase, state)
     print("✅ Done.")

@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from models import BotConfig, NoticeItem, ScraperState, TargetConfig, Attachment
+from telegram_client import send_telegram
 
 # --- Configuration ---
 load_dotenv()
@@ -242,67 +243,7 @@ class NoticeScraper:
             f"Supabase: {'Connected' if self.supabase else 'Disconnected'}\n"
             f"{token_msg}"
         )
-        await self.send_telegram(session, msg, self.config.topic_map.get('일반'))
-
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-    async def send_telegram(self, session: aiohttp.ClientSession, message: str, topic_id: int = None, 
-                            buttons: List[Dict] = None, photo_data: bytes = None) -> Optional[int]:
-        if not self.telegram_token or not self.chat_id: return None
-
-        endpoint = "sendPhoto" if photo_data else "sendMessage"
-        url = f"https://api.telegram.org/bot{self.telegram_token}/{endpoint}"
-        
-        payload = {'chat_id': self.chat_id, 'parse_mode': 'HTML'}
-        if topic_id: payload['message_thread_id'] = topic_id
-        
-        if buttons:
-            inline_keyboard = [[{"text": b['text'], "url": b['url']}] for b in buttons]
-            payload['reply_markup'] = json.dumps({"inline_keyboard": inline_keyboard})
-
-        data = aiohttp.FormData()
-        for k, v in payload.items():
-            data.add_field(k, str(v))
-        
-        if photo_data:
-            # Check caption limit (1024 chars)
-            if len(message) > 1000:
-                # Too long, send photo first then text
-                data.add_field('photo', photo_data, filename='image.jpg')
-                # Try to send title as caption if possible, else empty
-                title_match = re.match(r'(.*?)(\n|$)', message)
-                if title_match and len(title_match.group(1)) < 1000:
-                    data.add_field('caption', title_match.group(1))
-                
-                # Send Photo
-                try:
-                    async with session.post(url, data=data) as resp:
-                        resp.raise_for_status()
-                except Exception as e:
-                    logger.error(f"Photo send failed: {e}")
-                
-                # Now prepare to send text separately
-                endpoint = "sendMessage"
-                url = f"https://api.telegram.org/bot{self.telegram_token}/{endpoint}"
-                data = aiohttp.FormData()
-                payload['text'] = message
-                payload['disable_web_page_preview'] = 'true'
-                for k, v in payload.items():
-                    data.add_field(k, str(v))
-            else:
-                data.add_field('photo', photo_data, filename='image.jpg')
-                data.add_field('caption', message)
-        else:
-            data.add_field('text', message)
-            data.add_field('disable_web_page_preview', 'true')
-
-        try:
-            async with session.post(url, data=data) as resp:
-                resp.raise_for_status()
-                result = await resp.json()
-                return result.get('result', {}).get('message_id')
-        except Exception as e:
-            logger.error(f"Telegram send failed: {e}")
-            raise # Re-raise for tenacity
+        await send_telegram(session, msg, self.config.topic_map.get('일반'))
 
     async def pin_message(self, session: aiohttp.ClientSession, message_id: int):
         if not self.telegram_token or not self.chat_id: return
@@ -633,7 +574,7 @@ class NoticeScraper:
                          if len(fname) > 20: fname = fname[:17] + "..."
                          buttons.append({"text": f"📥 {fname}", "url": att.url})
 
-            msg_id = await self.send_telegram(session, msg, topic_id, buttons, photo_data)
+            msg_id = await send_telegram(session, msg, topic_id, buttons, photo_data)
 
             if msg_id:
                 today = datetime.datetime.now(KST).strftime('%Y-%m-%d')
@@ -692,7 +633,7 @@ class NoticeScraper:
                         summary = "주간 일정 요약 실패"
 
                     msg = f"📅 <b>주간 학사 일정 ({start_date} ~ {end_date})</b>\n\n{summary}\n\n<a href='{target.url}'>[전체 보기]</a>"
-                    await self.send_telegram(session, msg, self.config.topic_map.get('학사'))
+                    await send_telegram(session, msg, self.config.topic_map.get('학사'))
                     self.state.last_weekly_briefing = today_str
                     self._save_state()
 
@@ -745,7 +686,7 @@ class NoticeScraper:
                      cal_url = self.generate_calendar_url(f"학사 일정: {title_text}", event_date)
                      if cal_url: buttons.append({"text": "📅 캘린더 등록", "url": cal_url})
 
-                await self.send_telegram(session, msg, self.config.topic_map.get('학사'), buttons=buttons)
+                await send_telegram(session, msg, self.config.topic_map.get('학사'), buttons=buttons)
                 
                 # Save to DB
                 if self.supabase and summary != '일정이 없습니다.':
@@ -893,7 +834,7 @@ class NoticeScraper:
                 if self.state.last_menu_message_id:
                     await self.unpin_message(session, self.state.last_menu_message_id)
 
-                msg_id = await self.send_telegram(session, msg, self.config.topic_map.get('dormitory'), photo_data=img_data)
+                msg_id = await send_telegram(session, msg, self.config.topic_map.get('dormitory'), photo_data=img_data)
                 
                 if msg_id:
                     await self.pin_message(session, msg_id)
@@ -955,7 +896,7 @@ class NoticeScraper:
             result_text = response.text.strip()
             
             if "오늘은 식단이 없습니다" not in result_text:
-                 await self.send_telegram(session, result_text, self.config.topic_map.get('dormitory'))
+                 await send_telegram(session, result_text, self.config.topic_map.get('dormitory'))
             
             self.state.last_daily_menu_check = today_str
             self._save_state()
@@ -1030,7 +971,7 @@ class NoticeScraper:
                         
                         summary_lines = [f"- {k}: {v}건" for k, v in counts.items()]
                         msg = "📢 <b>오늘의 공지 요약</b>\n\n" + "\n".join(summary_lines)
-                        await self.send_telegram(session, msg, self.config.topic_map.get('일반'))
+                        await send_telegram(session, msg, self.config.topic_map.get('일반'))
                         self.state.last_daily_summary = today
                         self._save_state()
 
