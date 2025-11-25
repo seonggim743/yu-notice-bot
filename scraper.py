@@ -328,7 +328,9 @@ class NoticeScraper:
                             # Check if it ends with a year (e.g. 172025)
                             year_match = re.search(r'(20\d\d)$', num_str)
                             if year_match:
-                                title = year_match.group(1) + " " + rest
+                                # If rest starts with '학년' or '년', don't add space
+                                sep = "" if rest.startswith("학년") or rest.startswith("년") else " "
+                                title = year_match.group(1) + sep + rest
                             else:
                                 title = rest
                         else:
@@ -505,37 +507,36 @@ class NoticeScraper:
                 if cal_url:
                     buttons.append({"text": "📅 캘린더 등록", "url": cal_url})
 
-            # UX: Attachment Preview
+            # UX: Attachment Preview / Download
             preview_url = None
-            # 1. Try to find native preview link in detail page
+            
+            # 1. Try to find native preview link (view.jsp or similar)
             if detail_html:
                 soup_detail = BeautifulSoup(detail_html, 'html.parser')
-                # Look for '미리보기' text or common preview classes/functions
-                preview_node = soup_detail.find('a', string=re.compile('미리보기')) or \
-                               soup_detail.find('a', class_=re.compile('preview', re.I)) or \
-                               soup_detail.find('a', href=re.compile('preview', re.I)) or \
-                               soup_detail.find('a', onclick=re.compile('preview', re.I))
+                # Look for view.jsp or common preview patterns
+                preview_node = soup_detail.find('a', href=re.compile('view\.jsp', re.I)) or \
+                               soup_detail.find('a', string=re.compile('미리보기')) or \
+                               soup_detail.find('a', class_=re.compile('preview', re.I))
                 
-                if preview_node:
-                    if preview_node.get('href') and 'javascript' not in preview_node.get('href'):
-                         preview_url = urllib.parse.urljoin(full_url, preview_node.get('href'))
-                    elif preview_node.get('onclick'):
-                        # Try to extract URL from onclick if simple
-                        # This is risky but worth a shot for common patterns like window.open('url')
-                        match = re.search(r"['\"]([^'\"]+\.(pdf|hwp|hwpx|doc|docx))['\"]", preview_node['onclick'], re.I)
-                        if match:
-                            preview_url = urllib.parse.urljoin(full_url, match.group(1))
-
-            # 2. If no native preview, use Google Docs Viewer for the first attachment
-            if not preview_url and item.attachments:
-                # Use the first attachment
-                try:
-                    first_url = item.attachments[0].url
-                    preview_url = f"https://docs.google.com/viewer?url={urllib.parse.quote(first_url)}&embedded=true"
-                except: pass
+                if preview_node and preview_node.get('href'):
+                    if 'javascript' not in preview_node.get('href'):
+                        preview_url = urllib.parse.urljoin(full_url, preview_node.get('href'))
 
             if preview_url:
                  buttons.append({"text": "🔍 첨부파일 미리보기", "url": preview_url})
+            else:
+                # Fallback: Download Links
+                if item.attachments:
+                    # Condition: If >= 3 attachments AND NOT Exam -> Show "View Post"
+                    if len(item.attachments) >= 3 and not is_exam:
+                        buttons.append({"text": "📄 게시글 확인", "url": full_url})
+                    else:
+                        # Show all download links (limit to 5 to be safe for Telegram)
+                        for att in item.attachments[:5]:
+                             # Shorten filename if too long
+                             fname = att.text.replace('📄 ', '')
+                             if len(fname) > 20: fname = fname[:17] + "..."
+                             buttons.append({"text": f"� {fname}", "url": att.url})
 
             msg_id = await self.send_telegram(session, msg, topic_id, buttons, photo_data)
 
