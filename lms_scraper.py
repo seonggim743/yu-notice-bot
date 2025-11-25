@@ -1,6 +1,5 @@
 import os
 import json
-import requests
 import asyncio
 import aiohttp
 import urllib.parse
@@ -9,6 +8,7 @@ from dotenv import load_dotenv
 import google.generativeai as genai
 import logging
 import pytz
+import html
 
 from supabase import create_client
 from telegram_client import send_telegram
@@ -95,8 +95,10 @@ def load_state(supabase):
     default_state = {
         "notified_assignments": [], 
         "notified_announcements": [],
-        "notified_grades": {}, # Changed to dict for {assignment_id: grade}
-        "notified_files": []
+        "notified_grades": {}, 
+        "notified_files": [],
+        "last_todo_date": "",
+        "notified_comments": []
     }
     if not supabase:
         return default_state
@@ -105,16 +107,23 @@ def load_state(supabase):
         response = supabase.table('crawling_logs').select('last_post_id').eq('site_name', 'lms_state').execute()
         if response.data:
             state = response.data[0]['last_post_id']
-            # Migration: Ensure notified_grades is a dict
-            if isinstance(state.get('notified_grades'), list):
-                state['notified_grades'] = {}
+            # Migration
+            if isinstance(state.get('notified_grades'), list): state['notified_grades'] = {}
+            if 'last_todo_date' not in state: state['last_todo_date'] = ""
+            if 'notified_comments' not in state: state['notified_comments'] = []
             return state
     except Exception as e:
         logger.error(f"⚠️ Failed to load state from Supabase: {e}")
     
     return default_state
 
-# ... (save_state remains same)
+def save_state(supabase, state):
+    if not supabase: return
+    try:
+        data = {'site_name': 'lms_state', 'last_post_id': state}
+        supabase.table('crawling_logs').upsert(data).execute()
+    except Exception as e:
+        logger.error(f"⚠️ Failed to save state to Supabase: {e}")
 
 def generate_calendar_url(title, date_str):
     """Generates a Google Calendar Add URL."""
@@ -145,15 +154,15 @@ def get_ai_summary(text):
     except:
         return None
 
-def get_courses():
+async def get_courses(session):
     """Fetch active courses."""
     url = f"{BASE_URL}/courses"
     params = {"enrollment_state": "active", "per_page": 50}
     try:
-        response = requests.get(url, headers=headers, params=params)
-        response.raise_for_status()
-        courses = response.json()
-        return [c for c in courses if c.get('name') and not c.get('access_restricted_by_date')]
+        async with session.get(url, headers=headers, params=params) as response:
+            response.raise_for_status()
+            courses = await response.json()
+            return [c for c in courses if c.get('name') and not c.get('access_restricted_by_date')]
     except Exception as e:
         logger.error(f"❌ Failed to fetch courses: {e}")
         return []
@@ -189,7 +198,7 @@ def upsert_notice(supabase, ann, course_name, summary):
     except Exception as e:
         logger.error(f"⚠️ Failed to upsert notice: {e}")
 
-def check_todo(state):
+async def check_todo(session, state):
     """Check for To-Do items (Daily Briefing)."""
     # Run only once per day
     today = datetime.now(KST).strftime('%Y-%m-%d')
@@ -201,8 +210,8 @@ def check_todo(state):
     
     url = f"{BASE_URL}/users/self/todo"
     try:
-        response = requests.get(url, headers=headers)
-        todos = response.json()
+        async with session.get(url, headers=headers) as response:
+            todos = await response.json()
         
         if not todos:
             return []
@@ -251,37 +260,13 @@ def check_todo(state):
         
     return alerts
 
-def check_grades(courses, state):
+async def check_grades(session, courses, state):
     """Check for grade updates."""
     logger.info("💯 Checking Grades...")
     alerts = []
     
-    for course in courses:
-        url = f"{BASE_URL}/courses/{course['id']}/enrollments"
-        params = {"type[]": "StudentEnrollment"}
-        try:
-            response = requests.get(url, headers=headers, params=params)
-            enrollments = response.json()
-            
-            for enrollment in enrollments:
-                grades = enrollment.get('grades')
-                if not grades: continue
-                
-                # We can't track individual assignment grades easily via this endpoint alone without fetching all assignments.
-                # BUT, we can check 'current_score' or 'current_grade' for the COURSE.
-                # To check individual assignment grades, we need to fetch submissions.
-                # Let's use the 'submissions' endpoint for recent grading activity.
-                pass
-
-        except Exception as e:
-            logger.error(f"⚠️ Error checking grades for {course['name']}: {e}")
-            
-    # Better approach: Check recent submissions with grades
-    # GET /api/v1/courses/:course_id/students/submissions?student_ids[]=self&include[]=submission_history
-    # Or simply /api/v1/courses/:course_id/assignments/:assignment_id/submissions/:user_id
-    
-    # Let's use the course-level submissions endpoint which is more efficient
-    for course in courses:
+    # Parallelize course checks
+    async def check_course_grades(course):
         url = f"{BASE_URL}/courses/{course['id']}/students/submissions"
         params = {
             "student_ids[]": "self",
@@ -290,8 +275,8 @@ def check_grades(courses, state):
             "per_page": 10
         }
         try:
-            response = requests.get(url, headers=headers, params=params)
-            submissions = response.json()
+            async with session.get(url, headers=headers, params=params) as response:
+                submissions = await response.json()
             
             for sub in submissions:
                 if sub.get('workflow_state') != 'graded': continue
@@ -310,8 +295,9 @@ def check_grades(courses, state):
                     assign_name = "Unknown Assignment"
                     try:
                         a_url = f"{BASE_URL}/courses/{course['id']}/assignments/{assign_id}"
-                        a_resp = requests.get(a_url, headers=headers)
-                        assign_name = a_resp.json().get('name', assign_name)
+                        async with session.get(a_url, headers=headers) as a_resp:
+                            a_data = await a_resp.json()
+                            assign_name = a_data.get('name', assign_name)
                     except: pass
 
                     msg = (
@@ -321,18 +307,18 @@ def check_grades(courses, state):
                     )
                     alerts.append({"text": msg})
                     state['notified_grades'][state_key] = current_grade
-
         except Exception as e:
             logger.error(f"⚠️ Error checking submissions for {course['name']}: {e}")
-            
+
+    await asyncio.gather(*(check_course_grades(c) for c in courses))
     return alerts
 
-def check_files(courses, state):
+async def check_files(session, courses, state):
     """Check for new files."""
     logger.info("📂 Checking Files...")
     alerts = []
     
-    for course in courses:
+    async def check_course_files(course):
         url = f"{BASE_URL}/courses/{course['id']}/files"
         params = {
             "sort": "created_at",
@@ -340,8 +326,8 @@ def check_files(courses, state):
             "per_page": 10
         }
         try:
-            response = requests.get(url, headers=headers, params=params)
-            files = response.json()
+            async with session.get(url, headers=headers, params=params) as response:
+                files = await response.json()
             
             for file in files:
                 file_id = str(file['id'])
@@ -363,19 +349,20 @@ def check_files(courses, state):
         except Exception as e:
             logger.error(f"⚠️ Error checking files for {course['name']}: {e}")
             
+    await asyncio.gather(*(check_course_files(c) for c in courses))
     return alerts
 
-def check_assignments(courses, state, supabase=None):
+async def check_assignments(session, courses, state, supabase=None):
     """Check for upcoming assignments."""
     logger.info("📝 Checking Assignments...")
     alerts = []
     
-    for course in courses:
+    async def check_course_assignments(course):
         url = f"{BASE_URL}/courses/{course['id']}/assignments"
         params = {"bucket": "upcoming", "order_by": "due_at"}
         try:
-            response = requests.get(url, headers=headers, params=params)
-            assignments = response.json()
+            async with session.get(url, headers=headers, params=params) as response:
+                assignments = await response.json()
             
             for asm in assignments:
                 if supabase:
@@ -413,9 +400,10 @@ def check_assignments(courses, state, supabase=None):
 
         except Exception as e:
             logger.error(f"⚠️ Error checking assignments for {course['name']}: {e}")
+    await asyncio.gather(*(check_course_assignments(c) for c in courses))
     return alerts
 
-def check_announcements(courses, state, supabase=None):
+async def check_announcements(session, courses, state, supabase=None):
     """Check for new announcements."""
     logger.info("📢 Checking Announcements...")
     alerts = []
@@ -425,12 +413,12 @@ def check_announcements(courses, state, supabase=None):
     params = {
         "context_codes[]": context_codes,
         "start_date": (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
-        "active_only": True
+        "active_only": "true" # aiohttp params need string for boolean sometimes, but requests handled it. Safe to use string.
     }
     
     try:
-        response = requests.get(url, headers=headers, params=params)
-        announcements = response.json()
+        async with session.get(url, headers=headers, params=params) as response:
+            announcements = await response.json()
         
         for ann in announcements:
             if str(ann['id']) in state['notified_announcements']:
@@ -444,7 +432,7 @@ def check_announcements(courses, state, supabase=None):
                 upsert_notice(supabase, ann, course_name, summary or ann['message'])
             
             msg = (
-                f"📢 <b>[공지] {course['name']}</b>\n"
+                f"📢 <b>[공지] {course_name}</b>\n"
                 f"<a href='{ann['html_url']}'><b>{ann['title']}</b></a>\n"
                 f"작성자: {ann['user_name']}\n"
                 f"작성일: {ann['posted_at'][:10]}"
@@ -459,38 +447,96 @@ def check_announcements(courses, state, supabase=None):
         logger.error(f"⚠️ Error checking announcements: {e}")
     return alerts
 
+async def check_comments(session, courses, state):
+    """Check for new submission comments."""
+    logger.info("💬 Checking Comments...")
+    alerts = []
+    
+    async def check_course_comments(course):
+        url = f"{BASE_URL}/courses/{course['id']}/students/submissions"
+        params = {
+            "student_ids[]": "self",
+            "order": "updated_at",
+            "order_direction": "descending",
+            "per_page": 10,
+            "include[]": "submission_comments"
+        }
+        try:
+            async with session.get(url, headers=headers, params=params) as response:
+                submissions = await response.json()
+            
+            for sub in submissions:
+                comments = sub.get('submission_comments')
+                if not comments: continue
+                
+                for comment in comments:
+                    comment_id = str(comment['id'])
+                    if comment_id in state['notified_comments']:
+                        continue
+                        
+                    assign_name = "Unknown Assignment"
+                    try:
+                        assign_id = sub.get('assignment_id')
+                        a_url = f"{BASE_URL}/courses/{course['id']}/assignments/{assign_id}"
+                        async with session.get(a_url, headers=headers) as a_resp:
+                            a_data = await a_resp.json()
+                            assign_name = a_data.get('name', assign_name)
+                    except: pass
+
+                    msg = (
+                        f"💬 <b>[댓글] {course['name']}</b>\n"
+                        f"📝 <b>{assign_name}</b>\n"
+                        f"작성자: {comment['author_name']}\n"
+                        f"내용: {comment['comment']}"
+                    )
+                    alerts.append({"text": msg})
+                    state['notified_comments'].append(comment_id)
+
+        except Exception as e:
+            logger.error(f"⚠️ Error checking comments for {course['name']}: {e}")
+
+    await asyncio.gather(*(check_course_comments(c) for c in courses))
+    return alerts
+
 async def main():
     try:
         logger.info(f"🚀 LMS Scraper Started")
         
         supabase = init_supabase()
         state = load_state(supabase)
-        courses = get_courses()
         
-        if not courses:
-            logger.warning("No active courses found.")
-            return
-
         async with aiohttp.ClientSession() as session:
-            # 1. Assignments
-            assignment_msgs = check_assignments(courses, state, supabase)
-            for msg in assignment_msgs:
-                await send_telegram(session, msg["text"], buttons=msg.get("buttons"))
-                
-            # 2. Announcements
-            announcement_msgs = check_announcements(courses, state, supabase)
-            for msg in announcement_msgs:
-                await send_telegram(session, msg["text"])
-
-            # 3. Grades (New)
-            grade_msgs = check_grades(courses, state)
-            for msg in grade_msgs:
-                await send_telegram(session, msg["text"])
-
-            # 4. Files (New)
-            file_msgs = check_files(courses, state)
-            for msg in file_msgs:
-                await send_telegram(session, msg["text"])
+            courses = await get_courses(session)
+            
+            if not courses:
+                logger.warning("No active courses found.")
+            
+            # Run all checks in parallel
+            # Note: check_todo doesn't need courses, others do.
+            # We pass session to all.
+            
+            tasks = [
+                check_todo(session, state)
+            ]
+            
+            if courses:
+                tasks.extend([
+                    check_assignments(session, courses, state, supabase),
+                    check_announcements(session, courses, state, supabase),
+                    check_grades(session, courses, state),
+                    check_files(session, courses, state),
+                    check_comments(session, courses, state)
+                ])
+            
+            # Execute all tasks concurrently
+            results = await asyncio.gather(*tasks)
+            
+            # Flatten results and send messages
+            # results is a list of lists of alerts
+            all_alerts = [item for sublist in results for item in sublist]
+            
+            for alert in all_alerts:
+                await send_telegram(session, alert["text"], buttons=alert.get("buttons"))
             
         save_state(supabase, state)
         logger.info("✅ Done.")
