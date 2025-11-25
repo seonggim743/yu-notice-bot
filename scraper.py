@@ -232,15 +232,20 @@ class NoticeScraper:
                 resp_total = self.supabase.table('token_usage').select('total_tokens').execute()
                 total_all = sum(row['total_tokens'] for row in resp_total.data)
                 
-                token_msg = f"Token Usage:\n- Yesterday: {total_yesterday}\n- Total: {total_all}"
+                token_msg = (
+                    f"📊 <b>Token Usage</b>\n"
+                    f"<pre>"
+                    f"Yesterday: {total_yesterday:,}\n"
+                    f"Total:     {total_all:,}"
+                    f"</pre>"
+                )
             except Exception as e:
                 logger.error(f"Failed to fetch token stats: {e}")
 
         msg = (
             f"✅ <b>System Health Check</b>\n"
-            f"Time: {now.strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"Status: Online\n"
-            f"Supabase: {'Connected' if self.supabase else 'Disconnected'}\n"
+            f"🟢 Status: Online\n"
+            f"🗄 Supabase: {'Connected' if self.supabase else 'Disconnected'}\n\n"
             f"{token_msg}"
         )
         await send_telegram(session, msg, self.config.topic_map.get('일반'))
@@ -534,8 +539,8 @@ class NoticeScraper:
 
             msg = (
                 f"{prefix}<b>{self.escape_html(target.name)}</b>\n"
-                f"<a href='{full_url}'>{safe_title}</a>\n"
-                f"\n🤖 <b>AI 요약 ({category})</b>\n{safe_summary}\n{modified_text}\n"
+                f"<a href='{full_url}'><b>{safe_title}</b></a>\n"
+                f"\n📝 <b>요약 ({category})</b>\n{safe_summary}\n{modified_text}\n"
                 f"#알림 #{category}"
             )
 
@@ -960,17 +965,23 @@ class NoticeScraper:
                         
                     buffer = self.state.daily_notices_buffer
                     if buffer.get('date') == today and buffer.get('items'):
-                        # Count categories
-                        counts = {}
+                        # Group by category
+                        grouped_items = {}
                         for item in buffer['items']:
-                            match = re.match(r'\[(.*?)\]', item)
+                            # item format: "[category] <a href='...'>title</a>"
+                            match = re.match(r'\[(.*?)\] (.*)', item)
                             if match:
-                                cat = match.group(1)
-                                cat = cat.replace('"', '').replace("'", "") # Cleanup
-                                counts[cat] = counts.get(cat, 0) + 1
+                                cat = match.group(1).replace('"', '').replace("'", "")
+                                content = match.group(2)
+                                if cat not in grouped_items: grouped_items[cat] = []
+                                grouped_items[cat].append(content)
                         
-                        summary_lines = [f"- {k}: {v}건" for k, v in counts.items()]
-                        msg = "📢 <b>오늘의 공지 요약</b>\n\n" + "\n".join(summary_lines)
+                        summary_blocks = []
+                        for cat, items in grouped_items.items():
+                            block = f"<b>[{cat}]</b>\n" + "\n".join([f"- {i}" for i in items])
+                            summary_blocks.append(block)
+
+                        msg = "📢 <b>오늘의 공지 요약</b>\n\n" + "\n\n".join(summary_blocks)
                         await send_telegram(session, msg, self.config.topic_map.get('일반'))
                         self.state.last_daily_summary = today
                         self._save_state()

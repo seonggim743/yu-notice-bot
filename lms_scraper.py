@@ -178,7 +178,7 @@ def check_assignments(courses, state, supabase=None):
                     msg_text = (
                         f"{prefix}"
                         f"📚 {course['name']}\n"
-                        f"📝 <a href='{asm['html_url']}'>{asm['name']}</a>\n"
+                        f"📝 <a href='{asm['html_url']}'><b>{asm['name']}</b></a>\n"
                         f"⏰ 마감: {due_dt_local.strftime('%m/%d %H:%M')}"
                     )
                     
@@ -220,13 +220,13 @@ def check_announcements(courses, state, supabase=None):
                 upsert_notice(supabase, ann, course_name, summary or ann['message'])
             
             msg = (
-                f"📢 <b>[공지] {course_name}</b>\n"
-                f"<a href='{ann['html_url']}'>{ann['title']}</a>\n"
+                f"📢 <b>[공지] {course['name']}</b>\n"
+                f"<a href='{ann['html_url']}'><b>{ann['title']}</b></a>\n"
                 f"작성자: {ann['user_name']}\n"
                 f"작성일: {ann['posted_at'][:10]}"
             )
             if summary:
-                msg += f"\n\n🤖 <b>AI 요약</b>\n{summary}"
+                msg += f"\n\n📝 <b>요약</b>\n{summary}"
             
             alerts.append({"text": msg})
             state['notified_announcements'].append(str(ann['id']))
