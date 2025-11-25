@@ -1,13 +1,3 @@
-import os
-import json
-import time
-import datetime
-import logging
-import asyncio
-import aiohttp
-import pytz
-import re
-import hashlib
 import sys
 from bs4 import BeautifulSoup
 import google.generativeai as genai
@@ -858,6 +848,19 @@ class NoticeScraper:
                     except: pass
 
                     summary = response.text.strip()
+                    
+                    # Robust JSON Extraction using Regex
+                    # Look for [...] or {...} pattern
+                    try:
+                        json_match = re.search(r'(\[.*\]|\{.*\})', summary, re.DOTALL)
+                        if json_match:
+                            summary = json_match.group(1)
+                        else:
+                            # If no JSON found, log warning but keep text (or handle as error)
+                            logger.warning(f"No JSON found in AI response: {summary[:50]}...")
+                    except Exception as e:
+                        logger.error(f"Regex extraction failed: {e}")
+
                     # Clean up markdown if present (though response_mime_type should handle it, safety first)
                     if summary.startswith("```json"):
                         summary = summary.replace("```json", "").replace("```", "")
