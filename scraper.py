@@ -522,6 +522,23 @@ class NoticeScraper:
                     if 'javascript' not in preview_node.get('href'):
                         preview_url = urllib.parse.urljoin(full_url, preview_node.get('href'))
 
+            if preview_url:
+                 buttons.append({"text": "🔍 첨부파일 미리보기", "url": preview_url})
+            else:
+                # Fallback: Download Links
+                if item.attachments:
+                    # Show all download links
+                    for att in item.attachments:
+                         # Shorten filename if too long
+                         fname = att.text.replace('📄 ', '')
+                         if len(fname) > 20: fname = fname[:17] + "..."
+                         buttons.append({"text": f"📥 {fname}", "url": att.url})
+
+            msg_id = await self.send_telegram(session, msg, topic_id, buttons, photo_data)
+
+            if msg_id:
+                today = datetime.datetime.now(KST).strftime('%Y-%m-%d')
+
                 if not self.state.daily_notices_buffer:
                     self.state.daily_notices_buffer = {}
                 
