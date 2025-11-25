@@ -7,9 +7,38 @@ import urllib.parse
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 import google.generativeai as genai
+import logging
+import pytz
 
 from supabase import create_client
 from telegram_client import send_telegram
+
+# --- Logging Configuration ---
+# KST Timezone
+KST = pytz.timezone('Asia/Seoul')
+
+class KSTFormatter(logging.Formatter):
+    def converter(self, timestamp):
+        dt = datetime.fromtimestamp(timestamp)
+        return dt.astimezone(KST)
+
+    def formatTime(self, record, datefmt=None):
+        dt = self.converter(record.created)
+        if datefmt: return dt.strftime(datefmt)
+        return dt.isoformat(timespec='milliseconds')
+
+handlers = [logging.StreamHandler()]
+if not os.environ.get('GITHUB_ACTIONS'):
+    from logging.handlers import RotatingFileHandler
+    file_handler = RotatingFileHandler('lms_bot.log', maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')
+    file_handler.setFormatter(KSTFormatter('%(asctime)s - %(levelname)s - %(message)s'))
+    handlers.append(file_handler)
+
+for h in handlers:
+    h.setFormatter(KSTFormatter('%(asctime)s - %(levelname)s - %(message)s'))
+
+logging.basicConfig(level=logging.INFO, handlers=handlers)
+logger = logging.getLogger(__name__)
 
 # Load environment variables
 load_dotenv()
@@ -24,8 +53,8 @@ GEMINI_API_KEY = os.getenv('GEMINI_API_KEY')
 BASE_URL = "https://canvas.yu.ac.kr/api/v1"
 
 if not CANVAS_TOKEN or not TELEGRAM_TOKEN or not CHAT_ID:
-    print("❌ Error: Missing tokens in .env file.")
-    print("Ensure CANVAS_TOKEN, TELEGRAM_TOKEN, and CHAT_ID are set.")
+    logger.error("❌ Error: Missing tokens in .env file.")
+    logger.error("Ensure CANVAS_TOKEN, TELEGRAM_TOKEN, and CHAT_ID are set.")
     exit(1)
 
 if GEMINI_API_KEY:
@@ -35,9 +64,27 @@ headers = {
     "Authorization": f"Bearer {CANVAS_TOKEN}"
 }
 
+async def send_error_report(error: Exception):
+    """Sends a critical error report to the developer/admin."""
+    import traceback
+    
+    tb_str = "".join(traceback.format_exception(type(error), error, error.__traceback__))
+    if len(tb_str) > 3000: tb_str = tb_str[-3000:]
+    
+    msg = (
+        f"🚨 <b>LMS BOT CRITICAL ERROR</b>\n\n"
+        f"<b>Type:</b> {type(error).__name__}\n"
+        f"<b>Message:</b> {str(error)}\n\n"
+        f"<pre>{tb_str}</pre>"
+    )
+    
+    async with aiohttp.ClientSession() as session:
+        # Send to General Topic (ID 1) or fallback
+        await send_telegram(session, msg, topic_id=1)
+
 def init_supabase():
     if not SUPABASE_URL or not SUPABASE_KEY:
-        print("⚠️ Supabase credentials missing. State will not be saved.")
+        logger.warning("⚠️ Supabase credentials missing. State will not be saved.")
         return None
     return create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -56,7 +103,7 @@ def load_state(supabase):
         if response.data:
             return response.data[0]['last_post_id']
     except Exception as e:
-        print(f"⚠️ Failed to load state from Supabase: {e}")
+        logger.error(f"⚠️ Failed to load state from Supabase: {e}")
     
     return default_state
 
@@ -66,7 +113,7 @@ def save_state(supabase, state):
         data = {'site_name': 'lms_state', 'last_post_id': state}
         supabase.table('crawling_logs').upsert(data).execute()
     except Exception as e:
-        print(f"⚠️ Failed to save state to Supabase: {e}")
+        logger.error(f"⚠️ Failed to save state to Supabase: {e}")
 
 def generate_calendar_url(title, date_str):
     """Generates a Google Calendar Add URL."""
@@ -107,7 +154,7 @@ def get_courses():
         courses = response.json()
         return [c for c in courses if c.get('name') and not c.get('access_restricted_by_date')]
     except Exception as e:
-        print(f"❌ Failed to fetch courses: {e}")
+        logger.error(f"❌ Failed to fetch courses: {e}")
         return []
 
 def upsert_assignment(supabase, asm, course_name):
@@ -123,7 +170,7 @@ def upsert_assignment(supabase, asm, course_name):
         }
         supabase.table('lms_assignments').upsert(data, on_conflict='assignment_id').execute()
     except Exception as e:
-        print(f"⚠️ Failed to upsert assignment: {e}")
+        logger.error(f"⚠️ Failed to upsert assignment: {e}")
 
 def upsert_notice(supabase, ann, course_name, summary):
     if not supabase: return
@@ -139,11 +186,11 @@ def upsert_notice(supabase, ann, course_name, summary):
         }
         supabase.table('lms_notices').upsert(data, on_conflict='notice_id').execute()
     except Exception as e:
-        print(f"⚠️ Failed to upsert notice: {e}")
+        logger.error(f"⚠️ Failed to upsert notice: {e}")
 
 def check_assignments(courses, state, supabase=None):
     """Check for upcoming assignments."""
-    print("📝 Checking Assignments...")
+    logger.info("📝 Checking Assignments...")
     alerts = []
     
     for course in courses:
@@ -188,12 +235,12 @@ def check_assignments(courses, state, supabase=None):
                     state['notified_assignments'].append(alert_key)
 
         except Exception as e:
-            print(f"⚠️ Error checking assignments for {course['name']}: {e}")
+            logger.error(f"⚠️ Error checking assignments for {course['name']}: {e}")
     return alerts
 
 def check_announcements(courses, state, supabase=None):
     """Check for new announcements."""
-    print("📢 Checking Announcements...")
+    logger.info("📢 Checking Announcements...")
     alerts = []
     
     context_codes = [f"course_{c['id']}" for c in courses]
@@ -232,31 +279,37 @@ def check_announcements(courses, state, supabase=None):
             state['notified_announcements'].append(str(ann['id']))
             
     except Exception as e:
-        print(f"⚠️ Error checking announcements: {e}")
+        logger.error(f"⚠️ Error checking announcements: {e}")
     return alerts
 
 async def main():
-    print(f"🚀 LMS Scraper Started at {datetime.now()}")
-    
-    supabase = init_supabase()
-    state = load_state(supabase)
-    courses = get_courses()
-    
-    if not courses:
-        print("No active courses found.")
-        return
-
-    async with aiohttp.ClientSession() as session:
-        assignment_msgs = check_assignments(courses, state, supabase)
-        for msg in assignment_msgs:
-            await send_telegram(session, msg["text"], buttons=msg.get("buttons"))
-            
-        announcement_msgs = check_announcements(courses, state, supabase)
-        for msg in announcement_msgs:
-            await send_telegram(session, msg["text"])
+    try:
+        logger.info(f"🚀 LMS Scraper Started")
         
-    save_state(supabase, state)
-    print("✅ Done.")
+        supabase = init_supabase()
+        state = load_state(supabase)
+        courses = get_courses()
+        
+        if not courses:
+            logger.warning("No active courses found.")
+            return
+
+        async with aiohttp.ClientSession() as session:
+            assignment_msgs = check_assignments(courses, state, supabase)
+            for msg in assignment_msgs:
+                await send_telegram(session, msg["text"], buttons=msg.get("buttons"))
+                
+            announcement_msgs = check_announcements(courses, state, supabase)
+            for msg in announcement_msgs:
+                await send_telegram(session, msg["text"])
+            
+        save_state(supabase, state)
+        logger.info("✅ Done.")
+        
+    except Exception as e:
+        logger.critical(f"🔥 FATAL ERROR: {e}")
+        await send_error_report(e)
+        raise
 
 if __name__ == "__main__":
     asyncio.run(main())
