@@ -6,3 +6,4 @@ pytz
 pydantic
 aiohttp
 python-dotenv
+tenacity
