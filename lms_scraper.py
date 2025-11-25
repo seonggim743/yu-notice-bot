@@ -107,10 +107,20 @@ def load_state(supabase):
         response = supabase.table('crawling_logs').select('last_post_id').eq('site_name', 'lms_state').execute()
         if response.data:
             state = response.data[0]['last_post_id']
+            
+            # Fix: Parse JSON if state is a string
+            if isinstance(state, str):
+                try:
+                    state = json.loads(state)
+                except json.JSONDecodeError:
+                    logger.error("⚠️ Failed to decode state JSON, using default.")
+                    return default_state
+
             # Migration
             if isinstance(state.get('notified_grades'), list): state['notified_grades'] = {}
             if 'last_todo_date' not in state: state['last_todo_date'] = ""
             if 'notified_comments' not in state: state['notified_comments'] = []
+            if 'notified_inbox' not in state: state['notified_inbox'] = {}
             return state
     except Exception as e:
         logger.error(f"⚠️ Failed to load state from Supabase: {e}")
@@ -498,6 +508,50 @@ async def check_comments(session, courses, state):
     await asyncio.gather(*(check_course_comments(c) for c in courses))
     return alerts
 
+async def check_inbox(session, state):
+    """Check for unread inbox messages."""
+    logger.info("📩 Checking Inbox...")
+    alerts = []
+    
+    url = f"{BASE_URL}/conversations"
+    params = {
+        "scope": "unread",
+        "per_page": 10
+    }
+    
+    try:
+        async with session.get(url, headers=headers, params=params) as response:
+            conversations = await response.json()
+            
+        for conv in conversations:
+            conv_id = str(conv['id'])
+            last_msg_at = conv.get('last_message_at')
+            
+            # Check if already notified this state of conversation
+            if state['notified_inbox'].get(conv_id) == last_msg_at:
+                continue
+                
+            # Get sender name (usually the last participant who is not me, or just the last message author?)
+            # The API returns 'participants'.
+            # Let's just use the 'last_message' content and context.
+            
+            context_name = conv.get('context_name', 'Unknown Context')
+            subject = conv.get('subject', 'No Subject')
+            body = conv.get('last_message', '')
+            
+            msg = (
+                f"📩 <b>[쪽지] {context_name}</b>\n"
+                f"📌 <b>{subject}</b>\n"
+                f"내용: {body[:100]}{'...' if len(body) > 100 else ''}"
+            )
+            alerts.append({"text": msg})
+            state['notified_inbox'][conv_id] = last_msg_at
+
+    except Exception as e:
+        logger.error(f"⚠️ Error checking inbox: {e}")
+        
+    return alerts
+
 async def main():
     try:
         logger.info(f"🚀 LMS Scraper Started")
@@ -516,7 +570,8 @@ async def main():
             # We pass session to all.
             
             tasks = [
-                check_todo(session, state)
+                check_todo(session, state),
+                check_inbox(session, state) # New
             ]
             
             if courses:
