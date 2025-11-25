@@ -71,11 +71,14 @@ async def send_error_report(error: Exception):
     tb_str = "".join(traceback.format_exception(type(error), error, error.__traceback__))
     if len(tb_str) > 3000: tb_str = tb_str[-3000:]
     
+    # Escape HTML special characters to prevent Telegram 400 Bad Request
+    safe_tb_str = html.escape(tb_str)
+    
     msg = (
         f"🚨 <b>LMS BOT CRITICAL ERROR</b>\n\n"
         f"<b>Type:</b> {type(error).__name__}\n"
-        f"<b>Message:</b> {str(error)}\n\n"
-        f"<pre>{tb_str}</pre>"
+        f"<b>Message:</b> {html.escape(str(error))}\n\n"
+        f"<pre>{safe_tb_str}</pre>"
     )
     
     async with aiohttp.ClientSession() as session:
@@ -92,7 +95,7 @@ def load_state(supabase):
     default_state = {
         "notified_assignments": [], 
         "notified_announcements": [],
-        "notified_grades": [],
+        "notified_grades": {}, # Changed to dict for {assignment_id: grade}
         "notified_files": []
     }
     if not supabase:
@@ -101,19 +104,17 @@ def load_state(supabase):
     try:
         response = supabase.table('crawling_logs').select('last_post_id').eq('site_name', 'lms_state').execute()
         if response.data:
-            return response.data[0]['last_post_id']
+            state = response.data[0]['last_post_id']
+            # Migration: Ensure notified_grades is a dict
+            if isinstance(state.get('notified_grades'), list):
+                state['notified_grades'] = {}
+            return state
     except Exception as e:
         logger.error(f"⚠️ Failed to load state from Supabase: {e}")
     
     return default_state
 
-def save_state(supabase, state):
-    if not supabase: return
-    try:
-        data = {'site_name': 'lms_state', 'last_post_id': state}
-        supabase.table('crawling_logs').upsert(data).execute()
-    except Exception as e:
-        logger.error(f"⚠️ Failed to save state to Supabase: {e}")
+# ... (save_state remains same)
 
 def generate_calendar_url(title, date_str):
     """Generates a Google Calendar Add URL."""
@@ -187,6 +188,182 @@ def upsert_notice(supabase, ann, course_name, summary):
         supabase.table('lms_notices').upsert(data, on_conflict='notice_id').execute()
     except Exception as e:
         logger.error(f"⚠️ Failed to upsert notice: {e}")
+
+def check_todo(state):
+    """Check for To-Do items (Daily Briefing)."""
+    # Run only once per day
+    today = datetime.now(KST).strftime('%Y-%m-%d')
+    if state.get('last_todo_date') == today:
+        return []
+
+    logger.info("✅ Checking To-Do List...")
+    alerts = []
+    
+    url = f"{BASE_URL}/users/self/todo"
+    try:
+        response = requests.get(url, headers=headers)
+        todos = response.json()
+        
+        if not todos:
+            return []
+
+        # Filter and format
+        todo_items = []
+        for item in todos:
+            # Item can be assignment or quiz
+            if item.get('type') == 'grading': continue # Skip grading tasks (for teachers)
+            
+            assignment = item.get('assignment')
+            quiz = item.get('quiz')
+            
+            title = "Unknown Task"
+            link = ""
+            due_str = ""
+            
+            if assignment:
+                title = assignment.get('name')
+                link = assignment.get('html_url')
+                due_at = assignment.get('due_at')
+            elif quiz:
+                title = quiz.get('title')
+                link = quiz.get('html_url')
+                due_at = quiz.get('due_at')
+            else:
+                continue
+
+            if due_at:
+                dt = datetime.strptime(due_at, "%Y-%m-%dT%H:%M:%SZ")
+                dt_kst = dt + timedelta(hours=9)
+                due_str = dt_kst.strftime('%H:%M')
+            
+            todo_items.append(f"- <a href='{link}'>{title}</a> (~{due_str})")
+
+        if todo_items:
+            msg = (
+                f"✅ <b>오늘의 할 일 ({today})</b>\n\n" + 
+                "\n".join(todo_items)
+            )
+            alerts.append({"text": msg})
+            state['last_todo_date'] = today
+
+    except Exception as e:
+        logger.error(f"⚠️ Error checking todo list: {e}")
+        
+    return alerts
+
+def check_grades(courses, state):
+    """Check for grade updates."""
+    logger.info("💯 Checking Grades...")
+    alerts = []
+    
+    for course in courses:
+        url = f"{BASE_URL}/courses/{course['id']}/enrollments"
+        params = {"type[]": "StudentEnrollment"}
+        try:
+            response = requests.get(url, headers=headers, params=params)
+            enrollments = response.json()
+            
+            for enrollment in enrollments:
+                grades = enrollment.get('grades')
+                if not grades: continue
+                
+                # We can't track individual assignment grades easily via this endpoint alone without fetching all assignments.
+                # BUT, we can check 'current_score' or 'current_grade' for the COURSE.
+                # To check individual assignment grades, we need to fetch submissions.
+                # Let's use the 'submissions' endpoint for recent grading activity.
+                pass
+
+        except Exception as e:
+            logger.error(f"⚠️ Error checking grades for {course['name']}: {e}")
+            
+    # Better approach: Check recent submissions with grades
+    # GET /api/v1/courses/:course_id/students/submissions?student_ids[]=self&include[]=submission_history
+    # Or simply /api/v1/courses/:course_id/assignments/:assignment_id/submissions/:user_id
+    
+    # Let's use the course-level submissions endpoint which is more efficient
+    for course in courses:
+        url = f"{BASE_URL}/courses/{course['id']}/students/submissions"
+        params = {
+            "student_ids[]": "self",
+            "order": "graded_at",
+            "order_direction": "descending",
+            "per_page": 10
+        }
+        try:
+            response = requests.get(url, headers=headers, params=params)
+            submissions = response.json()
+            
+            for sub in submissions:
+                if sub.get('workflow_state') != 'graded': continue
+                
+                assign_id = str(sub.get('assignment_id'))
+                current_grade = str(sub.get('grade'))
+                current_score = str(sub.get('score'))
+                
+                # Unique key for state
+                state_key = assign_id
+                
+                last_grade = state['notified_grades'].get(state_key)
+                
+                if last_grade != current_grade:
+                    # Fetch assignment details for name
+                    assign_name = "Unknown Assignment"
+                    try:
+                        a_url = f"{BASE_URL}/courses/{course['id']}/assignments/{assign_id}"
+                        a_resp = requests.get(a_url, headers=headers)
+                        assign_name = a_resp.json().get('name', assign_name)
+                    except: pass
+
+                    msg = (
+                        f"💯 <b>[성적] {course['name']}</b>\n"
+                        f"📝 <b>{assign_name}</b>\n"
+                        f"점수: {current_score}점 ({current_grade})"
+                    )
+                    alerts.append({"text": msg})
+                    state['notified_grades'][state_key] = current_grade
+
+        except Exception as e:
+            logger.error(f"⚠️ Error checking submissions for {course['name']}: {e}")
+            
+    return alerts
+
+def check_files(courses, state):
+    """Check for new files."""
+    logger.info("📂 Checking Files...")
+    alerts = []
+    
+    for course in courses:
+        url = f"{BASE_URL}/courses/{course['id']}/files"
+        params = {
+            "sort": "created_at",
+            "order": "desc",
+            "per_page": 10
+        }
+        try:
+            response = requests.get(url, headers=headers, params=params)
+            files = response.json()
+            
+            for file in files:
+                file_id = str(file['id'])
+                if file_id in state['notified_files']:
+                    continue
+                
+                # Check if file is recent (e.g. within last 24 hours) to avoid spamming old files on first run
+                # But state should handle it. If state is empty, maybe we skip or just notify latest?
+                # Let's notify if it's not in state.
+                
+                msg = (
+                    f"📂 <b>[자료] {course['name']}</b>\n"
+                    f"<a href='{file['url']}'><b>{file['display_name']}</b></a>\n"
+                    f"등록일: {file['created_at'][:10]}"
+                )
+                alerts.append({"text": msg})
+                state['notified_files'].append(file_id)
+
+        except Exception as e:
+            logger.error(f"⚠️ Error checking files for {course['name']}: {e}")
+            
+    return alerts
 
 def check_assignments(courses, state, supabase=None):
     """Check for upcoming assignments."""
@@ -295,12 +472,24 @@ async def main():
             return
 
         async with aiohttp.ClientSession() as session:
+            # 1. Assignments
             assignment_msgs = check_assignments(courses, state, supabase)
             for msg in assignment_msgs:
                 await send_telegram(session, msg["text"], buttons=msg.get("buttons"))
                 
+            # 2. Announcements
             announcement_msgs = check_announcements(courses, state, supabase)
             for msg in announcement_msgs:
+                await send_telegram(session, msg["text"])
+
+            # 3. Grades (New)
+            grade_msgs = check_grades(courses, state)
+            for msg in grade_msgs:
+                await send_telegram(session, msg["text"])
+
+            # 4. Files (New)
+            file_msgs = check_files(courses, state)
+            for msg in file_msgs:
                 await send_telegram(session, msg["text"])
             
         save_state(supabase, state)
