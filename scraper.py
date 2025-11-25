@@ -315,17 +315,25 @@ class NoticeScraper:
                 title = title_link.get_text(strip=True)
                 
                 # Title Cleaning: Remove index number but keep Year (e.g. 2025...)
-                # Logic: If starts with number, check if it's a year (2000-2100).
-                # If it's a year, keep it. If not (e.g. 17), remove it.
+                # Logic: Handle cases like "17 2025..." or "172025..." (concatenated)
                 match = re.match(r'^(\d+)\s*(.*)', title)
                 if match:
                     num_str = match.group(1)
                     rest = match.group(2)
                     try:
-                        if 2000 <= int(num_str) <= 2100:
-                            pass # Keep the year
+                        num_val = int(num_str)
+                        if 2000 <= num_val <= 2100:
+                            pass # It's a year, keep it
+                        elif num_val > 2100:
+                            # Check if it ends with a year (e.g. 172025)
+                            year_match = re.search(r'(20\d\d)$', num_str)
+                            if year_match:
+                                title = year_match.group(1) + " " + rest
+                            else:
+                                title = rest
                         else:
-                            title = rest # Remove the index
+                            # Small number (index), remove it
+                            title = rest
                     except:
                         pass # Keep original if parsing fails
 
@@ -480,12 +488,12 @@ class NoticeScraper:
             
             prefix = "🆕 " if is_new else "🔄 "
             
-            modified_text = "\n(수정됨)" if is_modified else ""
+            modified_text = "(수정됨)" if is_modified else ""
 
             msg = (
                 f"{prefix}<b>{self.escape_html(target.name)}</b>\n"
                 f"<a href='{full_url}'>{safe_title}</a>\n"
-                f"\n🤖 <b>AI 요약 ({category})</b>\n{safe_summary}{modified_text}\n"
+                f"\n🤖 <b>AI 요약 ({category})</b>\n{safe_summary}\n{modified_text}\n"
                 f"#알림 #{category}"
             )
 
@@ -502,13 +510,21 @@ class NoticeScraper:
             # 1. Try to find native preview link in detail page
             if detail_html:
                 soup_detail = BeautifulSoup(detail_html, 'html.parser')
-                # Look for '미리보기' text or common preview classes
+                # Look for '미리보기' text or common preview classes/functions
                 preview_node = soup_detail.find('a', string=re.compile('미리보기')) or \
                                soup_detail.find('a', class_=re.compile('preview', re.I)) or \
-                               soup_detail.find('a', href=re.compile('preview', re.I))
+                               soup_detail.find('a', href=re.compile('preview', re.I)) or \
+                               soup_detail.find('a', onclick=re.compile('preview', re.I))
                 
-                if preview_node and preview_node.get('href'):
-                    preview_url = urllib.parse.urljoin(full_url, preview_node.get('href'))
+                if preview_node:
+                    if preview_node.get('href') and 'javascript' not in preview_node.get('href'):
+                         preview_url = urllib.parse.urljoin(full_url, preview_node.get('href'))
+                    elif preview_node.get('onclick'):
+                        # Try to extract URL from onclick if simple
+                        # This is risky but worth a shot for common patterns like window.open('url')
+                        match = re.search(r"['\"]([^'\"]+\.(pdf|hwp|hwpx|doc|docx))['\"]", preview_node['onclick'], re.I)
+                        if match:
+                            preview_url = urllib.parse.urljoin(full_url, match.group(1))
 
             # 2. If no native preview, use Google Docs Viewer for the first attachment
             if not preview_url and item.attachments:
