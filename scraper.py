@@ -774,6 +774,17 @@ class NoticeScraper:
 
                 if not img_data: continue
 
+                # Calculate Hash (Image Hash)
+                # Use SHA256 of the image binary data for deterministic change detection.
+                # Previous logic used OCR text which varies slightly, causing loops.
+                current_hash = hashlib.sha256(img_data).hexdigest()
+                
+                is_new = db_record is None
+                is_modified = db_record and db_record.get('content_hash') != current_hash
+                
+                if not is_new and not is_modified:
+                    continue
+
                 # Gemini Vision Analysis (Full Week)
                 summary = "식단 분석 실패"
                 try:
@@ -796,15 +807,6 @@ class NoticeScraper:
                 except Exception as e:
                     logger.error(f"Menu OCR failed: {e}")
 
-                # Calculate Hash
-                current_hash = self.calculate_hash(summary)
-                
-                is_new = db_record is None
-                is_modified = db_record and db_record.get('content_hash') != current_hash
-                
-                if not is_new and not is_modified:
-                    continue
-
                 # Save to DB (Full Text)
                 if self.supabase:
                     db_data = {
@@ -813,7 +815,7 @@ class NoticeScraper:
                         'title': item.title,
                         'url': full_url,
                         'category': '식단',
-                        'content_hash': current_hash, # Use summary as hash
+                        'content_hash': current_hash, # Use Image Hash
                         'summary': summary,
                         'is_useful': True,
                         'attachments': [a.dict() for a in item.attachments],
