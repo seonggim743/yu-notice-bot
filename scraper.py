@@ -447,8 +447,31 @@ class NoticeScraper:
             current_hash = self.calculate_hash(item.title + content_text)
             
             is_new = db_record is None
-            is_modified = db_record and db_record.get('content_hash') != current_hash
-            
+            is_modified = False
+            modified_reasons = []
+
+            if db_record:
+                # Check for modifications
+                if db_record.get('content_hash') != current_hash:
+                    is_modified = True
+                    
+                    # 1. Title Change
+                    if db_record.get('title') != item.title:
+                        modified_reasons.append("제목 변경")
+                    
+                    # 2. Content Change (Heuristic)
+                    # We don't have old content text, but hash changed. 
+                    # If title didn't change, it's likely content or attachments (if we tracked them).
+                    # For now, if hash changed and title didn't, assume content/attachment.
+                    if db_record.get('title') == item.title:
+                         modified_reasons.append("내용/첨부 변경")
+
+                    # 3. Attachment Change (requires 'attachments' in DB, which we are adding now)
+                    old_attachments = db_record.get('attachments', [])
+                    new_attachments = [a.model_dump() for a in item.attachments] # Pydantic v2 or dict()
+                    # Simple count check or name check could be done here if we had old data
+                    # For now, relying on content_hash is safe.
+
             if not is_new and not is_modified:
                 continue # No change, skip
 
@@ -470,7 +493,18 @@ class NoticeScraper:
                         if resp.status == 200: photo_data = await resp.read()
                 except: pass
 
-            analysis = await self.get_ai_analysis(content_text, self.config.ai_prompt_template)
+            # Optimization: Skip AI for short text + image (likely just an image post)
+            # Threshold: < 50 chars and has image
+            should_skip_ai = len(content_text) < 50 and (final_image_url or item.attachments)
+            
+            if should_skip_ai:
+                analysis = {
+                    "useful": True, 
+                    "category": "일반", 
+                    "summary": content_text if content_text else "이미지/첨부파일 공지입니다."
+                }
+            else:
+                analysis = await self.get_ai_analysis(content_text, self.config.ai_prompt_template)
             
             # Archiving (Save to DB)
             if self.supabase:
@@ -484,6 +518,7 @@ class NoticeScraper:
                         'content_hash': current_hash,
                         'summary': str(analysis.get('summary', '')),
                         'is_useful': analysis.get('useful', True),
+                        'attachments': [a.dict() for a in item.attachments],
                         'updated_at': datetime.datetime.now(KST).isoformat()
                     }
                     self.supabase.table('notices').upsert(db_data, on_conflict='site_key,article_id').execute()
@@ -516,7 +551,10 @@ class NoticeScraper:
             
             prefix = "🆕 " if is_new else "🔄 "
             
-            modified_text = "\n\n(수정됨)" if is_modified else ""
+            modified_text = ""
+            if is_modified:
+                reason = f" ({', '.join(modified_reasons)})" if modified_reasons else ""
+                modified_text = f"\n\n(수정됨{reason})"
 
             msg = (
                 f"{prefix}<b>{self.escape_html(target.name)}</b>\n"
@@ -693,9 +731,18 @@ class NoticeScraper:
 
             for item in items:
                 # Check DB
+                db_record = None
                 if self.supabase:
                     resp = self.supabase.table('notices').select('*').eq('site_key', target.key).eq('article_id', item.id).execute()
-                    if resp.data: continue # Already processed
+                    if resp.data:
+                        db_record = resp.data[0]
+                        # If exists, we check hash later after getting content.
+                        # But for menu, the "content" is the image OCR result.
+                        # So we must proceed to download and OCR to compare.
+                        # Optimization: If we want to avoid OCR every time, we can't, because we don't know if image changed.
+                        # Unless we check image URL? Image URL might be same but content different? 
+                        # Usually URL changes if file changes.
+                        # Let's proceed to fetch detail.
 
                 full_url = urllib.parse.urljoin(target.url, item.link)
                 detail_html = await self.fetch_page(session, full_url)
@@ -749,6 +796,15 @@ class NoticeScraper:
                 except Exception as e:
                     logger.error(f"Menu OCR failed: {e}")
 
+                # Calculate Hash
+                current_hash = self.calculate_hash(summary)
+                
+                is_new = db_record is None
+                is_modified = db_record and db_record.get('content_hash') != current_hash
+                
+                if not is_new and not is_modified:
+                    continue
+
                 # Save to DB (Full Text)
                 if self.supabase:
                     db_data = {
@@ -757,9 +813,10 @@ class NoticeScraper:
                         'title': item.title,
                         'url': full_url,
                         'category': '식단',
-                        'content_hash': self.calculate_hash(summary), # Use summary as hash
+                        'content_hash': current_hash, # Use summary as hash
                         'summary': summary,
                         'is_useful': True,
+                        'attachments': [a.dict() for a in item.attachments],
                         'updated_at': datetime.datetime.now(KST).isoformat()
                     }
                     self.supabase.table('notices').upsert(db_data, on_conflict='site_key,article_id').execute()
