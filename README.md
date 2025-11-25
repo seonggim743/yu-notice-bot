@@ -20,6 +20,3 @@ Github 저장소의 `Settings` -> `Secrets and variables` -> `Actions`에 아래
 | `SUPABASE_URL` | 상태 저장을 위한 Supabase URL |
 | `SUPABASE_KEY` | Supabase Service Role Key (또는 Anon Key) |
 | `CANVAS_TOKEN` | LMS(Canvas) 액세스 토큰 |
-
-## 🏠 로컬 실행 (선택 사항)
-개발 및 테스트를 위해 로컬에서 실행할 수도 있습니다. `README_LOCAL.md`를 참고하세요.
