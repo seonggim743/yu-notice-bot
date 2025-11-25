@@ -747,6 +747,18 @@ class NoticeScraper:
 
                 await self.send_telegram(session, msg, self.config.topic_map.get('학사'), buttons=buttons)
                 
+                # Save to DB
+                if self.supabase and summary != '일정이 없습니다.':
+                    try:
+                        db_data = {
+                            'event_date': str(event_date),
+                            'content': summary,
+                            'created_at': datetime.datetime.now(KST).isoformat()
+                        }
+                        self.supabase.table('calendar_events').upsert(db_data, on_conflict='event_date,content').execute()
+                    except Exception as e:
+                        logger.error(f"Failed to save calendar event: {e}")
+                
                 if check_type == 'morning': self.state.last_calendar_check_morning = today_str
                 else: self.state.last_calendar_check_evening = today_str
                 self._save_state()
