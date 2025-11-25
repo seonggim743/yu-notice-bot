@@ -839,10 +839,11 @@ class NoticeScraper:
                     # Prompt: Extract ALL text for the whole week
                     # Prompt: Extract ALL menu text from this image for the entire week (Mon-Sun, Breakfast/Lunch/Dinner). Return raw text.
                     prompt = (
-                        "Extract the menu for TODAY only from this image.\n"
-                        "Return a JSON object with keys: 'date', 'breakfast', 'lunch', 'dinner'.\n"
-                        "Example: {\"date\": \"2023-10-25\", \"breakfast\": \"Menu items...\", \"lunch\": \"...\", \"dinner\": \"...\"}\n"
-                        "If a meal is missing, use empty string. Do not include any markdown formatting like ```json."
+                        "Extract the weekly menu from this image.\n"
+                        "Return a JSON LIST of objects, where each object represents a day.\n"
+                        "Format: [{\"date\": \"YYYY-MM-DD\", \"breakfast\": \"...\", \"lunch\": \"...\", \"dinner\": \"...\"}, ...]\n"
+                        "Infer the year and month from the image text if possible. If only day number is shown, assume current month/year.\n"
+                        "Return ONLY the JSON string. Do not include 'Here is...' or markdown formatting."
                     )
                     
                     image_part = {"mime_type": "image/jpeg", "data": img_data}
@@ -857,6 +858,10 @@ class NoticeScraper:
                     except: pass
 
                     summary = response.text.strip()
+                    # Clean up markdown if present (though response_mime_type should handle it, safety first)
+                    if summary.startswith("```json"):
+                        summary = summary.replace("```json", "").replace("```", "")
+                    summary = summary.strip()
                 except Exception as e:
                     logger.error(f"Menu OCR failed: {e}")
 
