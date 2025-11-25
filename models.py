@@ -41,4 +41,4 @@ class ScraperState(BaseModel):
     last_pinned_menu_id: Optional[int] = None
     pinned_exams: List[Dict[str, Any]] = []
     daily_notices_buffer: Optional[Dict[str, Any]] = {}
-    last_update_id: Optional[int] = None
+    daily_notices_buffer: Optional[Dict[str, Any]] = {}

@@ -15,6 +15,7 @@ from supabase import create_client, Client
 from typing import List, Dict, Optional, Any
 import urllib.parse
 from dotenv import load_dotenv
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from models import BotConfig, NoticeItem, ScraperState, TargetConfig, Attachment
 
@@ -136,6 +137,7 @@ class NoticeScraper:
         except Exception as e:
             logger.error(f"Failed to update last ID for {site_key}: {e}")
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     async def fetch_page(self, session: aiohttp.ClientSession, url: str) -> Optional[str]:
         try:
             async with session.get(url, timeout=15) as response:
@@ -143,7 +145,7 @@ class NoticeScraper:
                 return await response.text()
         except Exception as e:
             logger.error(f"Failed to fetch {url}: {e}")
-            return None
+            raise # Re-raise for tenacity
 
     async def get_ai_analysis(self, text: str, prompt_template: str) -> Dict[str, Any]:
         if not os.environ.get('GEMINI_API_KEY'):
@@ -242,6 +244,7 @@ class NoticeScraper:
         )
         await self.send_telegram(session, msg, self.config.topic_map.get('일반'))
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     async def send_telegram(self, session: aiohttp.ClientSession, message: str, topic_id: int = None, 
                             buttons: List[Dict] = None, photo_data: bytes = None) -> Optional[int]:
         if not self.telegram_token or not self.chat_id: return None
@@ -274,7 +277,7 @@ class NoticeScraper:
                 return result.get('result', {}).get('message_id')
         except Exception as e:
             logger.error(f"Telegram send failed: {e}")
-            return None
+            raise # Re-raise for tenacity
 
     async def pin_message(self, session: aiohttp.ClientSession, message_id: int):
         if not self.telegram_token or not self.chat_id: return
@@ -614,6 +617,99 @@ class NoticeScraper:
                 else: self.state.last_calendar_check_evening = today_str
                 self._save_state()
 
+    async def process_menu(self, session: aiohttp.ClientSession, target: TargetConfig):
+        logger.info(f"Checking Menu {target.name}...")
+        try:
+            html = await self.fetch_page(session, target.url)
+            if not html: return
+            
+            # Parse list (reuse parse_list or custom if needed, assuming standard board format)
+            items = self.parse_list(html, None, target.url)
+            if not items: return
+
+            for item in items:
+                # Check DB
+                if self.supabase:
+                    resp = self.supabase.table('notices').select('*').eq('site_key', target.key).eq('article_id', item.id).execute()
+                    if resp.data: continue # Already processed
+
+                full_url = urllib.parse.urljoin(target.url, item.link)
+                detail_html = await self.fetch_page(session, full_url)
+                if not detail_html: continue
+
+                soup = BeautifulSoup(detail_html, 'html.parser')
+                content_div = soup.select_one(target.content_selector)
+                
+                # Find Image
+                img_url = None
+                if content_div:
+                    for img in content_div.find_all('img'):
+                        src = img.get('src', '')
+                        if src and 'file' not in src.lower():
+                            img_url = urllib.parse.urljoin(target.base_url, src)
+                            break
+                
+                if not img_url: continue
+
+                # Download Image
+                img_data = None
+                try:
+                    async with session.get(img_url, headers={'Referer': full_url}) as resp:
+                        if resp.status == 200:
+                            img_data = await resp.read()
+                except Exception as e:
+                    logger.error(f"Failed to download menu image: {e}")
+                    continue
+
+                if not img_data: continue
+
+                # Gemini Vision Analysis
+                summary = "식단 분석 실패"
+                try:
+                    model = genai.GenerativeModel(GEMINI_MODEL)
+                    prompt = self.config.menu_prompt_template or "Extract menu for Today and Tomorrow from this image."
+                    
+                    image_part = {"mime_type": "image/jpeg", "data": img_data}
+                    
+                    loop = asyncio.get_running_loop()
+                    response = await loop.run_in_executor(None, lambda: model.generate_content([prompt, image_part]))
+                    
+                    # Token Tracking
+                    try:
+                        usage = response.usage_metadata
+                        self._save_token_usage(usage.prompt_token_count, usage.candidates_token_count)
+                    except: pass
+
+                    summary = response.text.strip()
+                except Exception as e:
+                    logger.error(f"Menu OCR failed: {e}")
+
+                # Save to DB
+                if self.supabase:
+                    db_data = {
+                        'site_key': target.key,
+                        'article_id': item.id,
+                        'title': item.title,
+                        'url': full_url,
+                        'category': '식단',
+                        'content_hash': self.calculate_hash(summary), # Use summary as hash
+                        'summary': summary,
+                        'is_useful': True,
+                        'updated_at': datetime.datetime.now(KST).isoformat()
+                    }
+                    self.supabase.table('notices').upsert(db_data, on_conflict='site_key,article_id').execute()
+
+                # Send Telegram
+                msg = (
+                    f"🍱 <b>{target.name}</b>\n"
+                    f"<a href='{full_url}'>{self.escape_html(item.title)}</a>\n\n"
+                    f"{summary}"
+                )
+                await self.send_telegram(session, msg, self.config.topic_map.get('dormitory'), photo_data=img_data)
+
+        except Exception as e:
+            logger.error(f"Process Menu failed: {e}")
+
     async def cleanup_old_data(self):
         if not self.supabase: return
         try:
@@ -657,7 +753,7 @@ class NoticeScraper:
                 if target.type == 'calendar':
                     await self.process_calendar(session, target)
                 elif target.type == 'menu':
-                    pass
+                    await self.process_menu(session, target)
                 else:
                     await self.process_target(session, target)
 
@@ -684,75 +780,8 @@ class NoticeScraper:
                         self.state.last_daily_summary = today
                         self._save_state()
 
-            # Check for User Commands (/search)
-            await self.check_commands(session)
-
-    async def search_notices(self, keyword: str) -> str:
-        if not self.supabase: return "데이터베이스 연결 실패"
-        try:
-            # Search in 'title' column, order by created_at desc, limit 5
-            response = self.supabase.table('notices').select('*').ilike('title', f'%{keyword}%').order('created_at', desc=True).limit(5).execute()
-            
-            if not response.data:
-                return f"🔍 '{keyword}'에 대한 검색 결과가 없습니다."
-            
-            lines = [f"🔍 <b>'{keyword}' 검색 결과 (최근 5건)</b>"]
-            for item in response.data:
-                date_str = datetime.datetime.fromisoformat(item['created_at']).strftime('%Y-%m-%d')
-                lines.append(f"- [{date_str}] <a href='{item['url']}'>{self.escape_html(item['title'])}</a>")
-            
-            return "\n\n".join(lines)
-        except Exception as e:
-            logger.error(f"Search failed: {e}")
-            return "검색 중 오류가 발생했습니다."
-
-    async def check_commands(self, session: aiohttp.ClientSession):
-        if not self.telegram_token: return
-        
-        offset = self.state.last_update_id + 1 if self.state.last_update_id else 0
-        url = f"https://api.telegram.org/bot{self.telegram_token}/getUpdates?offset={offset}&timeout=10&allowed_updates=['message']"
-        
-        try:
-            async with session.get(url) as resp:
-                if resp.status != 200: return
-                data = await resp.json()
-                
-                if not data.get('ok'): return
-                
-                updates = data.get('result', [])
-                if not updates: return
-                
-                max_update_id = offset
-                for update in updates:
-                    update_id = update['update_id']
-                    max_update_id = max(max_update_id, update_id)
-                    
-                    message = update.get('message', {})
-                    text = message.get('text', '').strip()
-                    chat_id = message.get('chat', {}).get('id')
-                    
-                    if not text or not chat_id: continue
-                    
-                    if text.startswith('/search'):
-                        parts = text.split(maxsplit=1)
-                        if len(parts) < 2:
-                            reply = "🔍 검색어를 입력해주세요.\n예: `/search 장학`"
-                        else:
-                            keyword = parts[1]
-                            reply = await self.search_notices(keyword)
-                        
-                        # Send Reply
-                        send_url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
-                        payload = {'chat_id': chat_id, 'text': reply, 'parse_mode': 'HTML', 'disable_web_page_preview': 'true'}
-                        async with session.post(send_url, json=payload) as send_resp:
-                            pass
-                
-                if max_update_id > offset:
-                    self.state.last_update_id = max_update_id
-                    self._save_state()
-                    
-        except Exception as e:
-            logger.error(f"Command check failed: {e}")
+            # Check for User Commands (/search) - REMOVED
+            # await self.check_commands(session)
 
 if __name__ == "__main__":
     scraper = NoticeScraper()
