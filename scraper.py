@@ -837,12 +837,18 @@ class NoticeScraper:
                 try:
                     model = genai.GenerativeModel(GEMINI_MODEL)
                     # Prompt: Extract ALL text for the whole week
-                    prompt = "Extract ALL menu text from this image for the entire week (Mon-Sun, Breakfast/Lunch/Dinner). Return raw text."
+                    # Prompt: Extract ALL menu text from this image for the entire week (Mon-Sun, Breakfast/Lunch/Dinner). Return raw text.
+                    prompt = (
+                        "Extract the menu for TODAY only from this image.\n"
+                        "Return a JSON object with keys: 'date', 'breakfast', 'lunch', 'dinner'.\n"
+                        "Example: {\"date\": \"2023-10-25\", \"breakfast\": \"Menu items...\", \"lunch\": \"...\", \"dinner\": \"...\"}\n"
+                        "If a meal is missing, use empty string. Do not include any markdown formatting like ```json."
+                    )
                     
                     image_part = {"mime_type": "image/jpeg", "data": img_data}
                     
                     loop = asyncio.get_running_loop()
-                    response = await loop.run_in_executor(None, lambda: model.generate_content([prompt, image_part]))
+                    response = await loop.run_in_executor(None, lambda: model.generate_content([prompt, image_part], generation_config={"response_mime_type": "application/json"}))
                     
                     # Token Tracking
                     try:
@@ -864,6 +870,7 @@ class NoticeScraper:
                         'category': '식단',
                         'content_hash': current_hash, # Use Image Hash
                         'summary': summary,
+                        'image_url': img_url,
                         'is_useful': True,
                         'attachments': [a.dict() for a in item.attachments],
                         'updated_at': datetime.datetime.now(KST).isoformat()
