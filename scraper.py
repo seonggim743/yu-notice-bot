@@ -490,7 +490,7 @@ class NoticeScraper:
             
             prefix = "🆕 " if is_new else "🔄 "
             
-            modified_text = "(수정됨)" if is_modified else ""
+            modified_text = "\n\n(수정됨)" if is_modified else ""
 
             msg = (
                 f"{prefix}<b>{self.escape_html(target.name)}</b>\n"
@@ -522,26 +522,6 @@ class NoticeScraper:
                     if 'javascript' not in preview_node.get('href'):
                         preview_url = urllib.parse.urljoin(full_url, preview_node.get('href'))
 
-            if preview_url:
-                 buttons.append({"text": "🔍 첨부파일 미리보기", "url": preview_url})
-            else:
-                # Fallback: Download Links
-                if item.attachments:
-                    # Condition: If >= 3 attachments AND NOT Exam -> Show "View Post"
-                    if len(item.attachments) >= 3 and not is_exam:
-                        buttons.append({"text": "📄 게시글 확인", "url": full_url})
-                    else:
-                        # Show all download links (limit to 5 to be safe for Telegram)
-                        for att in item.attachments[:5]:
-                             # Shorten filename if too long
-                             fname = att.text.replace('📄 ', '')
-                             if len(fname) > 20: fname = fname[:17] + "..."
-                             buttons.append({"text": f"� {fname}", "url": att.url})
-
-            msg_id = await self.send_telegram(session, msg, topic_id, buttons, photo_data)
-
-            if msg_id:
-                today = datetime.datetime.now(KST).strftime('%Y-%m-%d')
                 if not self.state.daily_notices_buffer:
                     self.state.daily_notices_buffer = {}
                 
