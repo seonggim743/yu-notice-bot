@@ -723,11 +723,12 @@ class NoticeScraper:
 
                 if not img_data: continue
 
-                # Gemini Vision Analysis
+                # Gemini Vision Analysis (Full Week)
                 summary = "식단 분석 실패"
                 try:
                     model = genai.GenerativeModel(GEMINI_MODEL)
-                    prompt = self.config.menu_prompt_template or "Extract menu for Today and Tomorrow from this image."
+                    # Prompt: Extract ALL text for the whole week
+                    prompt = "Extract ALL menu text from this image for the entire week (Mon-Sun, Breakfast/Lunch/Dinner). Return raw text."
                     
                     image_part = {"mime_type": "image/jpeg", "data": img_data}
                     
@@ -744,7 +745,7 @@ class NoticeScraper:
                 except Exception as e:
                     logger.error(f"Menu OCR failed: {e}")
 
-                # Save to DB
+                # Save to DB (Full Text)
                 if self.supabase:
                     db_data = {
                         'site_key': target.key,
@@ -759,16 +760,76 @@ class NoticeScraper:
                     }
                     self.supabase.table('notices').upsert(db_data, on_conflict='site_key,article_id').execute()
 
-                # Send Telegram
+                # Send Telegram (Image Only - "Updated")
                 msg = (
-                    f"🍱 <b>{target.name}</b>\n"
+                    f"🍱 <b>{target.name} 업데이트</b>\n"
                     f"<a href='{full_url}'>{self.escape_html(item.title)}</a>\n\n"
-                    f"{summary}"
+                    f"식단표가 등록되었습니다. 매일 아침 당일 식단이 발송됩니다."
                 )
                 await self.send_telegram(session, msg, self.config.topic_map.get('dormitory'), photo_data=img_data)
+                
+                # Trigger Daily Check Immediately
+                await self.check_daily_menu(session, force=True)
 
         except Exception as e:
             logger.error(f"Process Menu failed: {e}")
+
+    async def check_daily_menu(self, session: aiohttp.ClientSession, force: bool = False):
+        if not self.supabase: return
+        
+        now = datetime.datetime.now(KST)
+        today_str = now.strftime('%Y-%m-%d')
+        
+        # Run only in morning (e.g. 7am) or if forced
+        if not force:
+            if now.hour < 7: return
+            if self.state.last_daily_menu_check == today_str: return
+
+        try:
+            # Fetch latest menu from DB
+            resp = self.supabase.table('notices').select('*').eq('category', '식단').order('created_at', desc=True).limit(1).execute()
+            if not resp.data: return
+            
+            menu_data = resp.data[0]
+            full_text = menu_data.get('summary', '')
+            
+            # AI: Extract Today's Menu
+            prompt = (
+                f"Here is the weekly menu text:\n{full_text[:10000]}\n\n"
+                f"Task: Extract the menu for TODAY ({today_str}).\n"
+                f"Format: \n"
+                f"🍱 {today_str} 기숙사 식단\n"
+                f"☀️ 아침: ...\n"
+                f"🌤 점심: ...\n"
+                f"🌙 저녁: ...\n\n"
+                f"If no menu found for today, return '오늘은 식단이 없습니다.'"
+            )
+            
+            analysis = await self.get_ai_analysis(full_text, prompt) # Using get_ai_analysis wrapper for token tracking
+            # Note: get_ai_analysis expects JSON, but here we want text. 
+            # Let's use direct generation for text output or adjust wrapper.
+            # Wrapper forces JSON. Let's use direct call here for flexibility.
+            
+            model = genai.GenerativeModel(GEMINI_MODEL)
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: model.generate_content(prompt))
+            
+            # Token Tracking
+            try:
+                usage = response.usage_metadata
+                self._save_token_usage(usage.prompt_token_count, usage.candidates_token_count)
+            except: pass
+            
+            result_text = response.text.strip()
+            
+            if "오늘은 식단이 없습니다" not in result_text:
+                 await self.send_telegram(session, result_text, self.config.topic_map.get('dormitory'))
+            
+            self.state.last_daily_menu_check = today_str
+            self._save_state()
+            
+        except Exception as e:
+            logger.error(f"Daily Menu Check failed: {e}")
 
     async def cleanup_old_data(self):
         if not self.supabase: return
@@ -832,6 +893,7 @@ class NoticeScraper:
                             match = re.match(r'\[(.*?)\]', item)
                             if match:
                                 cat = match.group(1)
+                                cat = cat.replace('"', '').replace("'", "") # Cleanup
                                 counts[cat] = counts.get(cat, 0) + 1
                         
                         summary_lines = [f"- {k}: {v}건" for k, v in counts.items()]
@@ -839,6 +901,9 @@ class NoticeScraper:
                         await self.send_telegram(session, msg, self.config.topic_map.get('일반'))
                         self.state.last_daily_summary = today
                         self._save_state()
+
+            # Daily Menu Check
+            await self.check_daily_menu(session)
 
             # Check for User Commands (/search) - REMOVED
             # await self.check_commands(session)

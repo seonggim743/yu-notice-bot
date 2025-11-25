@@ -42,3 +42,4 @@ class ScraperState(BaseModel):
     pinned_exams: List[Dict[str, Any]] = []
     daily_notices_buffer: Optional[Dict[str, Any]] = {}
     daily_notices_buffer: Optional[Dict[str, Any]] = {}
+    last_daily_menu_check: Optional[str] = None
