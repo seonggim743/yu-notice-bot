@@ -463,6 +463,8 @@ class NoticeScraper:
             safe_title = self.escape_html(item.title)
             safe_summary = self.escape_html(str(summary))
             
+            prefix = "🆕 " if is_new else "🔄 "
+            
             msg = (
                 f"{prefix}<b>{self.escape_html(target.name)}</b>\n"
                 f"<a href='{full_url}'>{safe_title}</a>\n"
