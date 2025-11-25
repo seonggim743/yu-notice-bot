@@ -491,6 +491,7 @@ class NoticeScraper:
                     logger.error(f"Archiving failed: {e}")
 
             if not analysis.get('useful', True):
+                logger.info(f"Skipping {item.title} (AI marked as not useful)")
                 continue
 
             # Send Notification
@@ -687,6 +688,9 @@ class NoticeScraper:
             items = self.parse_list(html, None, target.url)
             if not items: return
 
+            # Only process the LATEST menu post to avoid spamming old history
+            items = items[:1]
+
             for item in items:
                 # Check DB
                 if self.supabase:
@@ -766,7 +770,17 @@ class NoticeScraper:
                     f"<a href='{full_url}'>{self.escape_html(item.title)}</a>\n\n"
                     f"식단표가 등록되었습니다. 매일 아침 당일 식단이 발송됩니다."
                 )
-                await self.send_telegram(session, msg, self.config.topic_map.get('dormitory'), photo_data=img_data)
+                
+                # Unpin old menu if exists
+                if self.state.last_menu_message_id:
+                    await self.unpin_message(session, self.state.last_menu_message_id)
+
+                msg_id = await self.send_telegram(session, msg, self.config.topic_map.get('dormitory'), photo_data=img_data)
+                
+                if msg_id:
+                    await self.pin_message(session, msg_id)
+                    self.state.last_menu_message_id = msg_id
+                    self._save_state()
                 
                 # Trigger Daily Check Immediately
                 await self.check_daily_menu(session, force=True)

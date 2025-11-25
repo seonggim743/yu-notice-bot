@@ -43,3 +43,4 @@ class ScraperState(BaseModel):
     daily_notices_buffer: Optional[Dict[str, Any]] = {}
     daily_notices_buffer: Optional[Dict[str, Any]] = {}
     last_daily_menu_check: Optional[str] = None
+    last_menu_message_id: Optional[int] = None
