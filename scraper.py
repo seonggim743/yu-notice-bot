@@ -264,8 +264,33 @@ class NoticeScraper:
             data.add_field(k, str(v))
         
         if photo_data:
-            data.add_field('photo', photo_data, filename='image.jpg')
-            data.add_field('caption', message)
+            # Check caption limit (1024 chars)
+            if len(message) > 1000:
+                # Too long, send photo first then text
+                data.add_field('photo', photo_data, filename='image.jpg')
+                # Try to send title as caption if possible, else empty
+                title_match = re.match(r'(.*?)(\n|$)', message)
+                if title_match and len(title_match.group(1)) < 1000:
+                    data.add_field('caption', title_match.group(1))
+                
+                # Send Photo
+                try:
+                    async with session.post(url, data=data) as resp:
+                        resp.raise_for_status()
+                except Exception as e:
+                    logger.error(f"Photo send failed: {e}")
+                
+                # Now prepare to send text separately
+                endpoint = "sendMessage"
+                url = f"https://api.telegram.org/bot{self.telegram_token}/{endpoint}"
+                data = aiohttp.FormData()
+                payload['text'] = message
+                payload['disable_web_page_preview'] = 'true'
+                for k, v in payload.items():
+                    data.add_field(k, str(v))
+            else:
+                data.add_field('photo', photo_data, filename='image.jpg')
+                data.add_field('caption', message)
         else:
             data.add_field('text', message)
             data.add_field('disable_web_page_preview', 'true')
