@@ -16,4 +16,3 @@ env/
 config.json
 state.json
 latest_ids.json
-test_telegram.py

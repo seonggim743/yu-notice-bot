@@ -485,6 +485,12 @@ class NoticeScraper:
                     src = img.get('src', '')
                     if src and 'file' not in src.lower():
                         final_image_url = urllib.parse.urljoin(target.base_url, src)
+            
+            # Debug Image Detection
+            if final_image_url:
+                logger.info(f"Image detected for {item.title}: {final_image_url}")
+            else:
+                logger.info(f"No image detected for {item.title}")
 
             photo_data = None
             if final_image_url:
@@ -505,6 +511,35 @@ class NoticeScraper:
                 }
             else:
                 analysis = await self.get_ai_analysis(content_text, self.config.ai_prompt_template)
+            
+            # Post-Process Analysis Summary
+            summary_raw = analysis.get('summary', '')
+            summary_lines = []
+
+            if isinstance(summary_raw, list):
+                for s in summary_raw:
+                    s_str = str(s).strip()
+                    if s_str and s_str not in ['-', '']:
+                        summary_lines.append(s_str)
+            else:
+                # Split by newline to handle existing multi-line strings
+                raw_lines = str(summary_raw).split('\n')
+                for s in raw_lines:
+                    s_str = s.strip()
+                    if s_str and s_str not in ['-', '']:
+                        summary_lines.append(s_str)
+
+            # Format with bullets
+            final_lines = []
+            for line in summary_lines:
+                # Remove existing bullets to normalize (-, *, •)
+                clean_line = re.sub(r'^[-*•]\s*', '', line).strip()
+                if clean_line:
+                    final_lines.append(f"- {clean_line}")
+            
+            summary_str = '\n'.join(final_lines)
+
+            analysis['summary'] = summary_str
             
             # Archiving (Save to DB)
             if self.supabase:

@@ -131,7 +131,38 @@ def get_courses():
         print(f"❌ Failed to fetch courses: {e}")
         return []
 
-def check_assignments(courses, state):
+def upsert_assignment(supabase, asm, course_name):
+    if not supabase: return
+    try:
+        data = {
+            'assignment_id': str(asm['id']),
+            'course_name': course_name,
+            'title': asm['name'],
+            'url': asm['html_url'],
+            'due_at': asm['due_at'],
+            'is_submitted': asm.get('has_submitted_submissions', False)
+        }
+        supabase.table('lms_assignments').upsert(data, on_conflict='assignment_id').execute()
+    except Exception as e:
+        print(f"⚠️ Failed to upsert assignment: {e}")
+
+def upsert_notice(supabase, ann, course_name, summary):
+    if not supabase: return
+    try:
+        data = {
+            'notice_id': str(ann['id']),
+            'course_name': course_name,
+            'title': ann['title'],
+            'url': ann['html_url'],
+            'content': summary, # Storing summary as content for now
+            'author': ann['user_name'],
+            'posted_at': ann['posted_at']
+        }
+        supabase.table('lms_notices').upsert(data, on_conflict='notice_id').execute()
+    except Exception as e:
+        print(f"⚠️ Failed to upsert notice: {e}")
+
+def check_assignments(courses, state, supabase=None):
     """Check for upcoming assignments."""
     print("📝 Checking Assignments...")
     alerts = []
@@ -144,6 +175,11 @@ def check_assignments(courses, state):
             assignments = response.json()
             
             for asm in assignments:
+                # Upsert to DB regardless of alert status
+                if supabase:
+                    upsert_assignment(supabase, asm, course['name'])
+
+                # Skip if submitted
                 # Skip if submitted
                 if asm.get('has_submitted_submissions'):
                     continue
@@ -199,7 +235,7 @@ def check_assignments(courses, state):
 
     return alerts
 
-def check_announcements(courses, state):
+def check_announcements(courses, state, supabase=None):
     """Check for new announcements."""
     print("📢 Checking Announcements...")
     alerts = []
@@ -238,6 +274,10 @@ def check_announcements(courses, state):
             summary = get_ai_summary(ann['message'])
             if summary:
                 msg += f"\n\n🤖 <b>AI 요약</b>\n{summary}"
+
+            # Upsert to DB
+            if supabase:
+                upsert_notice(supabase, ann, course_name, summary or ann['message'])
 
             alerts.append({"text": msg})
             state['notified_announcements'].append(str(ann['id']))
@@ -366,12 +406,12 @@ async def main():
         return
 
     # 1. Assignments
-    assignment_msgs = check_assignments(courses, state)
+    assignment_msgs = check_assignments(courses, state, supabase)
     for msg in assignment_msgs:
         await send_telegram(msg)
         
     # 2. Announcements
-    announcement_msgs = check_announcements(courses, state)
+    announcement_msgs = check_announcements(courses, state, supabase)
     for msg in announcement_msgs:
         await send_telegram(msg)
         
