@@ -749,22 +749,46 @@ class NoticeScraper:
             if not items: return
 
             # Only process the LATEST menu post to avoid spamming old history
-            items = items[:1]
+            # Expanded to top 5 to handle pinned posts or missed updates
+            items = items[:5]
 
             for item in items:
+                # Date Filtering from Title (Heuristic)
+                # Format: "11/17 ~ 11/24" or "11.17 ~ 11.24"
+                # If end date is significantly in the past (e.g. > 7 days ago), skip.
+                try:
+                    date_match = re.search(r'(\d{1,2})[./](\d{1,2})\s*~\s*(\d{1,2})[./](\d{1,2})', item.title)
+                    if date_match:
+                        end_month = int(date_match.group(3))
+                        end_day = int(date_match.group(4))
+                        current_year = datetime.datetime.now(KST).year
+                        
+                        # Handle year rollover (e.g. Dec to Jan) logic if needed, but for now assume current year.
+                        # If current month is 1 and end_month is 12, assume previous year.
+                        year = current_year
+                        now_date = datetime.datetime.now(KST).date()
+                        if now_date.month == 1 and end_month == 12:
+                            year -= 1
+                        
+                        try:
+                            end_date = datetime.date(year, end_month, end_day)
+                            # Allow some buffer (e.g. 3 days past the end date is still "relevant" context, but > 7 days is old)
+                            if (now_date - end_date).days > 7:
+                                logger.info(f"Skipping old menu: {item.title} (End Date: {end_date})")
+                                continue
+                        except ValueError: pass # Invalid date
+                except: pass
+
                 # Check DB
                 db_record = None
                 if self.supabase:
                     resp = self.supabase.table('notices').select('*').eq('site_key', target.key).eq('article_id', item.id).execute()
                     if resp.data:
                         db_record = resp.data[0]
-                        # If exists, we check hash later after getting content.
-                        # But for menu, the "content" is the image OCR result.
-                        # So we must proceed to download and OCR to compare.
-                        # Optimization: If we want to avoid OCR every time, we can't, because we don't know if image changed.
-                        # Unless we check image URL? Image URL might be same but content different? 
-                        # Usually URL changes if file changes.
-                        # Let's proceed to fetch detail.
+                        # Optimization: If ID exists, assume it's processed and skip.
+                        # User requested to save tokens and bandwidth.
+                        logger.info(f"Skipping existing menu ID: {item.id} ({item.title})")
+                        continue
 
                 full_url = urllib.parse.urljoin(target.url, item.link)
                 detail_html = await self.fetch_page(session, full_url)
@@ -893,45 +917,49 @@ class NoticeScraper:
             if self.state.last_daily_menu_check == today_str: return
 
         try:
-            # Fetch latest menu from DB
-            resp = self.supabase.table('notices').select('*').eq('category', '식단').order('created_at', desc=True).limit(1).execute()
+            # Fetch latest menu from DB (Check top 2 to handle "Next Week" posted early)
+            resp = self.supabase.table('notices').select('*').eq('category', '식단').order('article_id', desc=True).limit(2).execute()
             if not resp.data: return
             
-            menu_data = resp.data[0]
-            full_text = menu_data.get('summary', '')
-            
-            # AI: Extract Today's Menu
-            prompt = (
-                f"Here is the weekly menu text:\n{full_text[:10000]}\n\n"
-                f"Task: Extract the menu for TODAY ({today_str}).\n"
-                f"Format: \n"
-                f"🍱 {today_str} 기숙사 식단\n"
-                f"☀️ 아침: ...\n"
-                f"🌤 점심: ...\n"
-                f"🌙 저녁: ...\n\n"
-                f"If no menu found for today, return '오늘은 식단이 없습니다.'"
-            )
-            
-            analysis = await self.get_ai_analysis(full_text, prompt) # Using get_ai_analysis wrapper for token tracking
-            # Note: get_ai_analysis expects JSON, but here we want text. 
-            # Let's use direct generation for text output or adjust wrapper.
-            # Wrapper forces JSON. Let's use direct call here for flexibility.
-            
-            model = genai.GenerativeModel(GEMINI_MODEL)
-            loop = asyncio.get_running_loop()
-            response = await loop.run_in_executor(None, lambda: model.generate_content(prompt))
-            
-            # Token Tracking
-            try:
-                usage = response.usage_metadata
-                self._save_token_usage(usage.prompt_token_count, usage.candidates_token_count)
-            except: pass
-            
-            result_text = response.text.strip()
-            
-            if "오늘은 식단이 없습니다" not in result_text:
-                 await send_telegram(session, result_text, self.config.topic_map.get('dormitory'))
-            
+            for menu_data in resp.data:
+                full_text = menu_data.get('summary', '')
+                
+                # AI: Extract Today's Menu
+                prompt = (
+                    f"Here is the weekly menu text:\n{full_text[:10000]}\n\n"
+                    f"Task: Extract the menu for TODAY ({today_str}).\n"
+                    f"Format: \n"
+                    f"🍱 {today_str} 기숙사 식단\n"
+                    f"☀️ 아침: ...\n"
+                    f"🌤 점심: ...\n"
+                    f"🌙 저녁: ...\n\n"
+                    f"If no menu found for today, return '오늘은 식단이 없습니다.'"
+                )
+                
+                try:
+                    model = genai.GenerativeModel(GEMINI_MODEL)
+                    loop = asyncio.get_running_loop()
+                    response = await loop.run_in_executor(None, lambda: model.generate_content(prompt))
+                    
+                    # Token Tracking
+                    try:
+                        usage = response.usage_metadata
+                        self._save_token_usage(usage.prompt_token_count, usage.candidates_token_count)
+                    except: pass
+                    
+                    result_text = response.text.strip()
+                    
+                    if "오늘은 식단이 없습니다" not in result_text:
+                         await send_telegram(session, result_text, self.config.topic_map.get('dormitory'))
+                         # If found, break loop (don't check previous week)
+                         self.state.last_daily_menu_check = today_str
+                         self._save_state()
+                         return
+                except Exception as e:
+                    logger.error(f"Daily Menu AI failed: {e}")
+                    continue
+
+            # If loop finishes without sending, it means no menu found in top 2.
             self.state.last_daily_menu_check = today_str
             self._save_state()
             
