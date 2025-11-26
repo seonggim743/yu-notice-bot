@@ -228,25 +228,28 @@ class NoticeScraper:
         token_msg = "Token Usage: N/A"
         if self.supabase:
             try:
-                yesterday = (now - datetime.timedelta(days=1)).date()
                 today = now.date()
+                start_of_day = datetime.datetime.combine(today, datetime.time.min).isoformat()
                 
-                # Yesterday's usage
-                start = datetime.datetime.combine(yesterday, datetime.time.min).isoformat()
-                end = datetime.datetime.combine(today, datetime.time.min).isoformat()
+                # RPD (Requests Per Day) - Count rows for today
+                resp_today = self.supabase.table('token_usage').select('id', count='exact').gte('timestamp', start_of_day).execute()
+                rpd_count = resp_today.count if resp_today.count is not None else len(resp_today.data)
                 
-                resp_yesterday = self.supabase.table('token_usage').select('total_tokens').gte('timestamp', start).lt('timestamp', end).execute()
-                total_yesterday = sum(row['total_tokens'] for row in resp_yesterday.data)
+                # Total Tokens Today
+                resp_tokens = self.supabase.table('token_usage').select('total_tokens').gte('timestamp', start_of_day).execute()
+                tokens_today = sum(row['total_tokens'] for row in resp_tokens.data)
                 
-                # Total usage (All time)
-                resp_total = self.supabase.table('token_usage').select('total_tokens').execute()
-                total_all = sum(row['total_tokens'] for row in resp_total.data)
+                # Limits (Gemini 2.5 Flash)
+                LIMIT_RPD = 250
+                LIMIT_TPM = "250k"
+                LIMIT_RPM = 10
                 
                 token_msg = (
-                    f"📊 <b>Token Usage</b>\n"
+                    f"📊 <b>Token Usage (Today)</b>\n"
                     f"<pre>"
-                    f"Yesterday: {total_yesterday:,}\n"
-                    f"Total:     {total_all:,}"
+                    f"RPD:   {rpd_count}/{LIMIT_RPD} (Reqs)\n"
+                    f"Token: {tokens_today:,}\n"
+                    f"Limits: {LIMIT_RPM} RPM, {LIMIT_TPM} TPM"
                     f"</pre>"
                 )
             except Exception as e:
@@ -647,7 +650,10 @@ class NoticeScraper:
                     prompt = (
                         f"Summarize weekly schedule for {start_date} ~ {end_date}.\n"
                         f"Content: {text[:4000]}\n"
-                        f"Output Format: 'MM/DD (Day): Event' (Korean)"
+                        f"Output Format: 'MM/DD (Day): Event' (Korean)\n"
+                        f"CRITICAL: If there are NO events on {target_date}, find the NEXT event within 7 days.\n"
+                        f"If found, output: '🔜 다가오는 일정 (MM/DD): Event'\n"
+                        f"If nothing in 7 days, return '일정이 없습니다.'"
                     )
                     
                     try:
