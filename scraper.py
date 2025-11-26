@@ -752,36 +752,65 @@ class NoticeScraper:
             # Expanded to top 5 to handle pinned posts or missed updates
             items = items[:5]
 
+            # Filter and Sort Items by Date
+            candidates = []
             for item in items:
-                # Date Filtering from Title (Heuristic)
-                # Format: "11/17 ~ 11/24", "11.17 ~ 11.24", "11월 17일 ~ 11월 24일"
-                # If end date is significantly in the past (e.g. > 7 days ago), skip.
+                # Default: Assume it's relevant if we can't parse date
+                item_date = datetime.date.min
+                
+                # Date Parsing (Heuristic)
                 try:
                     # Regex to capture the END date part: "~ 11/24" or "~ 11월 24일"
-                    # Matches: ~ (space) (month) (separator) (space) (day)
                     date_match = re.search(r'~\s*(\d{1,2})[./월]\s*(\d{1,2})', item.title)
                     if date_match:
                         end_month = int(date_match.group(1))
                         end_day = int(date_match.group(2))
                         current_year = datetime.datetime.now(KST).year
                         
-                        # Handle year rollover (e.g. Dec to Jan) logic if needed, but for now assume current year.
-                        # If current month is 1 and end_month is 12, assume previous year.
                         year = current_year
                         now_date = datetime.datetime.now(KST).date()
+                        # Year rollover check
                         if now_date.month == 1 and end_month == 12:
                             year -= 1
-                        
+                        elif now_date.month == 12 and end_month == 1:
+                            year += 1
+                            
                         try:
-                            end_date = datetime.date(year, end_month, end_day)
-                            # Allow some buffer (e.g. 3 days past the end date is still "relevant" context, but > 7 days is old)
-                            if (now_date - end_date).days > 7:
-                                logger.info(f"Skipping old menu: {item.title} (End Date: {end_date})")
-                                continue
-                        except ValueError: pass # Invalid date
+                            item_date = datetime.date(year, end_month, end_day)
+                        except ValueError: pass
                 except: pass
+                
+                candidates.append({'item': item, 'date': item_date})
 
-                # Check DB
+            # Sort by Date Descending (Latest first)
+            # If dates are equal (or min), preserve original order (assuming top is newer)
+            candidates.sort(key=lambda x: x['date'], reverse=True)
+
+            if not candidates: return
+            
+            # Pick the BEST candidate
+            # We only want to process the SINGLE latest menu to avoid confusion/overwriting pins.
+            best_candidate = candidates[0]
+            target_item = best_candidate['item']
+            target_date = best_candidate['date']
+            
+            # Sanity Check: If the best candidate is significantly old (e.g. > 10 days), maybe warn or skip?
+            # But user wants "Latest", so even if it's old, it's the "Latest available".
+            # However, if it's REALLY old, we probably shouldn't pin it as "New".
+            # Let's keep the "7 days" check but apply it only to the chosen one.
+            
+            if target_date != datetime.date.min:
+                 if (datetime.datetime.now(KST).date() - target_date).days > 7:
+                     logger.info(f"Latest menu is too old ({target_date}). Skipping.")
+                     return
+
+            # Process ONLY the target item
+            # Wrap in a list to keep existing structure minimal change if needed, 
+            # but we can just process directly.
+            items_to_process = [target_item]
+
+            for item in items_to_process:
+                # Check DB (Optimization)
                 db_record = None
                 if self.supabase:
                     resp = self.supabase.table('notices').select('*').eq('site_key', target.key).eq('article_id', item.id).execute()
