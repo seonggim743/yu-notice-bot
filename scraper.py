@@ -195,6 +195,34 @@ class NoticeScraper:
         except Exception as e:
             logger.error(f"Token usage insert failed: {e}")
 
+    async def get_ai_diff_summary(self, old_text: str, new_text: str) -> str:
+        """Generates a summary of changes between old and new text."""
+        if not os.environ.get('GEMINI_API_KEY'): return "내용 변경 (AI Key Missing)"
+        
+        try:
+            model = genai.GenerativeModel(GEMINI_MODEL)
+            prompt = (
+                "Compare the following two versions of a notice and summarize the changes in Korean.\n"
+                "Output ONLY the summary of what changed (e.g., '신청 기간이 11/25에서 11/30으로 연장되었습니다.').\n"
+                "Keep it concise (1 sentence).\n\n"
+                f"--- OLD VERSION ---\n{old_text[:2000]}\n\n"
+                f"--- NEW VERSION ---\n{new_text[:2000]}"
+            )
+            
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(None, lambda: model.generate_content(prompt))
+            
+            # Token Tracking
+            try:
+                usage = response.usage_metadata
+                self._save_token_usage(usage.prompt_token_count, usage.candidates_token_count)
+            except: pass
+
+            return response.text.strip()
+        except Exception as e:
+            logger.error(f"AI Diff failed: {e}")
+            return "내용 변경 (AI 분석 실패)"
+
     def escape_html(self, text: str) -> str:
         return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
@@ -278,9 +306,9 @@ class NoticeScraper:
             f"<pre>{self.escape_html(tb_str)}</pre>"
         )
         
-        # Send to General Topic (ID 1) or fallback to main chat
+            # Send to General Topic (ID 1) as requested
         async with aiohttp.ClientSession() as session:
-            await send_telegram(session, msg, self.config.topic_map.get('일반', 1))
+            await send_telegram(session, msg, 1)
 
     async def pin_message(self, session: aiohttp.ClientSession, message_id: int):
         if not self.telegram_token or not self.chat_id: return
@@ -394,6 +422,9 @@ class NoticeScraper:
         items = self.parse_list(html, None, target.url)
         if not items: return
 
+        # Reverse order to process Oldest -> Newest
+        items.reverse()
+
         for item in items:
             full_url = urllib.parse.urljoin(target.url, item.link)
             
@@ -421,39 +452,72 @@ class NoticeScraper:
             content_div = soup.select_one(target.content_selector)
             content_text = content_div.get_text(separator=' ', strip=True) if content_div else ""
             
-            # Calculate Hash (Title + Content)
-            current_hash = self.calculate_hash(item.title + content_text)
+            # Calculate Hash (Body Only)
+            current_body_hash = self.calculate_hash(content_text)
             
             is_new = db_record is None
             is_modified = False
+            reuse_summary = False
             modified_reasons = []
 
             if db_record:
-                # Check for modifications
-                if db_record.get('content_hash') != current_hash:
-                    is_modified = True
-                    
-                    # 1. Title Change
-                    if db_record.get('title') != item.title:
+                old_hash = db_record.get('content_hash')
+                old_title = db_record.get('title')
+                
+                # 1. Check New Logic (Body Only) - For migrated records
+                if old_hash == current_body_hash:
+                    if old_title != item.title:
+                        is_modified = True
                         modified_reasons.append("제목 변경")
+                        reuse_summary = True
+                    else:
+                        continue # Nothing changed
+                
+                # 2. Check Old Logic (Total Hash) - For legacy records
+                elif old_hash == self.calculate_hash(item.title + content_text):
+                    # Unchanged, but needs migration to Body Hash
+                    # Update DB silently to avoid future confusion
+                    if self.supabase:
+                        try:
+                            self.supabase.table('notices').update({'content_hash': current_body_hash}).eq('site_key', target.key).eq('article_id', item.id).execute()
+                        except Exception as e:
+                            logger.error(f"Hash migration failed: {e}")
+                    continue
                     
-                    # 2. Content Change (Heuristic)
-                    # We don't have old content text, but hash changed. 
-                    # If title didn't change, it's likely content or attachments (if we tracked them).
-                    # For now, if hash changed and title didn't, assume content/attachment.
-                    if db_record.get('title') == item.title:
-                         modified_reasons.append("내용/첨부 변경")
-
-                    # 3. Attachment Change (requires 'attachments' in DB, which we are adding now)
-                    old_attachments = db_record.get('attachments', [])
-                    new_attachments = [a.model_dump() for a in item.attachments] # Pydantic v2 or dict()
-                    # Simple count check or name check could be done here if we had old data
-                    # For now, relying on content_hash is safe.
+                # 3. Check Mixed Case (Title changed, but Content might be same as Old Total Hash)
+                elif old_title != item.title and old_hash == self.calculate_hash(old_title + content_text):
+                     # Content is same, only Title changed
+                     is_modified = True
+                     modified_reasons.append("제목 변경")
+                     reuse_summary = True
+                     
+                else:
+                    # Real Content Change
+                    is_modified = True
+                    modified_reasons.append("내용 변경")
 
             if not is_new and not is_modified:
                 continue # No change, skip
 
             logger.info(f"Found {'New' if is_new else 'Modified'} item: {item.title}")
+            
+            # Reply Feature: Get Original Message ID
+            reply_to_msg_id = None
+            if is_modified and db_record:
+                reply_to_msg_id = db_record.get('message_id')
+
+            # Diff Summary Logic
+            diff_summary = ""
+            if is_modified and "내용 변경" in modified_reasons:
+                old_content = db_record.get('content', '') if db_record else ""
+                if old_content:
+                    diff_summary = await self.get_ai_diff_summary(old_content, content_text)
+                    if diff_summary:
+                        modified_reasons = [r for r in modified_reasons if r != "내용 변경"] # Remove generic reason
+                        modified_reasons.append(diff_summary)
+                else:
+                    # Legacy record without content
+                    pass
 
             # Logic for Image, AI, etc. (Same as before)
             final_image_url = item.image_url
@@ -481,7 +545,15 @@ class NoticeScraper:
             # Threshold: < 50 chars and has image
             should_skip_ai = len(content_text) < 50 and (final_image_url or item.attachments)
             
-            if should_skip_ai:
+            if reuse_summary and db_record:
+                analysis = {
+                    "useful": db_record.get('is_useful', True),
+                    "category": db_record.get('category', '일반'),
+                    "summary": db_record.get('summary', ''),
+                    "end_date": db_record.get('end_date') # Preserve end_date if exists
+                }
+                logger.info(f"Reusing summary for {item.title}")
+            elif should_skip_ai:
                 analysis = {
                     "useful": True, 
                     "category": "일반", 
@@ -528,12 +600,15 @@ class NoticeScraper:
                         'title': item.title,
                         'url': full_url,
                         'category': analysis.get('category', '일반'),
-                        'content_hash': current_hash,
+                        'content_hash': current_body_hash,
+                        'content': content_text, # Store Plain Text
                         'summary': str(analysis.get('summary', '')),
                         'is_useful': analysis.get('useful', True),
                         'attachments': [a.dict() for a in item.attachments],
                         'updated_at': datetime.datetime.now(KST).isoformat()
                     }
+                    # Upsert first to get ID, but we need to update message_id AFTER sending.
+                    # Actually, we can just upsert here, and then update message_id later.
                     self.supabase.table('notices').upsert(db_data, on_conflict='site_key,article_id').execute()
                 except Exception as e:
                     logger.error(f"Archiving failed: {e}")
@@ -611,7 +686,14 @@ class NoticeScraper:
                          if len(fname) > 20: fname = fname[:17] + "..."
                          buttons.append({"text": f"📥 {fname}", "url": att.url})
 
-            msg_id = await send_telegram(session, msg, topic_id, buttons, photo_data)
+            msg_id = await send_telegram(session, msg, topic_id, buttons, photo_data, reply_to_message_id=reply_to_msg_id)
+            
+            # Save Message ID
+            if msg_id and self.supabase:
+                try:
+                    self.supabase.table('notices').update({'message_id': msg_id}).eq('site_key', target.key).eq('article_id', item.id).execute()
+                except Exception as e:
+                    logger.error(f"Failed to save message_id: {e}")
 
             if msg_id:
                 today = datetime.datetime.now(KST).strftime('%Y-%m-%d')
@@ -1009,6 +1091,11 @@ class NoticeScraper:
             # Retention: Delete data older than 2 years
             two_years_ago = (datetime.datetime.now(KST) - datetime.timedelta(days=365*2)).isoformat()
             self.supabase.table('notices').delete().lt('created_at', two_years_ago).execute()
+            
+            # Content Cleanup: Clear 'content' older than 3 months to save space
+            three_months_ago = (datetime.datetime.now(KST) - datetime.timedelta(days=90)).isoformat()
+            self.supabase.table('notices').update({'content': None}).lt('created_at', three_months_ago).execute()
+            
             logger.info("Cleaned up old data.")
         except Exception as e:
             logger.error(f"Cleanup failed: {e}")

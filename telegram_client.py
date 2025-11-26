@@ -7,7 +7,7 @@ from typing import List, Dict, Optional
 logger = logging.getLogger(__name__)
 
 async def send_telegram(session: aiohttp.ClientSession, message: str, topic_id: int = None,
-                        buttons: List[Dict] = None, photo_data: bytes = None) -> Optional[int]:
+                        buttons: List[Dict] = None, photo_data: bytes = None, reply_to_message_id: int = None) -> Optional[int]:
     """
     Sends a message to Telegram, with optional photo and buttons.
     """
@@ -24,6 +24,8 @@ async def send_telegram(session: aiohttp.ClientSession, message: str, topic_id: 
     payload = {'chat_id': chat_id, 'parse_mode': 'HTML'}
     if topic_id:
         payload['message_thread_id'] = topic_id
+    if reply_to_message_id:
+        payload['reply_to_message_id'] = reply_to_message_id
 
     if buttons:
         inline_keyboard = [[{"text": b['text'], "url": b['url']}] for b in buttons]
