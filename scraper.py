@@ -754,13 +754,15 @@ class NoticeScraper:
 
             for item in items:
                 # Date Filtering from Title (Heuristic)
-                # Format: "11/17 ~ 11/24" or "11.17 ~ 11.24"
+                # Format: "11/17 ~ 11/24", "11.17 ~ 11.24", "11월 17일 ~ 11월 24일"
                 # If end date is significantly in the past (e.g. > 7 days ago), skip.
                 try:
-                    date_match = re.search(r'(\d{1,2})[./](\d{1,2})\s*~\s*(\d{1,2})[./](\d{1,2})', item.title)
+                    # Regex to capture the END date part: "~ 11/24" or "~ 11월 24일"
+                    # Matches: ~ (space) (month) (separator) (space) (day)
+                    date_match = re.search(r'~\s*(\d{1,2})[./월]\s*(\d{1,2})', item.title)
                     if date_match:
-                        end_month = int(date_match.group(3))
-                        end_day = int(date_match.group(4))
+                        end_month = int(date_match.group(1))
+                        end_day = int(date_match.group(2))
                         current_year = datetime.datetime.now(KST).year
                         
                         # Handle year rollover (e.g. Dec to Jan) logic if needed, but for now assume current year.
