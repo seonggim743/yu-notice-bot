@@ -13,7 +13,18 @@ env/
 .idea/
 
 # Local Config
-config.json
+# config.json (Should be committed for GitHub Actions)
 state.json
 latest_ids.json
+
+# Logs
+*.log
+
+# Utility / Test Scripts
+debug_menu.py
+find_selector.py
+fix_schema.py
+get_chat_id.py
+get_topic_id.py
 test_telegram.py
+canvas_poc.py
