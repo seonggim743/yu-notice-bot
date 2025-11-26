@@ -2,7 +2,7 @@ name: YU Notice Scraper
 
 on:
   schedule:
-    - cron: '0 * * * *'  # Run every hour
+    - cron: '*/10 * * * *'  # Run every 10 minutes
   workflow_dispatch:      # Allow manual run
 
 permissions:
