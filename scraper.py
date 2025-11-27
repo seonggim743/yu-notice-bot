@@ -225,6 +225,23 @@ class NoticeScraper:
             logger.error(f"AI Diff failed: {e}")
             return "내용 변경 (AI 분석 실패)"
 
+    async def get_embedding(self, text: str) -> List[float]:
+        """Generates a vector embedding for the given text."""
+        if not os.environ.get('GEMINI_API_KEY'): return []
+        
+        try:
+            # Use text-embedding-004
+            result = genai.embed_content(
+                model="models/text-embedding-004",
+                content=text[:9000], # Limit to avoid errors
+                task_type="retrieval_document",
+                title="University Notice"
+            )
+            return result['embedding']
+        except Exception as e:
+            logger.error(f"Embedding failed: {e}")
+            return []
+
     def escape_html(self, text: str) -> str:
         return text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
@@ -602,6 +619,13 @@ class NoticeScraper:
 
             analysis['summary'] = summary_str
             
+            # Generate Embedding
+            embedding = []
+            if self.supabase:
+                # Combine Title + Summary + Content (truncated) for rich context
+                embed_text = f"{item.title}\n{summary_str}\n{content_text[:1000]}"
+                embedding = await self.get_embedding(embed_text)
+            
             # Archiving (Save to DB)
             if self.supabase:
                 try:
@@ -618,6 +642,7 @@ class NoticeScraper:
                         'is_useful': analysis.get('useful', True),
                         'start_date': analysis.get('start_date'),
                         'end_date': analysis.get('end_date'),
+                        'embedding': embedding, # Save Vector
                         'attachments': [a.dict() for a in item.attachments],
                         'image_url': final_image_url,
                         'updated_at': datetime.datetime.now(KST).isoformat()
@@ -1192,6 +1217,68 @@ class NoticeScraper:
             logger.info("Cleaned up old and invalid data.")
         except Exception as e:
             logger.error(f"Cleanup failed: {e}")
+
+    async def search_notices(self, query: str, limit: int = 5):
+        """Semantic search for notices."""
+        if not self.supabase: return []
+        
+        try:
+            # Generate query embedding
+            result = genai.embed_content(
+                model="models/text-embedding-004",
+                content=query,
+                task_type="retrieval_query"
+            )
+            query_embedding = result['embedding']
+            
+            # Search in Supabase (RPC call usually required for vector search, or direct SQL if client supports it)
+            # Assuming we have a 'match_notices' RPC function in Supabase (standard for pgvector)
+            # If not, we can't easily do it via client.table().select().
+            # For now, let's just log that we would call the RPC.
+            # To make this work, user needs to create the RPC function.
+            
+            # RPC Implementation (Add this to SQL file later):
+            # create or replace function match_notices (
+            #   query_embedding vector(768),
+            #   match_threshold float,
+            #   match_count int
+            # )
+            # returns table (
+            #   id bigint,
+            #   title text,
+            #   url text,
+            #   similarity float
+            # )
+            # language plpgsql
+            # as $$
+            # begin
+            #   return query
+            #   select
+            #     notices.id,
+            #     notices.title,
+            #     notices.url,
+            #     1 - (notices.embedding <=> query_embedding) as similarity
+            #   from notices
+            #   where 1 - (notices.embedding <=> query_embedding) > match_threshold
+            #   order by notices.embedding <=> query_embedding
+            #   limit match_count;
+            # end;
+            # $$;
+            
+            resp = self.supabase.rpc(
+                'match_notices',
+                {
+                    'query_embedding': query_embedding,
+                    'match_threshold': 0.5,
+                    'match_count': limit
+                }
+            ).execute()
+            
+            return resp.data
+            
+        except Exception as e:
+            logger.error(f"Search failed: {e}")
+            return []
 
     async def run(self):
         try:
