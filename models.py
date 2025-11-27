@@ -17,6 +17,8 @@ class NoticeItem(BaseModel):
     is_exam: bool = False
     start_date: Optional[date] = None
     end_date: Optional[date] = None
+    target_grades: List[int] = []
+    target_dept: Optional[str] = None
 
 class TargetConfig(BaseModel):
     key: str

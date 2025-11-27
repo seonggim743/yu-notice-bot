@@ -20,6 +20,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from models import BotConfig, NoticeItem, ScraperState, TargetConfig, Attachment
 from telegram_client import send_telegram
+from notification_manager import NotificationManager
 
 # --- Configuration ---
 load_dotenv()
@@ -68,6 +69,8 @@ class NoticeScraper:
         
         self.telegram_token = os.environ.get('TELEGRAM_TOKEN')
         self.chat_id = os.environ.get('CHAT_ID')
+        
+        self.notification_manager = NotificationManager(self.supabase) if self.supabase else None
 
     def _load_config(self) -> BotConfig:
         try:
@@ -578,7 +581,9 @@ class NoticeScraper:
                     "category": db_record.get('category', '일반'),
                     "summary": db_record.get('summary', ''),
                     "start_date": db_record.get('start_date'),
-                    "end_date": db_record.get('end_date')
+                    "end_date": db_record.get('end_date'),
+                    "target_grades": db_record.get('target_grades', []),
+                    "target_dept": db_record.get('target_dept')
                 }
                 logger.info(f"Reusing summary for {item.title}")
             elif should_skip_ai:
@@ -642,6 +647,8 @@ class NoticeScraper:
                         'is_useful': analysis.get('useful', True),
                         'start_date': analysis.get('start_date'),
                         'end_date': analysis.get('end_date'),
+                        'target_grades': analysis.get('target_grades', []),
+                        'target_dept': analysis.get('target_dept'),
                         'embedding': embedding, # Save Vector
                         'attachments': [a.dict() for a in item.attachments],
                         'image_url': final_image_url,
@@ -693,11 +700,21 @@ class NoticeScraper:
                 if matched_keywords:
                     keyword_alert = f"\n🚨 <b>키워드 알림: {', '.join(matched_keywords)}</b>"
 
+            # Targeting Hashtags
+            target_tags = ""
+            t_grades = analysis.get('target_grades', [])
+            t_dept = analysis.get('target_dept')
+            
+            if t_grades and len(t_grades) < 4: # If not all grades
+                target_tags += " ".join([f"#{g}학년" for g in t_grades]) + " "
+            if t_dept and t_dept not in ['전체', '무관']:
+                target_tags += f"#{t_dept} "
+            
             msg = (
                 f"{prefix}<b>{self.escape_html(target.name)}</b>\n"
                 f"<a href='{full_url}'><b>{safe_title}</b></a>\n"
                 f"\n📝 <b>요약 ({category})</b>\n{safe_summary}\n{modified_text}\n{keyword_alert}\n"
-                f"#알림 #{category}"
+                f"#알림 #{category} {target_tags}"
             )
 
             buttons = []
@@ -777,6 +794,35 @@ class NoticeScraper:
 
             # Update Legacy Last ID for backward compatibility (optional)
             self.update_last_id(target.key, item.id)
+            
+            # --- Personalized Notifications ---
+            if self.notification_manager and (is_new or is_modified):
+                # Prepare data for matching
+                notice_data = {
+                    'title': item.title,
+                    'category': category,
+                    'target_dept': analysis.get('target_dept')
+                }
+                
+                matched_users = self.notification_manager.check_matches(notice_data)
+                if matched_users:
+                    logger.info(f"Sending DMs to {len(matched_users)} users for {item.title}")
+                    
+                    dm_msg = (
+                        f"🔔 <b>맞춤 알림: {self.escape_html(target.name)}</b>\n"
+                        f"<a href='{full_url}'><b>{safe_title}</b></a>\n\n"
+                        f"{safe_summary}\n"
+                        f"#맞춤알림 #{category}"
+                    )
+                    
+                    for user_id in matched_users:
+                        try:
+                            # Send DM (no topic_id, specific user_id)
+                            await send_telegram(session, dm_msg, target_chat_id=user_id, buttons=buttons)
+                            await asyncio.sleep(0.1) # Rate limit protection
+                        except Exception as e:
+                            logger.error(f"Failed to send DM to {user_id}: {e}")
+
             await asyncio.sleep(2)
 
     async def process_calendar(self, session: aiohttp.ClientSession, target: TargetConfig):

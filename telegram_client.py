@@ -7,12 +7,14 @@ from typing import List, Dict, Optional
 logger = logging.getLogger(__name__)
 
 async def send_telegram(session: aiohttp.ClientSession, message: str, topic_id: int = None,
-                        buttons: List[Dict] = None, photo_data: bytes = None, reply_to_message_id: int = None) -> Optional[int]:
+                        buttons: List[Dict] = None, photo_data: bytes = None, reply_to_message_id: int = None,
+                        target_chat_id: int = None) -> Optional[int]:
     """
     Sends a message to Telegram, with optional photo and buttons.
     """
     telegram_token = os.environ.get('TELEGRAM_TOKEN')
-    chat_id = os.environ.get('CHAT_ID')
+    # Default to group chat ID if no specific target is given
+    chat_id = target_chat_id if target_chat_id else os.environ.get('CHAT_ID')
 
     if not telegram_token or not chat_id:
         logger.error("TELEGRAM_TOKEN or CHAT_ID not set.")
@@ -22,7 +24,7 @@ async def send_telegram(session: aiohttp.ClientSession, message: str, topic_id: 
     url = f"https://api.telegram.org/bot{telegram_token}/{endpoint}"
 
     payload = {'chat_id': chat_id, 'parse_mode': 'HTML'}
-    if topic_id:
+    if topic_id and not target_chat_id: # Only use topic_id if sending to the main group
         payload['message_thread_id'] = topic_id
     if reply_to_message_id:
         payload['reply_to_message_id'] = reply_to_message_id
