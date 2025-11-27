@@ -9,6 +9,7 @@ import pytz
 import re
 import hashlib
 import sys
+import html
 from bs4 import BeautifulSoup
 import google.generativeai as genai
 from supabase import create_client, Client
@@ -151,7 +152,7 @@ class NoticeScraper:
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
     async def fetch_page(self, session: aiohttp.ClientSession, url: str) -> Optional[str]:
         try:
-            async with session.get(url, timeout=15) as response:
+            async with session.get(url, timeout=30) as response:
                 response.raise_for_status()
                 return await response.text()
         except Exception as e:
@@ -192,6 +193,7 @@ class NoticeScraper:
                 'model': GEMINI_MODEL
             }
             self.supabase.table('token_usage').insert(data).execute()
+            logger.info(f"💰 Token Usage: {prompt_tokens} + {completion_tokens} = {prompt_tokens + completion_tokens}")
         except Exception as e:
             logger.error(f"Token usage insert failed: {e}")
 
@@ -299,16 +301,23 @@ class NoticeScraper:
         # Truncate if too long for Telegram
         if len(tb_str) > 3000: tb_str = tb_str[-3000:]
         
+        # Escape HTML to prevent 400 Bad Request
+        safe_tb = html.escape(tb_str)
+        safe_error = html.escape(str(error))
+        
         msg = (
             f"🚨 <b>CRITICAL ERROR</b>\n\n"
             f"<b>Type:</b> {type(error).__name__}\n"
-            f"<b>Message:</b> {str(error)}\n\n"
-            f"<pre>{self.escape_html(tb_str)}</pre>"
+            f"<b>Message:</b> {safe_error}\n\n"
+            f"<pre>{safe_tb}</pre>"
         )
         
-            # Send to General Topic (ID 1) as requested
-        async with aiohttp.ClientSession() as session:
-            await send_telegram(session, msg, 1)
+        # Send to General Topic (ID 1) as requested
+        try:
+            async with aiohttp.ClientSession() as session:
+                await send_telegram(session, msg, 1)
+        except Exception as e:
+            logger.error(f"Failed to send error report: {e}")
 
     async def pin_message(self, session: aiohttp.ClientSession, message_id: int):
         if not self.telegram_token or not self.chat_id: return
@@ -451,6 +460,7 @@ class NoticeScraper:
             soup = BeautifulSoup(detail_html, 'html.parser')
             content_div = soup.select_one(target.content_selector)
             content_text = content_div.get_text(separator=' ', strip=True) if content_div else ""
+            content_html = str(content_div) if content_div else ""
             
             # Calculate Hash (Body Only)
             current_body_hash = self.calculate_hash(content_text)
@@ -602,9 +612,11 @@ class NoticeScraper:
                         'category': analysis.get('category', '일반'),
                         'content_hash': current_body_hash,
                         'content': content_text, # Store Plain Text
+                        'html_content': content_html, # Store HTML
                         'summary': str(analysis.get('summary', '')),
                         'is_useful': analysis.get('useful', True),
                         'attachments': [a.dict() for a in item.attachments],
+                        'image_url': final_image_url,
                         'updated_at': datetime.datetime.now(KST).isoformat()
                     }
                     # Upsert first to get ID, but we need to update message_id AFTER sending.
@@ -733,7 +745,7 @@ class NoticeScraper:
                         f"Summarize weekly schedule for {start_date} ~ {end_date}.\n"
                         f"Content: {text[:4000]}\n"
                         f"Output Format: 'MM/DD (Day): Event' (Korean)\n"
-                        f"CRITICAL: If there are NO events on {target_date}, find the NEXT event within 7 days.\n"
+                        f"CRITICAL: If there are NO events on {start_date}, find the NEXT event within 7 days.\n"
                         f"If found, output: '🔜 다가오는 일정 (MM/DD): Event'\n"
                         f"If nothing in 7 days, return '일정이 없습니다.'"
                     )
@@ -1036,8 +1048,8 @@ class NoticeScraper:
             if self.state.last_daily_menu_check == today_str: return
 
         try:
-            # Fetch latest menu from DB (Check top 2 to handle "Next Week" posted early)
-            resp = self.supabase.table('notices').select('*').eq('category', '식단').order('article_id', desc=True).limit(2).execute()
+            # Fetch latest menu from DB (Check top 5 to handle "Next Week" posted early or other notices)
+            resp = self.supabase.table('notices').select('*').eq('category', '식단').order('article_id', desc=True).limit(5).execute()
             if not resp.data: return
             
             for menu_data in resp.data:
@@ -1079,6 +1091,7 @@ class NoticeScraper:
                     continue
 
             # If loop finishes without sending, it means no menu found in top 2.
+            logger.info(f"No daily menu found for {today_str} in top 2 posts.")
             self.state.last_daily_menu_check = today_str
             self._save_state()
             
@@ -1096,7 +1109,14 @@ class NoticeScraper:
             three_months_ago = (datetime.datetime.now(KST) - datetime.timedelta(days=90)).isoformat()
             self.supabase.table('notices').update({'content': None}).lt('created_at', three_months_ago).execute()
             
-            logger.info("Cleaned up old data.")
+            # Invalid Data Cleanup: Delete notices with empty content (if not an image post)
+            # We assume if content is empty AND image_url is null AND attachments is empty, it's invalid.
+            # Or just delete if 'content' is empty string and 'summary' is empty?
+            # User request: "delete the one that does not have the text content"
+            # Let's be safe: Delete if content is empty AND summary is empty/failed.
+            self.supabase.table('notices').delete().eq('content', '').eq('summary', '').execute()
+            
+            logger.info("Cleaned up old and invalid data.")
         except Exception as e:
             logger.error(f"Cleanup failed: {e}")
 
