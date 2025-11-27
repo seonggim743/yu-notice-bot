@@ -339,17 +339,15 @@ class NoticeScraper:
         except Exception as e:
             logger.error(f"Unpin failed: {e}")
 
-    def parse_list(self, html: str, last_id: Optional[str], current_page_url: str) -> List[NoticeItem]:
+    def parse_list(self, html: str, last_id: Optional[str], target: TargetConfig) -> List[NoticeItem]:
         soup = BeautifulSoup(html, 'html.parser')
         items = []
-        rows = soup.select('table tbody tr')
+        rows = soup.select(target.list_selector)
 
         for row in rows:
             try:
-                cols = row.find_all('td')
-                if not cols: continue
-                
-                title_link = row.select_one('a')
+                # Dynamic Selector
+                title_link = row.select_one(target.title_selector)
                 if not title_link: continue
 
                 title = title_link.get_text(strip=True)
@@ -379,7 +377,9 @@ class NoticeScraper:
                     except:
                         pass # Keep original if parsing fails
 
-                link = title_link.get('href')
+                # Dynamic Link Selector (usually same as title, but can be different)
+                link_element = row.select_one(target.link_selector)
+                link = link_element.get('href') if link_element else title_link.get('href')
                 
                 parsed_url = urllib.parse.urlparse(link)
                 qs = urllib.parse.parse_qs(parsed_url.query)
@@ -387,14 +387,14 @@ class NoticeScraper:
                 
                 if not article_id: continue
 
-                # Sticky Logic
-                is_sticky = 'b-top-box' in row.get('class', []) or '공지' in cols[0].get_text()
+                # Sticky Logic (Best Effort default, can be improved later)
+                is_sticky = 'b-top-box' in row.get('class', []) or '공지' in row.get_text()
                 
                 # Attachments
                 attachments = []
                 seen_urls = set()
                 for fl in row.select('a[href*="fileDownload"]'):
-                    f_url = urllib.parse.urljoin(current_page_url, fl.get('href'))
+                    f_url = urllib.parse.urljoin(target.url, fl.get('href'))
                     if f_url not in seen_urls:
                         seen_urls.add(f_url)
                         attachments.append(Attachment(text=f"📄 {fl.get_text(strip=True) or '첨부'}", url=f_url))
@@ -404,7 +404,7 @@ class NoticeScraper:
                 for img in row.find_all('img'):
                     src = img.get('src', '')
                     if 'file' not in src.lower() and 'icon' not in src.lower():
-                        image_url = urllib.parse.urljoin(current_page_url, src)
+                        image_url = urllib.parse.urljoin(target.url, src)
                         break
 
                 items.append(NoticeItem(
@@ -428,7 +428,7 @@ class NoticeScraper:
         if not html: return
 
         # Parse ALL items on the first page
-        items = self.parse_list(html, None, target.url)
+        items = self.parse_list(html, None, target)
         if not items: return
 
         # Reverse order to process Oldest -> Newest
@@ -560,7 +560,8 @@ class NoticeScraper:
                     "useful": db_record.get('is_useful', True),
                     "category": db_record.get('category', '일반'),
                     "summary": db_record.get('summary', ''),
-                    "end_date": db_record.get('end_date') # Preserve end_date if exists
+                    "start_date": db_record.get('start_date'),
+                    "end_date": db_record.get('end_date')
                 }
                 logger.info(f"Reusing summary for {item.title}")
             elif should_skip_ai:
@@ -615,6 +616,8 @@ class NoticeScraper:
                         'html_content': content_html, # Store HTML
                         'summary': str(analysis.get('summary', '')),
                         'is_useful': analysis.get('useful', True),
+                        'start_date': analysis.get('start_date'),
+                        'end_date': analysis.get('end_date'),
                         'attachments': [a.dict() for a in item.attachments],
                         'image_url': final_image_url,
                         'updated_at': datetime.datetime.now(KST).isoformat()
@@ -637,7 +640,9 @@ class NoticeScraper:
             is_exam = any(k in item.title for k in ["시험", "중간고사", "기말고사", "강의평가"])
             if is_exam:
                 category = "시험/학사"
-                analysis['end_date'] = analysis.get('end_date')
+            if is_exam:
+                category = "시험/학사"
+                # Keep AI dates if available, otherwise might need manual extraction logic (omitted for now)
 
             topic_id = self.config.topic_map.get(category, 0)
             if is_exam and topic_id == 0: topic_id = self.config.topic_map.get('학사', 4)
@@ -656,20 +661,42 @@ class NoticeScraper:
                 reason = f" ({', '.join(modified_reasons)})" if modified_reasons else ""
                 modified_text = f"\n\n(수정됨{reason})"
 
+            # Keyword Alert
+            keyword_alert = ""
+            if self.config.keywords:
+                matched_keywords = [k for k in self.config.keywords if k in item.title]
+                if matched_keywords:
+                    keyword_alert = f"\n🚨 <b>키워드 알림: {', '.join(matched_keywords)}</b>"
+
             msg = (
                 f"{prefix}<b>{self.escape_html(target.name)}</b>\n"
                 f"<a href='{full_url}'><b>{safe_title}</b></a>\n"
-                f"\n📝 <b>요약 ({category})</b>\n{safe_summary}\n{modified_text}\n"
+                f"\n📝 <b>요약 ({category})</b>\n{safe_summary}\n{modified_text}\n{keyword_alert}\n"
                 f"#알림 #{category}"
             )
 
             buttons = []
             
             # UX: Add Calendar Button
-            if analysis.get('end_date'):
-                cal_url = self.generate_calendar_url(item.title, analysis['end_date'])
+            start_date = analysis.get('start_date')
+            end_date = analysis.get('end_date')
+            
+            if start_date or end_date:
+                # If only end_date, treat as all-day event on that day
+                # If both, treat as range
+                cal_date = start_date if start_date else end_date
+                cal_title = f"[{category}] {item.title}"
+                
+                # If we have a range, we might want to pass both to generate_calendar_url
+                # But current generate_calendar_url only takes one date (start).
+                # Let's update generate_calendar_url signature or logic later. 
+                # For now, use start_date if available, else end_date.
+                
+                cal_url = self.generate_calendar_url(cal_title, cal_date)
                 if cal_url:
-                    buttons.append({"text": "📅 캘린더 등록", "url": cal_url})
+                    label = "📅 일정 등록"
+                    if end_date: label += f" (~{end_date[5:]})"
+                    buttons.append({"text": label, "url": cal_url})
 
             # UX: Attachment Preview / Download
             preview_url = None
@@ -845,7 +872,7 @@ class NoticeScraper:
             if not html: return
             
             # Parse list (reuse parse_list or custom if needed, assuming standard board format)
-            items = self.parse_list(html, None, target.url)
+            items = self.parse_list(html, None, target)
             if not items: return
 
             # Only process the LATEST menu post to avoid spamming old history
@@ -1098,6 +1125,52 @@ class NoticeScraper:
         except Exception as e:
             logger.error(f"Daily Menu Check failed: {e}")
 
+    async def send_weekly_deadline_briefing(self, session: aiohttp.ClientSession):
+        if not self.supabase: return
+        
+        now = datetime.datetime.now(KST)
+        today_str = now.strftime('%Y-%m-%d')
+        
+        # Run on Monday (0) at 9 AM
+        if now.weekday() == 0 and now.hour >= 9:
+            if self.state.last_deadline_briefing != today_str:
+                try:
+                    start_date = now.date()
+                    end_date = start_date + datetime.timedelta(days=7)
+                    
+                    # Query DB for deadlines in the next 7 days
+                    resp = self.supabase.table('notices') \
+                        .select('title, end_date, url, category') \
+                        .gte('end_date', start_date.isoformat()) \
+                        .lte('end_date', end_date.isoformat()) \
+                        .order('end_date') \
+                        .execute()
+                    
+                    if resp.data:
+                        lines = []
+                        for item in resp.data:
+                            d_str = item['end_date']
+                            # Parse date to get weekday
+                            d_obj = datetime.datetime.strptime(d_str, '%Y-%m-%d')
+                            weekday_kor = ["월", "화", "수", "목", "금", "토", "일"][d_obj.weekday()]
+                            
+                            lines.append(f"- <a href='{item['url']}'>{self.escape_html(item['title'])}</a> (~{d_str[5:]} {weekday_kor})")
+                        
+                        if lines:
+                            msg = (
+                                f"⏰ <b>이번 주 마감 일정 ({start_date.strftime('%m/%d')} ~ {end_date.strftime('%m/%d')})</b>\n\n"
+                                + "\n".join(lines)
+                                + "\n\n#마감알림"
+                            )
+                            # Send to General Topic
+                            await send_telegram(session, msg, self.config.topic_map.get('일반'))
+                            
+                    self.state.last_deadline_briefing = today_str
+                    self._save_state()
+                    
+                except Exception as e:
+                    logger.error(f"Weekly Deadline Briefing failed: {e}")
+
     async def cleanup_old_data(self):
         if not self.supabase: return
         try:
@@ -1190,6 +1263,9 @@ class NoticeScraper:
 
                 # Daily Menu Check
                 await self.check_daily_menu(session)
+
+                # Weekly Deadline Briefing
+                await self.send_weekly_deadline_briefing(session)
 
         except Exception as e:
             logger.critical(f"🔥 FATAL ERROR: {e}")

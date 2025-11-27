@@ -15,6 +15,7 @@ class NoticeItem(BaseModel):
     category: str = "일반"
     summary: Optional[str] = None
     is_exam: bool = False
+    start_date: Optional[date] = None
     end_date: Optional[date] = None
 
 class TargetConfig(BaseModel):
@@ -23,11 +24,15 @@ class TargetConfig(BaseModel):
     url: str
     base_url: str
     content_selector: str
+    list_selector: str = "table tbody tr"
+    title_selector: str = "a"
+    link_selector: str = "a"
     type: Optional[str] = None # 'calendar', 'menu', or None
 
 class BotConfig(BaseModel):
     topic_map: Dict[str, int]
     targets: List[TargetConfig]
+    keywords: List[str] = []
     user_agent: str
     ai_prompt_template: str
     calendar_prompt_template: str
@@ -44,3 +49,4 @@ class ScraperState(BaseModel):
     daily_notices_buffer: Optional[Dict[str, Any]] = {}
     last_daily_menu_check: Optional[str] = None
     last_menu_message_id: Optional[int] = None
+    last_deadline_briefing: Optional[str] = None
