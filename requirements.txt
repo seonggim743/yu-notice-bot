@@ -1,9 +1,24 @@
-requests
-beautifulsoup4
-google-generativeai
-supabase
-pytz
-pydantic
-aiohttp
-python-dotenv
-tenacity
+# Core Dependencies
+aiohttp>=3.9.0
+beautifulsoup4>=4.12.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+python-dotenv>=1.0.0
+
+# Database
+supabase>=2.0.0
+
+# AI & ML
+google-generativeai>=0.3.0
+
+# Timezone Support
+pytz>=2023.3
+
+# Utilities
+lxml>=5.0.0
+
+# Optional: Development Dependencies
+# pytest>=7.4.0
+# pytest-asyncio>=0.21.0
+# black>=23.0.0
+# flake8>=6.0.0

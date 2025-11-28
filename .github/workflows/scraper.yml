@@ -1,45 +1,83 @@
-name: YU Notice Scraper
+name: Yu Notice Bot Scraper
 
 on:
   schedule:
-    - cron: '*/10 * * * *'  # Run every 10 minutes
-  workflow_dispatch:      # Allow manual run
-
-permissions:
-  contents: write
+    # Run every 10 minutes
+    - cron: '*/10 * * * *'
+  
+  workflow_dispatch:  # Allow manual trigger
+  
+  push:
+    branches:
+      - main
+    paths:
+      - '**.py'
+      - 'requirements.txt'
+      - '.github/workflows/scraper.yml'
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v3
-
-    - name: Set up Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.11'
-
-    - name: Install dependencies
-      run: |
-        pip install -r requirements.txt
-
-    - name: Run scraper
-      env:
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        CHAT_ID: ${{ secrets.CHAT_ID }}
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-      run: python scraper.py
-
-    - name: Run LMS scraper
-      env:
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        CHAT_ID: ${{ secrets.CHAT_ID }}
-        CANVAS_TOKEN: ${{ secrets.CANVAS_TOKEN }}
-        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-      run: python lms_scraper.py
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run scraper
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          TELEGRAM_TOPIC_MAP: ${{ secrets.TELEGRAM_TOPIC_MAP }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_WEBHOOK_MAP: ${{ secrets.DISCORD_WEBHOOK_MAP }}
+          CANVAS_TOKEN: ${{ secrets.CANVAS_TOKEN }}
+          LOG_LEVEL: INFO
+        run: |
+          python main.py --once
+      
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-logs
+          path: bot.log
+          retention-days: 7
+      
+      - name: Notify on failure (Discord)
+        if: failure() && secrets.DISCORD_WEBHOOK_URL
+        run: |
+          curl -X POST ${{ secrets.DISCORD_WEBHOOK_URL }} \
+            -H "Content-Type: application/json" \
+            -d '{
+              "embeds": [{
+                "title": "🚨 Bot Scraper Failed",
+                "description": "The scraper job failed. Check logs for details.",
+                "color": 15158332,
+                "fields": [
+                  {
+                    "name": "Workflow",
+                    "value": "${{ github.workflow }}"
+                  },
+                  {
+                    "name": "Run",
+                    "value": "[#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
+                  }
+                ]
+              }]
+            }'
