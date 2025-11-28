@@ -18,13 +18,13 @@ class Settings(BaseSettings):
     
     # Topic Map: Site Key -> Topic ID
     # Can be JSON string or dict
-    TELEGRAM_TOPIC_MAP: Dict[str, int] = Field(default_factory=dict)
+    TELEGRAM_TOPIC_MAP: str = "{}"  # Default to empty JSON
 
     # --- Discord ---
     # Webhook Map: Site Key -> Webhook URL
     # Can be JSON string or dict
-    DISCORD_WEBHOOK_MAP: Dict[str, str] = Field(default_factory=dict)
-    DISCORD_WEBHOOK_URL: Optional[str] = Field(None, description="Fallback Single Webhook URL")
+    DISCORD_WEBHOOK_MAP: str = "{}"  # Default to empty JSON
+    DISCORD_WEBHOOK_URL: Optional[str] = None
 
     # --- Logging ---
     LOG_LEVEL: str = Field("INFO", description="Logging level")
@@ -40,23 +40,27 @@ class Settings(BaseSettings):
     @classmethod
     def parse_telegram_topic_map(cls, v):
         if isinstance(v, str):
+            if not v or v.strip() == "":
+                return {}
             try:
                 parsed = json.loads(v)
                 # Convert values to int
-                return {k: int(v) for k, v in parsed.items()}
-            except (json.JSONDecodeError, ValueError):
-                return {}
-        return v or {}
+                return {k: int(val) for k, val in parsed.items()}
+            except (json.JSONDecodeError, ValueError) as e:
+                raise ValueError(f"TELEGRAM_TOPIC_MAP must be valid JSON: {e}")
+        return v
 
     @field_validator('DISCORD_WEBHOOK_MAP', mode='before')
     @classmethod
     def parse_discord_webhook_map(cls, v):
         if isinstance(v, str):
+            if not v or v.strip() == "":
+                return {}
             try:
                 return json.loads(v)
-            except json.JSONDecodeError:
-                return {}
-        return v or {}
+            except json.JSONDecodeError as e:
+                raise ValueError(f"DISCORD_WEBHOOK_MAP must be valid JSON: {e}")
+        return v
 
     def model_post_init(self, __context):
         # Fallback: If map is empty but single URL exists, use it for known keys
