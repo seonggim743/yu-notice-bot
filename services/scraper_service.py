@@ -18,15 +18,13 @@ class ScraperService:
         self.ai = AIService()
         self.notifier = NotificationService()
         
-        # Safety Limits - increased for better coverage
+        # Safety Limits
         self.ai_summary_count = 0
-        self.MAX_AI_SUMMARIES = 10  # Process up to 10 new notices per run
+        self.MAX_AI_SUMMARIES = 10
         
         # Rate Limiting (Gemini 2.5 Flash: 10 RPM = 6 seconds per request)
-        # Using 7 seconds for safety margin + handle residual limits from previous runs
-        self.AI_CALL_DELAY = 7.0  # 7 seconds between AI calls
+        self.AI_CALL_DELAY = 6.0  # 6 seconds between AI calls
         self.NOTICE_PROCESS_DELAY = 0.5  # 0.5 seconds between each notice
-        self.STARTUP_COOLDOWN = 60.0  # 60 seconds initial cooldown to clear previous quota
         
         # Define Targets (Hardcoded for now, could be in config/DB)
         self.targets = [
@@ -215,11 +213,6 @@ class ScraperService:
             headers={'User-Agent': settings.USER_AGENT}
         ) as session:
             logger.info(f"[SCRAPER] Processing {len(self.targets)} targets sequentially...")
-            
-            # Startup cooldown to clear API quota
-            logger.info(f"[SCRAPER] Waiting {self.STARTUP_COOLDOWN}s cooldown to clear API quota...")
-            await asyncio.sleep(self.STARTUP_COOLDOWN)
-            logger.info(f"[SCRAPER] Cooldown complete. Starting...")
             
             for target in self.targets:
                 try:
