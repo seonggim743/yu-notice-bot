@@ -63,24 +63,28 @@ jobs:
           retention-days: 7
       
       - name: Notify on failure (Discord)
-        if: failure() && secrets.DISCORD_WEBHOOK_URL
+        if: failure()
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          curl -X POST ${{ secrets.DISCORD_WEBHOOK_URL }} \
-            -H "Content-Type: application/json" \
-            -d '{
-              "embeds": [{
-                "title": "🚨 Bot Scraper Failed",
-                "description": "The scraper job failed. Check logs for details.",
-                "color": 15158332,
-                "fields": [
-                  {
-                    "name": "Workflow",
-                    "value": "${{ github.workflow }}"
-                  },
-                  {
-                    "name": "Run",
-                    "value": "[#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})"
-                  }
-                ]
-              }]
-            }'
+          if [ -n "$DISCORD_WEBHOOK_URL" ]; then
+            curl -X POST "$DISCORD_WEBHOOK_URL" \
+              -H "Content-Type: application/json" \
+              -d "{
+                \"embeds\": [{
+                  \"title\": \"🚨 Bot Scraper Failed\",
+                  \"description\": \"The scraper job failed. Check logs for details.\",
+                  \"color\": 15158332,
+                  \"fields\": [
+                    {
+                      \"name\": \"Workflow\",
+                      \"value\": \"${{ github.workflow }}\"
+                    },
+                    {
+                      \"name\": \"Run\",
+                      \"value\": \"[#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\"
+                    }
+                  ]
+                }]
+              }"
+          fi
