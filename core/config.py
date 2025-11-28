@@ -77,4 +77,30 @@ class Settings(BaseSettings):
         case_sensitive = True
         extra = "ignore"
 
+    def validate_all(self) -> List[str]:
+        """
+        Validate all configuration settings.
+        Returns a list of warning/error messages.
+        """
+        errors = []
+        
+        # Critical
+        if not self.SUPABASE_URL: errors.append("❌ SUPABASE_URL is missing")
+        if not self.SUPABASE_KEY: errors.append("❌ SUPABASE_KEY is missing")
+        if not self.TELEGRAM_TOKEN: errors.append("❌ TELEGRAM_TOKEN is missing")
+        if not self.TELEGRAM_CHAT_ID: errors.append("❌ TELEGRAM_CHAT_ID is missing")
+        
+        # Warnings
+        if not self.GEMINI_API_KEY:
+            errors.append("⚠️ GEMINI_API_KEY is missing - AI features will be disabled")
+            
+        if not self.DISCORD_WEBHOOK_MAP and not self.DISCORD_WEBHOOK_URL:
+            errors.append("⚠️ No Discord Webhook configured - Discord notifications will be disabled")
+            
+        # URL Validation (Basic)
+        if self.SUPABASE_URL and not self.SUPABASE_URL.startswith("https://"):
+            errors.append("❌ SUPABASE_URL must start with https://")
+            
+        return errors
+
 settings = Settings()

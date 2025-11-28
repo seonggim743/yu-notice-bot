@@ -36,7 +36,7 @@ class SensitiveDataFilter(logging.Filter):
 
 
 class KSTFormatter(logging.Formatter):
-    """Formatter that uses KST timezone"""
+    """Formatter that uses KST timezone with structured context support"""
     
     def converter(self, timestamp):
         dt = datetime.fromtimestamp(timestamp)
@@ -47,6 +47,53 @@ class KSTFormatter(logging.Formatter):
         if datefmt:
             return dt.strftime(datefmt)
         return dt.isoformat(timespec='milliseconds')
+    
+    def format(self, record):
+        """Override to add structured context"""
+        base_msg = super().format(record)
+        
+        # Add structured context if present
+        if hasattr(record, 'context') and record.context:
+            context_str = ' | '.join(f"{k}={v}" for k, v in record.context.items())
+            return f"{base_msg} | {context_str}"
+        
+        return base_msg
+
+
+class PerformanceFormatter(KSTFormatter):
+    """Specialized formatter for performance logs"""
+    
+    def format(self, record):
+        base_msg = super().format(record)
+        
+        # Add timing information if present
+        if hasattr(record, 'duration_ms'):
+            return f"{base_msg} | ⏱️ {record.duration_ms:.2f}ms"
+        elif hasattr(record, 'duration'):
+            return f"{base_msg} | ⏱️ {record.duration:.2f}s"
+        
+        return base_msg
+
+
+class StructuredLoggerAdapter(logging.LoggerAdapter):
+    """Adapter to add structured context to log messages"""
+    
+    def process(self, msg, kwargs):
+        # Extract context from kwargs
+        context = kwargs.pop('context', {})
+        
+        # Add to extra for formatter to access
+        if 'extra' not in kwargs:
+            kwargs['extra'] = {}
+        kwargs['extra']['context'] = context
+        
+        # Add duration if present
+        if 'duration' in kwargs:
+            kwargs['extra']['duration'] = kwargs.pop('duration')
+        if 'duration_ms' in kwargs:
+            kwargs['extra']['duration_ms'] = kwargs.pop('duration_ms')
+        
+        return msg, kwargs
 
 
 class JSONFormatter(logging.Formatter):
@@ -60,8 +107,21 @@ class JSONFormatter(logging.Formatter):
             "module": record.module,
             "function": record.funcName,
         }
+        
+        # Add context if present
+        if hasattr(record, 'context') and record.context:
+            log_record["context"] = record.context
+        
+        # Add timing if present
+        if hasattr(record, 'duration'):
+            log_record["duration_seconds"] = record.duration
+        if hasattr(record, 'duration_ms'):
+            log_record["duration_ms"] = record.duration_ms
+        
         if record.exc_info:
             log_record["exception"] = self.formatException(record.exc_info)
+            log_record["traceback"] = self.formatException(record.exc_info)
+        
         return json.dumps(log_record, ensure_ascii=False)
 
 
@@ -100,13 +160,13 @@ def get_logger(
     logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
     
     # Console Formatter (Human-readable with KST)
-    console_formatter = KSTFormatter(
+    console_formatter = PerformanceFormatter(
         '%(asctime)s | %(levelname)-8s | %(name)s | %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
     
-    # File Formatter (More detailed with KST)
-    file_formatter = KSTFormatter(
+    # File Formatter (More detailed with KST and performance tracking)
+    file_formatter = PerformanceFormatter(
         '%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s',
         datefmt='%Y-%m-%d %H:%M:%S'
     )
@@ -141,7 +201,8 @@ def get_logger(
     # Add console handler
     logger.addHandler(console_handler)
     
-    return logger
+    # Return wrapped logger with structured context support
+    return StructuredLoggerAdapter(logger, {})
 
 
 # Convenience function for quick setup

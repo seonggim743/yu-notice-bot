@@ -9,6 +9,7 @@ from repositories.notice_repo import NoticeRepository
 from services.ai_service import AIService
 from services.notification_service import NotificationService
 from parsers.html_parser import HTMLParser
+from core.performance import get_performance_monitor
 
 logger = get_logger(__name__)
 
@@ -23,7 +24,8 @@ class ScraperService:
         self.MAX_AI_SUMMARIES = 10
         
         # Rate Limiting (Gemini 2.5 Flash: 10 RPM = 6 seconds per request)
-        self.AI_CALL_DELAY = 6.0  # 6 seconds between AI calls
+        # Using 7s for safety margin + each notice has multiple AI calls
+        self.AI_CALL_DELAY = 7.0  # 7 seconds between AI calls
         self.NOTICE_PROCESS_DELAY = 0.5  # 0.5 seconds between each notice
         
         # Define Targets (Hardcoded for now, could be in config/DB)
@@ -63,7 +65,10 @@ class ScraperService:
 
     async def process_target(self, session: aiohttp.ClientSession, target: Dict):
         key = target['key']
-        logger.info(f"[SCRAPER] Scraping {key}...")
+        monitor = get_performance_monitor()
+        
+        with monitor.measure("scrape_target", {"key": key}):
+            logger.info(f"[SCRAPER] Scraping {key}...")
         
         try:
             async with session.get(target['url'], timeout=aiohttp.ClientTimeout(total=30)) as resp:
@@ -131,23 +136,24 @@ class ScraperService:
             if self.ai_summary_count < self.MAX_AI_SUMMARIES:
                 logger.info(f"[SCRAPER] Starting AI analysis ({self.ai_summary_count + 1}/{self.MAX_AI_SUMMARIES})...")
                 
-                # 1. Analyze content
-                analysis = await self.ai.analyze_notice(item.content)
+                # 1. Analyze content (Wait BEFORE first call)
+                logger.info(f"[SCRAPER] Waiting {self.AI_CALL_DELAY}s before analyze_notice...")
+                await asyncio.sleep(self.AI_CALL_DELAY)
+                
+                with monitor.measure("ai_analysis", {"type": "summary", "title": item.title}):
+                    analysis = await self.ai.analyze_notice(item.content)
+                
                 item.category = analysis.get('category', '일반')
                 item.summary = analysis.get('summary', item.content[:100])
                 
-                logger.info(f"[SCRAPER] Analysis complete. Waiting {self.AI_CALL_DELAY}s before embedding...")
+                # 2. Get embedding (Wait BEFORE second call)
+                logger.info(f"[SCRAPER] Waiting {self.AI_CALL_DELAY}s before get_embedding...")
                 await asyncio.sleep(self.AI_CALL_DELAY)
                 
-                # 2. Get embedding
                 item.embedding = await self.ai.get_embedding(f"{item.title}\n{item.summary}")
                 self.ai_summary_count += 1
                 
                 logger.info(f"[SCRAPER] AI complete. Quota: {self.ai_summary_count}/{self.MAX_AI_SUMMARIES}")
-                
-                # Delay before next notice
-                if self.ai_summary_count < self.MAX_AI_SUMMARIES:
-                    await asyncio.sleep(self.AI_CALL_DELAY)
             else:
                 logger.warning(f"[SCRAPER] AI limit reached. Skipping AI analysis.")
                 item.category = '일반'
@@ -165,9 +171,10 @@ class ScraperService:
                     
                     if old_notice.content != item.content:
                         if self.ai_summary_count < self.MAX_AI_SUMMARIES:
-                            logger.info(f"[SCRAPER] Getting AI diff. Waiting {self.AI_CALL_DELAY}s...")
+                            logger.info(f"[SCRAPER] Waiting {self.AI_CALL_DELAY}s before get_diff_summary...")
                             await asyncio.sleep(self.AI_CALL_DELAY)
                             changes['content'] = await self.ai.get_diff_summary(old_notice.content, item.content)
+                            self.ai_summary_count += 1  # Count diff as an AI call
                         else:
                             changes['content'] = "내용 변경됨 (AI 한도 초과)"
                     
@@ -212,12 +219,16 @@ class ScraperService:
             connector=connector,
             headers={'User-Agent': settings.USER_AGENT}
         ) as session:
-            logger.info(f"[SCRAPER] Processing {len(self.targets)} targets sequentially...")
+            monitor = get_performance_monitor()
             
-            for target in self.targets:
-                try:
-                    await self.process_target(session, target)
-                except Exception as e:
-                    logger.error(f"[SCRAPER] Target {target['key']} failed: {e}")
+            with monitor.measure("full_scrape_run"):
+                logger.info(f"[SCRAPER] Processing {len(self.targets)} targets sequentially...")
+                
+                for target in self.targets:
+                    try:
+                        await self.process_target(session, target)
+                    except Exception as e:
+                        logger.error(f"[SCRAPER] Target {target['key']} failed: {e}")
             
             logger.info(f"[SCRAPER] Complete. Total AI calls: {self.ai_summary_count}/{self.MAX_AI_SUMMARIES}")
+            monitor.log_summary()

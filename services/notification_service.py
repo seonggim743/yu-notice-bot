@@ -2,9 +2,11 @@ import aiohttp
 import json
 import asyncio
 import html
+from datetime import datetime
 from typing import List, Dict, Optional
 from core.config import settings
 from core.logger import get_logger
+from core.performance import get_performance_monitor
 from models.notice import Notice
 
 logger = get_logger(__name__)
@@ -16,16 +18,25 @@ class NotificationService:
 
     async def send_telegram(self, session: aiohttp.ClientSession, notice: Notice, is_new: bool, modified_reason: str = "") -> Optional[int]:
         """
-        Sends a notice to Telegram. Returns the Message ID.
+        Sends a notice to Telegram with enhanced formatting. Returns the Message ID.
         """
         if not self.telegram_token: return None
 
         # Source-based Routing
         topic_id = settings.TELEGRAM_TOPIC_MAP.get(notice.site_key)
         
-        # Emoji & Prefix
+        # Category Emojis
+        cat_emojis = {
+            "장학": "💰",
+            "학사": "🎓",
+            "취업": "💼",
+            "dormitory": "🏠",
+            "일반": "📢"
+        }
+        cat_emoji = cat_emojis.get(notice.category, "📢")
+        
+        # Status Prefix
         prefix = "🆕" if is_new else "🔄"
-        status = "새 공지" if is_new else "수정된 공지"
         
         # Content Construction
         safe_title = html.escape(notice.title)
@@ -41,15 +52,17 @@ class NotificationService:
         }
         hashtag = category_map.get(notice.category, "#General #일반")
         
+        # Enhanced Message Format
         msg = (
-            f"{prefix} <b><a href='{notice.url}'>{safe_title}</a></b>\n\n"
-            f"📝 <b>요약</b>\n{safe_summary}"
+            f"{prefix} <b>{cat_emoji} {safe_title}</b>\n\n"
+            f"{safe_summary}\n\n"
         )
         
         if modified_reason:
-            msg += f"\n\n⚠️ <b>수정 사항</b>: {modified_reason}"
+            msg += f"⚠️ <b>수정 사항</b>: {modified_reason}\n\n"
             
-        msg += f"\n\n{hashtag}"
+        msg += f"🔗 <a href='{notice.url}'>공지사항 보러가기</a>\n"
+        msg += f"{hashtag}"
 
         # Buttons (Download Links)
         buttons = []
@@ -78,11 +91,12 @@ class NotificationService:
         
         main_msg_id = None
         try:
-            async with session.post(url, json=payload) as resp:
-                resp.raise_for_status()
-                result = await resp.json()
-                main_msg_id = result.get('result', {}).get('message_id')
-                logger.info(f"[NOTIFIER] Telegram sent: {notice.title}")
+            with get_performance_monitor().measure("send_telegram", {"title": notice.title}):
+                async with session.post(url, json=payload) as resp:
+                    resp.raise_for_status()
+                    result = await resp.json()
+                    main_msg_id = result.get('result', {}).get('message_id')
+                    logger.info(f"[NOTIFIER] Telegram sent: {notice.title}")
         except aiohttp.ClientError as e:
             logger.error(f"[NOTIFIER] Telegram send failed (HTTP {getattr(e, 'status', 'N/A')}): {e}")
             return None
@@ -95,7 +109,6 @@ class NotificationService:
             for att in notice.attachments:
                 try:
                     # Send as document using URL (Telegram downloads it)
-                    # Note: If URL is protected, this fails. Assuming public URLs for now.
                     doc_payload = {
                         'chat_id': self.chat_id,
                         'document': att.url,
@@ -114,7 +127,7 @@ class NotificationService:
 
     async def send_discord(self, session: aiohttp.ClientSession, notice: Notice, is_new: bool, modified_reason: str = "", max_retries: int = 2):
         """
-        Sends a notice to Discord via Webhook.
+        Sends a notice to Discord via Webhook with enhanced Embed.
         """
         webhook_url = settings.DISCORD_WEBHOOK_MAP.get(notice.site_key)
         if not webhook_url:
@@ -138,9 +151,15 @@ class NotificationService:
             "url": notice.url,
             "description": notice.summary,
             "color": color,
-            "fields": [
-                {"name": "Category", "value": notice.category, "inline": True}
-            ]
+            "author": {
+                "name": "Yu Notice Bot",
+                "icon_url": "https://www.yu.ac.kr/_res/yu/kr/img/common/logo.png"
+            },
+            "footer": {
+                "text": f"Category: {notice.category} • {notice.site_key}"
+            },
+            "timestamp": datetime.utcnow().isoformat(),
+            "fields": []
         }
         
         if notice.image_url:
@@ -148,7 +167,7 @@ class NotificationService:
         
         if modified_reason:
             embed["fields"].append({
-                "name": "수정 사항",
+                "name": "⚠️ 수정 사항",
                 "value": modified_reason,
                 "inline": False
             })
@@ -158,15 +177,15 @@ class NotificationService:
                 logger.warning(f"[NOTIFIER] Notice has {len(notice.attachments)} attachments, only showing first 5 in Discord")
             file_links = [f"[{a.name}]({a.url})" for a in notice.attachments[:5]]
             embed["fields"].append({
-                "name": "첨부파일 (다운로드)",
+                "name": "📎 첨부파일",
                 "value": "\n".join(file_links), 
                 "inline": False
             })
 
         # Validate embed size (Discord limit: 6000 chars for description)
-        if len(embed.get("description", "")) > 6000:
+        if len(embed.get("description", "")) > 4000:
             logger.warning(f"[NOTIFIER] Summary too long ({len(embed['description'])} chars), truncating...")
-            embed["description"] = embed["description"][:5950] + "...\n\n(내용이 잘렸습니다)"
+            embed["description"] = embed["description"][:3950] + "...\n\n(내용이 잘렸습니다)"
 
         payload = {"embeds": [embed]}
         
@@ -174,16 +193,18 @@ class NotificationService:
         for attempt in range(1, max_retries + 1):
             try:
                 logger.debug(f"[NOTIFIER] Sending Discord webhook (attempt {attempt}/{max_retries})")
-                async with session.post(webhook_url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                    if resp.status not in [200, 204]:
-                        error_text = await resp.text()
-                        logger.error(f"[NOTIFIER] Discord send failed: {resp.status} - {error_text}")
-                        if attempt < max_retries and resp.status >= 500:
-                            await asyncio.sleep(2 ** attempt)  # Exponential backoff
-                            continue
-                    else:
-                        logger.info(f"[NOTIFIER] Discord sent: {notice.title}")
-                        return
+                
+                with get_performance_monitor().measure("send_discord", {"title": notice.title, "attempt": attempt}):
+                    async with session.post(webhook_url, json=payload, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                        if resp.status not in [200, 204]:
+                            error_text = await resp.text()
+                            logger.error(f"[NOTIFIER] Discord send failed: {resp.status} - {error_text}")
+                            if attempt < max_retries and resp.status >= 500:
+                                await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                                continue
+                        else:
+                            logger.info(f"[NOTIFIER] Discord sent: {notice.title}")
+                            return
             except asyncio.TimeoutError:
                 logger.error(f"[NOTIFIER] Discord webhook timeout (attempt {attempt}/{max_retries})")
                 if attempt < max_retries:

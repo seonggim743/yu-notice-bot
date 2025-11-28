@@ -4,6 +4,7 @@ import sys
 from core.config import settings
 from core.logger import get_logger
 from core.database import Database
+from core.error_notifier import get_error_notifier, ErrorSeverity
 from services.scraper_service import ScraperService
 
 logger = get_logger(__name__)
@@ -29,6 +30,14 @@ class Bot:
                 return False
         except Exception as e:
             logger.critical(f"Database connection failed: {e}")
+            # Send error notification
+            asyncio.create_task(
+                get_error_notifier().send_critical_error(
+                    "Database connection failed during startup",
+                    exception=e,
+                    severity=ErrorSeverity.CRITICAL
+                )
+            )
             return False
         
         # Check configuration
@@ -36,11 +45,15 @@ class Bot:
         logger.info(f"Interval: {settings.SCRAPE_INTERVAL}s")
         logger.info(f"Log Level: {settings.LOG_LEVEL}")
         
-        if not settings.GEMINI_API_KEY:
-            logger.warning("GEMINI_API_KEY not set - AI features will be disabled")
+        validation_errors = settings.validate_all()
+        for msg in validation_errors:
+            if "❌" in msg:
+                logger.critical(msg)
+            else:
+                logger.warning(msg)
         
-        if not settings.TELEGRAM_TOKEN:
-            logger.critical("TELEGRAM_TOKEN not set - cannot send notifications")
+        if any("❌" in msg for msg in validation_errors):
+            logger.critical("Configuration validation failed")
             return False
         
         logger.info("[OK] Startup validation passed")
@@ -80,8 +93,26 @@ class Bot:
                 self.error_count += 1
                 logger.critical(f"Critical Error in Main Loop ({self.error_count}/{self.MAX_CONSECUTIVE_ERRORS}): {e}", exc_info=True)
                 
+                # Send error notification
+                asyncio.create_task(
+                    get_error_notifier().send_critical_error(
+                        f"Critical error in main loop (attempt {self.error_count}/{self.MAX_CONSECUTIVE_ERRORS})",
+                        exception=e,
+                        context={"error_count": self.error_count, "max_errors": self.MAX_CONSECUTIVE_ERRORS},
+                        severity=ErrorSeverity.CRITICAL
+                    )
+                )
+                
                 if self.error_count >= self.MAX_CONSECUTIVE_ERRORS:
                     logger.critical(f"Too many consecutive errors. Shutting down.")
+                    # Final shutdown notification
+                    asyncio.create_task(
+                        get_error_notifier().send_critical_error(
+                            "Bot shutting down due to repeated failures",
+                            context={"consecutive_errors": self.error_count},
+                            severity=ErrorSeverity.CRITICAL
+                        )
+                    )
                     break
             
             if self.running:
@@ -119,6 +150,14 @@ if __name__ == "__main__":
             logger.info("Run completed successfully")
         except Exception as e:
             logger.critical(f"Run failed: {e}", exc_info=True)
+            # Send error notification
+            asyncio.run(
+                get_error_notifier().send_critical_error(
+                    "Bot run failed in --once mode",
+                    exception=e,
+                    severity=ErrorSeverity.CRITICAL
+                )
+            )
             exit_code = 1
     else:
         try:
