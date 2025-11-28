@@ -18,12 +18,12 @@ class Settings(BaseSettings):
     
     # Topic Map: Site Key -> Topic ID
     # Can be JSON string or dict
-    TELEGRAM_TOPIC_MAP: str = "{}"  # Default to empty JSON
+    TELEGRAM_TOPIC_MAP: Dict[str, int] = Field(default_factory=dict)
 
     # --- Discord ---
     # Webhook Map: Site Key -> Webhook URL
     # Can be JSON string or dict
-    DISCORD_WEBHOOK_MAP: str = "{}"  # Default to empty JSON
+    DISCORD_WEBHOOK_MAP: Dict[str, str] = Field(default_factory=dict)
     DISCORD_WEBHOOK_URL: Optional[str] = None
 
     # --- Logging ---
