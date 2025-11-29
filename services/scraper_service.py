@@ -367,8 +367,33 @@ class ScraperService:
                 logger.error(f"[TEST] Failed to fetch URL: {e}")
                 return
 
-            # 3. Parse (Simulate Item)
+            # 3. Check if it's a list page (Auto-detect)
+            # If the user provided a board URL (e.g. bachelor-guide.do), we should pick the first item
             soup = BeautifulSoup(html, 'html.parser')
+            
+            # Check if this URL matches any target's base_url
+            matched_target = next((t for t in self.targets if t['url'] in test_url or test_url in t['url']), None)
+            
+            if matched_target:
+                # Try to parse as list first
+                logger.info(f"[TEST] URL matches target '{matched_target['key']}'. Checking if it's a list page...")
+                items = matched_target['parser'].parse_list(html, matched_target['key'], matched_target['base_url'])
+                
+                if items:
+                    logger.info(f"[TEST] Detected list page with {len(items)} items. Picking the first one for testing.")
+                    first_item = items[0]
+                    logger.info(f"[TEST] Redirecting test to: {first_item.title} ({first_item.url})")
+                    
+                    # Recursively call run_test with the item's URL
+                    # But we need to be careful about infinite recursion if parsing fails
+                    if first_item.url != test_url:
+                        await self.run_test(first_item.url)
+                        return
+                    else:
+                        logger.warning("[TEST] First item URL is same as list URL. Proceeding as detail page.")
+            
+            # 4. Parse (Simulate Item)
+            # (Proceed with existing detail parsing logic)
             
             # Try to find title with YU-specific selectors first
             title = "Test Notification"
