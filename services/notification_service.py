@@ -282,8 +282,8 @@ class NotificationService:
                             # Add to media array (reference the uploaded file)
                             media_item = {
                                 "type": "document",
-                                "media": f"attach://{field_name}",
-                                "caption": file_info['filename'] if idx == 0 else ""  # Only first file gets caption
+                                "media": f"attach://{field_name}"
+                                # No caption - filename is already shown in the file itself
                             }
                             media.append(media_item)
                         

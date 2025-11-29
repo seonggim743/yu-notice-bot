@@ -370,11 +370,30 @@ class ScraperService:
             # 3. Parse (Simulate Item)
             soup = BeautifulSoup(html, 'html.parser')
             
-            # Try to find title
+            # Try to find title with YU-specific selectors first
             title = "Test Notification"
-            title_elem = soup.select_one('.b-view-title, .view-title, h1, h2, .board-view-title')
-            if title_elem:
-                title = title_elem.get_text(strip=True)
+            title_selectors = [
+                '.b-title-box',      # YU main title container
+                '.b-view-title',     # YU view title
+                '.view-title',       # Generic view title
+                '.board-view-title', # Board view title
+                'h1',                # Fallback to h1
+                'h2',                # Fallback to h2
+                'title'              # Last resort: page title
+            ]
+            
+            for selector in title_selectors:
+                title_elem = soup.select_one(selector)
+                if title_elem:
+                    title_text = title_elem.get_text(strip=True)
+                    # Skip if it's just whitespace or too short
+                    if title_text and len(title_text) > 3:
+                        # For <title> tag, remove site name suffix
+                        if selector == 'title' and '|' in title_text:
+                            title_text = title_text.split('|')[0].strip()
+                        title = title_text
+                        logger.info(f"[TEST] Found title with selector '{selector}': {title}")
+                        break
             
             # Create dummy item
             item = Notice(
