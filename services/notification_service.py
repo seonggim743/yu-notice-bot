@@ -2,6 +2,7 @@ import aiohttp
 import json
 import asyncio
 import html
+import urllib.parse
 from aiohttp import MultipartWriter
 from aiohttp.payload import BytesPayload, StringPayload
 from datetime import datetime
@@ -415,21 +416,16 @@ class NotificationService:
                             if file_size > 25 * 1024 * 1024: continue
                             
                             actual_filename = att.name
-                            # Safe filename logic
-                            import re
-                            try:
-                                ext = actual_filename.split('.')[-1] if '.' in actual_filename else 'file'
-                                name_without_ext = actual_filename.rsplit('.', 1)[0]
-                                safe_name = re.sub(r'[^a-zA-Z0-9\-_]', '_', name_without_ext).strip('_')
-                                if len(safe_name) < 3: safe_name = f"attachment_{idx}"
-                                safe_filename = f"{safe_name}.{ext}"
-                            except:
-                                safe_filename = f"attachment_{idx}.file"
+                            actual_filename = att.name
+                            
+                            # Debug: Check what filename we're using
+                            logger.info(f"[NOTIFIER] Original filename: '{actual_filename}'")
                             
                             attachment_files.append({
                                 'data': file_data,
                                 'filename': actual_filename,
-                                'safe_filename': safe_filename
+                                'safe_filename': actual_filename,  # Use original as safe_filename too
+                                'url': att.url
                             })
                 except Exception as e:
                     logger.error(f"[NOTIFIER] Error downloading {att.name}: {e}")
@@ -507,13 +503,24 @@ class NotificationService:
                     # Use BytesPayload and manually set header to avoid URL encoding
                     file_payload = BytesPayload(file_info['data'], content_type='application/octet-stream')
                     
-                    # Manually construct Content-Disposition with raw UTF-8 filename
-                    # Discord expects: filename="한글.pdf" (raw bytes/string), NOT filename*=utf-8''%ED...
-                    filename_str = file_info['filename']
-                    # Escape quotes in filename just in case
-                    filename_str = filename_str.replace('"', '\\"')
+                    # Manually construct Content-Disposition with RFC 5987 encoding
+                    # Discord (and modern clients) support filename*=utf-8''EncodedName
+                    # We provide a safe ASCII fallback for 'filename' and the full UTF-8 name in 'filename*'
                     
-                    file_payload.headers['Content-Disposition'] = f'form-data; name="file{file_index}"; filename="{filename_str}"'
+                    filename_utf8 = file_info['filename']
+                    encoded_filename = urllib.parse.quote(filename_utf8)
+                    
+                    # Create a safe ASCII fallback name
+                    ext = filename_utf8.split('.')[-1] if '.' in filename_utf8 else 'file'
+                    fallback_filename = f"attachment_{idx}.{ext}"
+                    
+                    # Construct the header
+                    # Note: No spaces around the '=' for parameters is safer
+                    file_payload.headers['Content-Disposition'] = (
+                        f'form-data; name="file{file_index}"; '
+                        f'filename="{fallback_filename}"; '
+                        f'filename*=utf-8\'\'{encoded_filename}'
+                    )
                     writer.append_payload(file_payload)
                     
                     file_index += 1
