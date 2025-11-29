@@ -78,13 +78,10 @@ class Settings(BaseSettings):
         return v
 
     def model_post_init(self, __context):
-        # Fallback: If map is empty but single URL exists, use it for known keys
-        if not self.DISCORD_WEBHOOK_MAP and self.DISCORD_WEBHOOK_URL:
-            # Default keys we know of
-            self.DISCORD_WEBHOOK_MAP = {
-                "yu_news": self.DISCORD_WEBHOOK_URL,
-                "cse_notice": self.DISCORD_WEBHOOK_URL
-            }
+        # Backward Compatibility: If DISCORD_CHANNEL_MAP is empty but WEBHOOK_MAP exists,
+        # assume user is using WEBHOOK_MAP env var for Channel IDs (as per migration plan).
+        if not self.DISCORD_CHANNEL_MAP and self.DISCORD_WEBHOOK_MAP:
+            self.DISCORD_CHANNEL_MAP = self.DISCORD_WEBHOOK_MAP.copy()
 
     class Config:
         env_file = ".env"

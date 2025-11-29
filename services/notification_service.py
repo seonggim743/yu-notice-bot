@@ -274,45 +274,26 @@ class NotificationService:
 
     async def send_discord(self, session: aiohttp.ClientSession, notice: Notice, is_new: bool, modified_reason: str = "", max_retries: int = 2):
         """
-        Sends a notice to Discord via Bot API (preferred) or Webhook.
+        Sends a notice to Discord via Bot API.
         """
-        # Load token directly from .env to ensure consistency with working test script
-        from dotenv import load_dotenv
-        import os
-        load_dotenv()
+        bot_token = settings.DISCORD_BOT_TOKEN
+        channel_map = settings.DISCORD_CHANNEL_MAP
         
-        bot_token = os.getenv('DISCORD_BOT_TOKEN')
-        channel_map_str = os.getenv('DISCORD_CHANNEL_MAP')
-        
-        # 1. Bot API (Priority)
-        if bot_token and channel_map_str:
-            try:
-                import json
-                channel_map = json.loads(channel_map_str)
-                channel_id = channel_map.get(notice.site_key)
+        if bot_token and channel_map:
+            channel_id = channel_map.get(notice.site_key)
+            
+            if channel_id:
+                url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+                headers = {
+                    "Authorization": f"Bot {bot_token}",
+                    # No explicit User-Agent to match working test script
+                }
                 
-                if channel_id:
-                    url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
-                    headers = {
-                        "Authorization": f"Bot {bot_token}",
-                        # No explicit User-Agent to match working test script
-                    }
-                    
-                    return await self._send_discord_common(session, notice, is_new, modified_reason, url, headers, max_retries)
-                else:
-                    logger.warning(f"[NOTIFIER] No Discord channel found for key '{notice.site_key}' (Bot API configured)")
-            except json.JSONDecodeError:
-                logger.error("[NOTIFIER] Invalid JSON in DISCORD_CHANNEL_MAP")
-
-        # 2. Webhook (Legacy) - Only if Bot API is not used
-        if settings.DISCORD_WEBHOOK_MAP:
-            webhook_url = settings.DISCORD_WEBHOOK_MAP.get(notice.site_key)
-            if webhook_url:
-                return await self._send_discord_common(session, notice, is_new, modified_reason, webhook_url, {}, max_retries)
+                return await self._send_discord_common(session, notice, is_new, modified_reason, url, headers, max_retries)
             else:
-                logger.warning(f"[NOTIFIER] No Discord Webhook found for key '{notice.site_key}'")
+                logger.warning(f"[NOTIFIER] No Discord channel found for key '{notice.site_key}'")
         else:
-            logger.warning(f"[NOTIFIER] No Discord configuration found for key '{notice.site_key}'")
+            logger.warning("[NOTIFIER] Discord Bot API not configured (Missing Token or Channel Map)")
 
     async def _send_discord_common(self, session: aiohttp.ClientSession, notice: Notice, is_new: bool, modified_reason: str, url: str, headers: Dict[str, str], max_retries: int):
         """

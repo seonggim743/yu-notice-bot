@@ -51,9 +51,17 @@ async def main():
     
     # Parse Maps
     discord_map = {}
+    # Try CHANNEL_MAP first (New standard)
     try:
-        discord_map = json.loads(os.getenv('DISCORD_WEBHOOK_MAP', '{}'))
+        discord_map = json.loads(os.getenv('DISCORD_CHANNEL_MAP', '{}'))
     except: pass
+    
+    # Fallback to WEBHOOK_MAP (Legacy/User preference) if empty or dev key missing
+    if not discord_map.get('dev'):
+        try:
+            webhook_map = json.loads(os.getenv('DISCORD_WEBHOOK_MAP', '{}'))
+            discord_map.update(webhook_map)
+        except: pass
     
     telegram_map = {}
     try:
