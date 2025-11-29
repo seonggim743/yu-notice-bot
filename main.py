@@ -6,7 +6,9 @@ import os
 
 # Debug: Verify Config Loading
 print(f"DEBUG: CWD = {os.getcwd()}")
-print(f"DEBUG: Loaded Discord Token = {settings.DISCORD_BOT_TOKEN[:5]}...{settings.DISCORD_BOT_TOKEN[-5:] if settings.DISCORD_BOT_TOKEN else 'None'}")
+# Debug: Check if tokens are loaded
+discord_token = settings.DISCORD_BOT_TOKEN or ""
+print(f"DEBUG: Loaded Discord Token = {discord_token[:5]}...{discord_token[-5:] if len(discord_token) > 10 else 'TooShort'}")
 
 from core.logger import get_logger
 from core.database import Database
