@@ -42,13 +42,14 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          TELEGRAM_TOPIC_MAP: ${{ secrets.TELEGRAM_TOPIC_MAP }}
+          TELEGRAM_TOPIC_MAP: ${{ secrets.TELEGRAM_TOPIC_MAP || '{}' }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          DISCORD_WEBHOOK_MAP: ${{ secrets.DISCORD_WEBHOOK_MAP }}
+          DISCORD_WEBHOOK_MAP: ${{ secrets.DISCORD_WEBHOOK_MAP || '{}' }}
+          DISCORD_CHANNEL_MAP: ${{ secrets.DISCORD_CHANNEL_MAP || '{}' }}
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           CANVAS_TOKEN: ${{ secrets.CANVAS_TOKEN }}
           LOG_LEVEL: INFO
@@ -79,10 +80,11 @@ jobs:
         if: failure()
         env:
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
-          DISCORD_WEBHOOK_MAP: ${{ secrets.DISCORD_WEBHOOK_MAP }}
+          DISCORD_WEBHOOK_MAP: ${{ secrets.DISCORD_WEBHOOK_MAP || '{}' }}
+          DISCORD_CHANNEL_MAP: ${{ secrets.DISCORD_CHANNEL_MAP || '{}' }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-          TELEGRAM_TOPIC_MAP: ${{ secrets.TELEGRAM_TOPIC_MAP }}
+          TELEGRAM_TOPIC_MAP: ${{ secrets.TELEGRAM_TOPIC_MAP || '{}' }}
           LOG_SNIPPET: ${{ env.LOG_SNIPPET }}
         run: |
           python scripts/notify_failure.py
