@@ -54,6 +54,18 @@ jobs:
         run: |
           python main.py --once
       
+      - name: Extract Error Logs
+        if: failure()
+        id: extract_logs
+        run: |
+          if [ -f bot.log ]; then
+            echo "LOG_SNIPPET<<EOF" >> $GITHUB_ENV
+            tail -n 20 bot.log | cut -c 1-1000 >> $GITHUB_ENV
+            echo "EOF" >> $GITHUB_ENV
+          else
+            echo "LOG_SNIPPET=No log file found." >> $GITHUB_ENV
+          fi
+
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
@@ -62,29 +74,39 @@ jobs:
           path: bot.log
           retention-days: 7
       
-      - name: Notify on failure (Discord)
+      - name: Notify on failure (Discord Dev)
         if: failure()
         env:
-          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
+          DISCORD_DEV_CHANNEL_ID: ${{ secrets.DISCORD_DEV_CHANNEL_ID }}
+          LOG_SNIPPET: ${{ env.LOG_SNIPPET }}
         run: |
-          if [ -n "$DISCORD_WEBHOOK_URL" ]; then
-            curl -X POST "$DISCORD_WEBHOOK_URL" \
+          python scripts/notify_failure.py
+
+      - name: Notify on failure (Telegram Dev)
+        if: failure()
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          TOPIC_ID: ${{ secrets.TELEGRAM_DEV_TOPIC_ID }}
+        run: |
+          if [ -n "$TELEGRAM_TOKEN" ] && [ -n "$CHAT_ID" ] && [ -n "$TOPIC_ID" ]; then
+            # Escape for JSON
+            SAFE_LOGS=$(echo "$LOG_SNIPPET" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')
+            SAFE_LOGS=${SAFE_LOGS:1:-1}
+            
+            MSG="🚨 <b>Bot Scraper Failed</b>\n\n"
+            MSG+="Workflow: ${{ github.workflow }}\n"
+            MSG+="Run: <a href='${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}'>#${{ github.run_number }}</a>\n\n"
+            MSG+="<b>Error Logs:</b>\n<pre>${SAFE_LOGS}</pre>"
+            
+            curl -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/sendMessage" \
               -H "Content-Type: application/json" \
               -d "{
-                \"embeds\": [{
-                  \"title\": \"🚨 Bot Scraper Failed\",
-                  \"description\": \"The scraper job failed. Check logs for details.\",
-                  \"color\": 15158332,
-                  \"fields\": [
-                    {
-                      \"name\": \"Workflow\",
-                      \"value\": \"${{ github.workflow }}\"
-                    },
-                    {
-                      \"name\": \"Run\",
-                      \"value\": \"[#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\"
-                    }
-                  ]
-                }]
+                \"chat_id\": \"$CHAT_ID\",
+                \"message_thread_id\": \"$TOPIC_ID\",
+                \"text\": \"$MSG\",
+                \"parse_mode\": \"HTML\",
+                \"disable_web_page_preview\": true
               }"
           fi
