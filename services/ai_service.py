@@ -43,7 +43,7 @@ class AIService:
 
         prompt = (
             "Analyze this university notice. Respond in JSON format.\n\n"
-            "1. 'category': string. Choose one: '장학', '학사', '취업', 'dormitory', '일반'.\n"
+            "1. 'category': string. Choose one: '장학', '학사', '취업', '생활관', '일반'.\n"
             "2. 'summary': string. Summarize concisely in Korean (3 lines max).\n"
             "   - End sentences with noun-endings (~함).\n"
             "   - Use structured format ONLY if applicable (e.g., '- 일시: ...').\n"

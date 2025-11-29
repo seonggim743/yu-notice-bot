@@ -33,7 +33,7 @@ class NotificationService:
             "장학": "💰",
             "학사": "🎓",
             "취업": "💼",
-            "dormitory": "🏠",
+            "생활관": "🏠",
             "일반": "📢"
         }
         cat_emoji = cat_emojis.get(notice.category, "📢")
@@ -61,7 +61,7 @@ class NotificationService:
             "장학": "#Scholarship #장학",
             "학사": "#Academic #학사",
             "취업": "#Job #취업",
-            "dormitory": "#Dormitory #생활관",
+            "생활관": "#Dormitory #생활관",
             "일반": "#General #일반"
         }
         # Use localized site name in hashtag if category is generic
