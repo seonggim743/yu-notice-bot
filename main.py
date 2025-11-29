@@ -2,6 +2,12 @@ import asyncio
 import signal
 import sys
 from core.config import settings
+import os
+
+# Debug: Verify Config Loading
+print(f"DEBUG: CWD = {os.getcwd()}")
+print(f"DEBUG: Loaded Discord Token = {settings.DISCORD_BOT_TOKEN[:5]}...{settings.DISCORD_BOT_TOKEN[-5:] if settings.DISCORD_BOT_TOKEN else 'None'}")
+
 from core.logger import get_logger
 from core.database import Database
 from core.error_notifier import get_error_notifier, ErrorSeverity

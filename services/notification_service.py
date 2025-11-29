@@ -311,16 +311,56 @@ class NotificationService:
             else:
                 logger.warning(f"[NOTIFIER] No files were successfully downloaded")
 
+
         return main_msg_id
 
     async def send_discord(self, session: aiohttp.ClientSession, notice: Notice, is_new: bool, modified_reason: str = "", max_retries: int = 2):
         """
-        Sends a notice to Discord via Webhook with enhanced Embed.
+        Sends a notice to Discord via Bot API (preferred) or Webhook.
         """
-        webhook_url = settings.DISCORD_WEBHOOK_MAP.get(notice.site_key)
-        if not webhook_url:
-            logger.warning(f"[NOTIFIER] No Discord Webhook found for key '{notice.site_key}'. Available: {list(settings.DISCORD_WEBHOOK_MAP.keys())}")
-            return
+        # Load token directly from .env to ensure consistency with working test script
+        from dotenv import load_dotenv
+        import os
+        load_dotenv()
+        
+        bot_token = os.getenv('DISCORD_BOT_TOKEN')
+        channel_map_str = os.getenv('DISCORD_CHANNEL_MAP')
+        
+        # 1. Bot API (Priority)
+        if bot_token and channel_map_str:
+            try:
+                import json
+                channel_map = json.loads(channel_map_str)
+                channel_id = channel_map.get(notice.site_key)
+                
+                if channel_id:
+                    url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+                    headers = {
+                        "Authorization": f"Bot {bot_token}",
+                        # No explicit User-Agent to match working test script
+                    }
+                    
+                    return await self._send_discord_common(session, notice, is_new, modified_reason, url, headers, max_retries)
+                else:
+                    logger.warning(f"[NOTIFIER] No Discord channel found for key '{notice.site_key}' (Bot API configured)")
+            except json.JSONDecodeError:
+                logger.error("[NOTIFIER] Invalid JSON in DISCORD_CHANNEL_MAP")
+
+        # 2. Webhook (Legacy) - Only if Bot API is not used
+        if settings.DISCORD_WEBHOOK_MAP:
+            webhook_url = settings.DISCORD_WEBHOOK_MAP.get(notice.site_key)
+            if webhook_url:
+                return await self._send_discord_common(session, notice, is_new, modified_reason, webhook_url, {}, max_retries)
+            else:
+                logger.warning(f"[NOTIFIER] No Discord Webhook found for key '{notice.site_key}'")
+        else:
+            logger.warning(f"[NOTIFIER] No Discord configuration found for key '{notice.site_key}'")
+
+    async def _send_discord_common(self, session: aiohttp.ClientSession, notice: Notice, is_new: bool, modified_reason: str, url: str, headers: Dict[str, str], max_retries: int):
+        """
+        Common method to send Discord notifications.
+        Uses a dedicated session for API calls to avoid header conflicts.
+        """
 
         # Color Mapping
         colors = {
@@ -350,9 +390,6 @@ class NotificationService:
             "fields": []
         }
         
-        if notice.image_url:
-            embed["image"] = {"url": notice.image_url}
-        
         if modified_reason:
             embed["fields"].append({
                 "name": "⚠️ 수정 사항",
@@ -360,251 +397,131 @@ class NotificationService:
                 "inline": False
             })
             
-        # Download and prepare attachments (up to 10 files - Discord limit)
+        # Download attachments using the SHARED session (to handle hotlink protection/cookies)
         attachment_files = []
+        image_data = None
+        image_filename = "image.png"
+
         if notice.attachments:
-            logger.info(f"[NOTIFIER] Downloading {len(notice.attachments)} attachments for Discord")
-            
-            for idx, att in enumerate(notice.attachments[:10], 1):  # Discord limit: 10 files
+            for idx, att in enumerate(notice.attachments[:10], 1):
                 try:
-                    logger.info(f"[NOTIFIER] Downloading attachment {idx}/{min(len(notice.attachments), 10)}: {att.name}")
-                    
-                    headers = {
-                        'Referer': notice.url,
-                        'User-Agent': settings.USER_AGENT,
-                        'Accept': '*/*'
-                    }
-                    
-                    async with session.get(att.url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as file_resp:
+                    # Use shared session for download
+                    async with session.get(att.url, headers={'Referer': notice.url}, timeout=aiohttp.ClientTimeout(total=30)) as file_resp:
                         if file_resp.status == 200:
                             file_data = await file_resp.read()
                             file_size = len(file_data)
+                            if file_size > 25 * 1024 * 1024: continue
                             
-                            # Discord file size limit: 25MB for webhooks (8MB for free servers)
-                            if file_size > 25 * 1024 * 1024:
-                                logger.warning(f"[NOTIFIER] File {att.name} too large ({file_size} bytes), skipping")
-                                continue
-                            
-                            # Use filename from HTML parsing (att.name) which is already properly decoded
                             actual_filename = att.name
-                            
-                            # Discord workaround: Create ASCII-safe filename while keeping original in embed
-                            # Discord's multipart handling doesn't properly decode UTF-8 filenames
-                            # aiohttp also URL-encodes special chars like brackets and spaces
-                            import unicodedata
+                            # Safe filename logic
                             import re
-                            
-                            # For Discord file attachment, use ONLY alphanumeric, hyphen, underscore, and dot
-                            # Remove ALL special characters that might get URL encoded
-                            safe_filename = actual_filename
                             try:
-                                # Get file extension first
                                 ext = actual_filename.split('.')[-1] if '.' in actual_filename else 'file'
-                                name_without_ext = actual_filename.rsplit('.', 1)[0] if '.' in actual_filename else actual_filename
-                                
-                                # Keep only: a-z, A-Z, 0-9, hyphen, underscore
-                                # Replace everything else with underscore
-                                safe_name = re.sub(r'[^a-zA-Z0-9\-_]', '_', name_without_ext)
-                                # Clean up multiple underscores
-                                safe_name = re.sub(r'_+', '_', safe_name)
-                                # Remove leading/trailing underscores
-                                safe_name = safe_name.strip('_')
-                                
-                                # If name is too short or empty, use generic name
-                                if len(safe_name) < 3:
-                                    safe_name = f"attachment_{idx}"
-                                
+                                name_without_ext = actual_filename.rsplit('.', 1)[0]
+                                safe_name = re.sub(r'[^a-zA-Z0-9\-_]', '_', name_without_ext).strip('_')
+                                if len(safe_name) < 3: safe_name = f"attachment_{idx}"
                                 safe_filename = f"{safe_name}.{ext}"
                             except:
-                                ext = actual_filename.split('.')[-1] if '.' in actual_filename else 'file'
-                                safe_filename = f"attachment_{idx}.{ext}"
-                            
-                            # Debug: Check what filename we're using
-                            logger.info(f"[NOTIFIER] Original filename: '{actual_filename}'")
-                            logger.info(f"[NOTIFIER] Safe filename for Discord: '{safe_filename}'")
+                                safe_filename = f"attachment_{idx}.file"
                             
                             attachment_files.append({
                                 'data': file_data,
-                                'filename': actual_filename,  # Original filename for embed display
-                                'safe_filename': safe_filename,  # ASCII-safe filename for Discord attachment
-                                'url': att.url  # Store original URL for hyperlink
+                                'filename': actual_filename,
+                                'safe_filename': safe_filename
                             })
-                            logger.info(f"[NOTIFIER] Downloaded {actual_filename}: {file_size} bytes")
-                        else:
-                            logger.error(f"[NOTIFIER] Failed to download {att.name}: HTTP {file_resp.status}")
                 except Exception as e:
                     logger.error(f"[NOTIFIER] Error downloading {att.name}: {e}")
-            
-            logger.info(f"[NOTIFIER] Successfully downloaded {len(attachment_files)}/{min(len(notice.attachments), 10)} files")
-            
-            
-            # Update embed field with better formatting
-            if attachment_files:
-                file_count = len(attachment_files)
-                more_text = f" (+{len(notice.attachments) - 10} more)" if len(notice.attachments) > 10 else ""
-                
-                # Create nicely formatted file list
-                file_list_lines = [f"📎 **첨부파일 ({file_count}개{more_text})**", "━━━━━━━━━━━━━━━"]
-                
-                for idx, file_info in enumerate(attachment_files, 1):
-                    # Get file extension for emoji
-                    ext = file_info['filename'].split('.')[-1].lower() if '.' in file_info['filename'] else ''
-                    emoji = {
-                        'pdf': '📕',
-                        'doc': '📘', 'docx': '📘',
-                        'xls': '📗', 'xlsx': '📗',
-                        'ppt': '📙', 'pptx': '📙',
-                        'zip': '📦', 'rar': '📦',
-                        'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️'
-                    }.get(ext, '📄')
-                    
-                    # Add hyperlink to filename
-                    file_list_lines.append(f"{emoji} [{file_info['filename']}]({file_info['url']})")
-                
-                # Replace the old attachment field
-                embed["fields"] = [f for f in embed["fields"] if f.get("name") != "📎 첨부파일"]
-                embed["fields"].append({
-                    "name": "\u200b",  # Zero-width space for cleaner look
-                    "value": "\n".join(file_list_lines),
-                    "inline": False
-                })
-            elif notice.attachments:
-                # Files exist but couldn't download - show links
-                if len(notice.attachments) > 5:
-                    logger.warning(f"[NOTIFIER] Notice has {len(notice.attachments)} attachments, only showing first 5 in Discord")
-                file_links = [f"[{a.name}]({a.url})" for a in notice.attachments[:5]]
-                embed["fields"].append({
-                    "name": "📎 첨부파일",
-                    "value": "\n".join(file_links), 
-                    "inline": False
-                })
 
-        # Validate embed size (Discord limit: 6000 chars for description)
-        if len(embed.get("description", "")) > 4000:
-            logger.warning(f"[NOTIFIER] Summary too long ({len(embed['description'])} chars), truncating...")
-            embed["description"] = embed["description"][:3950] + "...\n\n(내용이 잘렸습니다)"
-
-        # Download image if present (to bypass hotlink protection)
-        image_data = None
-        image_filename = None
+        # Download Image
         if notice.image_url:
             try:
-                logger.info(f"[NOTIFIER] Downloading image for Discord: {notice.image_url}")
-                headers = {
-                    'Referer': notice.url,
-                    'User-Agent': settings.USER_AGENT
-                }
-                async with session.get(notice.image_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as img_resp:
+                async with session.get(notice.image_url, headers={'Referer': notice.url}, timeout=aiohttp.ClientTimeout(total=10)) as img_resp:
                     if img_resp.status == 200:
                         image_data = await img_resp.read()
-                        # Extract filename from URL
-                        image_filename = notice.image_url.split('/')[-1]
-                        if not image_filename or '.' not in image_filename:
-                            image_filename = 'image.png'
-                        logger.info(f"[NOTIFIER] Downloaded image: {len(image_data)} bytes")
-                        # Remove embed image URL since we'll attach as file
-                        if "image" in embed:
-                            del embed["image"]
-                    else:
-                        logger.warning(f"[NOTIFIER] Failed to download image: HTTP {img_resp.status}")
-            except Exception as e:
-                logger.error(f"[NOTIFIER] Error downloading image: {e}")
+                        image_filename = notice.image_url.split('/')[-1] or 'image.png'
+            except Exception:
+                pass
 
-        # Prepare payload with files
-        if image_data or attachment_files:
-            # Send as multipart with file attachments
-            form = aiohttp.FormData()
+        # Validate embed size
+        if len(embed.get("description", "")) > 4000:
+            embed["description"] = embed["description"][:3950] + "...\n\n(내용이 잘렸습니다)"
+
+        # Update embed field with better formatting
+        if attachment_files:
+            file_count = len(attachment_files)
+            more_text = f" (+{len(notice.attachments) - 10} more)" if len(notice.attachments) > 10 else ""
             
-            file_index = 0
+            # Create nicely formatted file list
+            file_list_lines = [f"📎 **첨부파일 ({file_count}개{more_text})**", "━━━━━━━━━━━━━━━"]
             
-            # Add image if present
-            if image_data:
-                form.add_field(f'file{file_index}', image_data, filename=image_filename, content_type='image/png')
-                embed["image"] = {"url": f"attachment://{image_filename}"}
-                logger.info(f"[NOTIFIER] Added image to form as file{file_index}: {image_filename}")
-                file_index += 1
-            
-            # Add attachment files with unique field names
-            for idx, file_info in enumerate(attachment_files):
-                field_name = f'file{file_index}'
-                
-                # Determine content type based on file extension
+            for idx, file_info in enumerate(attachment_files, 1):
+                # Get file extension for emoji
                 ext = file_info['filename'].split('.')[-1].lower() if '.' in file_info['filename'] else ''
-                content_type_map = {
-                    'pdf': 'application/pdf',
-                    'doc': 'application/msword',
-                    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                    'xls': 'application/vnd.ms-excel',
-                    'xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                    'ppt': 'application/vnd.ms-powerpoint',
-                    'pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-                    'zip': 'application/zip',
-                    'rar': 'application/x-rar-compressed',
-                    'jpg': 'image/jpeg', 'jpeg': 'image/jpeg',
-                    'png': 'image/png',
-                    'gif': 'image/gif'
-                }
-                content_type = content_type_map.get(ext, 'application/octet-stream')
+                emoji = {
+                    'pdf': '📕',
+                    'doc': '📘', 'docx': '📘',
+                    'xls': '📗', 'xlsx': '📗',
+                    'ppt': '📙', 'pptx': '📙',
+                    'zip': '📦', 'rar': '📦',
+                    'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️'
+                }.get(ext, '📄')
                 
-                # Add field with explicit content type
-                form.add_field(
-                    field_name, 
-                    file_info['data'], 
-                    filename=file_info['safe_filename'],  # Use ASCII-safe filename
-                    content_type=content_type
-                )
-                logger.info(f"[NOTIFIER] Added {field_name}: {file_info['safe_filename']} (original: {file_info['filename']}, {len(file_info['data'])} bytes, {content_type})")
-                file_index += 1
+                # Add hyperlink to filename
+                # Note: Discord doesn't support linking to attachment:// in fields, so we link to original URL
+                file_list_lines.append(f"{emoji} [{file_info['filename']}]({notice.attachments[idx-1].url})")
             
-            form.add_field('payload_json', json.dumps({"embeds": [embed]}))
-            payload_data = form
-            logger.info(f"[NOTIFIER] Prepared multipart payload with {file_index} total files (1 image + {len(attachment_files)} attachments)")
-        else:
-            # Send as JSON without files
-            payload_data = {"embeds": [embed]}
-        
-        # Retry logic for transient failures
-        for attempt in range(1, max_retries + 1):
-            try:
-                logger.debug(f"[NOTIFIER] Sending Discord webhook (attempt {attempt}/{max_retries})")
+            embed["fields"].append({
+                "name": "\u200b",
+                "value": "\n".join(file_list_lines),
+                "inline": False
+            })
+
+        # Send to Discord using DEDICATED session
+        async with aiohttp.ClientSession() as discord_session:
+            payload_data = None
+            is_multipart = False
+
+            if image_data or attachment_files:
+                is_multipart = True
+                form = aiohttp.FormData()
+                # IMPORTANT: payload_json MUST be the first field
+                form.add_field('payload_json', json.dumps({"embeds": [embed]}))
                 
-                with get_performance_monitor().measure("send_discord", {"title": notice.title, "attempt": attempt}):
-                    if image_data or attachment_files:
-                        # Send with file attachments (multipart)
-                        async with session.post(webhook_url, data=payload_data, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-                            if resp.status not in [200, 204]:
-                                error_text = await resp.text()
-                                logger.error(f"[NOTIFIER] Discord send failed: {resp.status} - {error_text}")
-                                if attempt < max_retries and resp.status >= 500:
-                                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
-                                    continue
-                            else:
-                                file_count = len(attachment_files)
-                                logger.info(f"[NOTIFIER] Discord sent with {file_count} files: {notice.title}")
-                                return
-                    else:
-                        # Send as JSON without files
-                        async with session.post(webhook_url, json=payload_data, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                            if resp.status not in [200, 204]:
-                                error_text = await resp.text()
-                                logger.error(f"[NOTIFIER] Discord send failed: {resp.status} - {error_text}")
-                                if attempt < max_retries and resp.status >= 500:
-                                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
-                                    continue
-                            else:
+                file_index = 0
+                if image_data:
+                    form.add_field(f'file{file_index}', image_data, filename=image_filename, content_type='image/png')
+                    embed["image"] = {"url": f"attachment://{image_filename}"}
+                    file_index += 1
+                
+                for file_info in attachment_files:
+                    form.add_field(f'file{file_index}', file_info['data'], filename=file_info['safe_filename'])
+                    file_index += 1
+                
+                payload_data = form
+            else:
+                payload_data = {"embeds": [embed]}
+
+            # Retry logic
+            for attempt in range(1, max_retries + 1):
+                try:
+                    if is_multipart:
+                        async with discord_session.post(url, headers=headers, data=payload_data) as resp:
+                            if resp.status in [200, 204]:
                                 logger.info(f"[NOTIFIER] Discord sent: {notice.title}")
                                 return
-            except asyncio.TimeoutError:
-                logger.error(f"[NOTIFIER] Discord webhook timeout (attempt {attempt}/{max_retries})")
-                if attempt < max_retries:
-                    await asyncio.sleep(2)
-                    continue
-            except Exception as e:
-                logger.error(f"[NOTIFIER] Discord send failed (attempt {attempt}/{max_retries}): {e}")
-                if attempt < max_retries:
-                    await asyncio.sleep(2)
-                    continue
-        
+                            else:
+                                logger.error(f"[NOTIFIER] Discord failed: {resp.status} - {await resp.text()}")
+                    else:
+                        async with discord_session.post(url, headers=headers, json=payload_data) as resp:
+                            if resp.status in [200, 204]:
+                                logger.info(f"[NOTIFIER] Discord sent: {notice.title}")
+                                return
+                            else:
+                                logger.error(f"[NOTIFIER] Discord failed: {resp.status} - {await resp.text()}")
+                                
+                    if attempt < max_retries: await asyncio.sleep(1)
+                except Exception as e:
+                    logger.error(f"[NOTIFIER] Discord error: {e}")
         logger.error(f"[NOTIFIER] Discord send failed after {max_retries} attempts")
 
     async def send_menu_notification(self, session: aiohttp.ClientSession, notice: Notice, menu_data: Dict[str, Any]):

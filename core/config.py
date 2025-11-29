@@ -21,8 +21,11 @@ class Settings(BaseSettings):
     TELEGRAM_TOPIC_MAP: Dict[str, int] = Field(default_factory=dict)
 
     # --- Discord ---
-    # Webhook Map: Site Key -> Webhook URL
-    # Can be JSON string or dict
+    # Bot API (recommended)
+    DISCORD_BOT_TOKEN: Optional[str] = None
+    DISCORD_CHANNEL_MAP: Dict[str, str] = Field(default_factory=dict)
+    
+    # Webhook (legacy, for backward compatibility)
     DISCORD_WEBHOOK_MAP: Dict[str, str] = Field(default_factory=dict)
     DISCORD_WEBHOOK_URL: Optional[str] = None
 
@@ -61,6 +64,18 @@ class Settings(BaseSettings):
             except json.JSONDecodeError as e:
                 raise ValueError(f"DISCORD_WEBHOOK_MAP must be valid JSON: {e}")
         return v
+    
+    @field_validator('DISCORD_CHANNEL_MAP', mode='before')
+    @classmethod
+    def parse_discord_channel_map(cls, v):
+        if isinstance(v, str):
+            if not v or v.strip() == "":
+                return {}
+            try:
+                return json.loads(v)
+            except json.JSONDecodeError as e:
+                raise ValueError(f"DISCORD_CHANNEL_MAP must be valid JSON: {e}")
+        return v
 
     def model_post_init(self, __context):
         # Fallback: If map is empty but single URL exists, use it for known keys
@@ -94,8 +109,8 @@ class Settings(BaseSettings):
         if not self.GEMINI_API_KEY:
             errors.append("⚠️ GEMINI_API_KEY is missing - AI features will be disabled")
             
-        if not self.DISCORD_WEBHOOK_MAP and not self.DISCORD_WEBHOOK_URL:
-            errors.append("⚠️ No Discord Webhook configured - Discord notifications will be disabled")
+        if not self.DISCORD_BOT_TOKEN and not self.DISCORD_WEBHOOK_MAP and not self.DISCORD_WEBHOOK_URL:
+            errors.append("⚠️ No Discord configuration found - Discord notifications will be disabled")
             
         # URL Validation (Basic)
         if self.SUPABASE_URL and not self.SUPABASE_URL.startswith("https://"):
