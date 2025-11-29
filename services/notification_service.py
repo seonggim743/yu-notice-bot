@@ -57,14 +57,13 @@ class NotificationService:
         
         # Enhanced Message Format
         msg = (
-            f"{prefix} <b>{cat_emoji} {safe_title}</b>\n\n"
+            f"{prefix} <a href='{notice.url}'><b>{cat_emoji} {safe_title}</b></a>\n\n"
             f"{safe_summary}\n\n"
         )
         
         if modified_reason:
             msg += f"⚠️ <b>수정 사항</b>: {modified_reason}\n\n"
             
-        msg += f"🔗 <a href='{notice.url}'>공지사항 보러가기</a>\n"
         msg += f"{hashtag}"
 
         # Buttons (Download Links)
@@ -72,8 +71,18 @@ class NotificationService:
         if notice.attachments:
             for att in notice.attachments:
                 fname = att.name
+                ext = fname.split('.')[-1].lower() if '.' in fname else ''
+                emoji = {
+                    'pdf': '📕',
+                    'doc': '📘', 'docx': '📘',
+                    'xls': '📗', 'xlsx': '📗',
+                    'ppt': '📙', 'pptx': '📙',
+                    'zip': '📦', 'rar': '📦',
+                    'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️'
+                }.get(ext, '📄')
+                
                 if len(fname) > 20: fname = fname[:17] + "..."
-                buttons.append({"text": f"📥 {fname}", "url": att.url})
+                buttons.append({"text": f"{emoji} {fname}", "url": att.url})
         
         # Payload for Main Message
         payload = {
