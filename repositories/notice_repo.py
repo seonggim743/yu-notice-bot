@@ -77,7 +77,11 @@ class NoticeRepository:
                 data['published_at'] = data['published_at'].isoformat()
             
             # Remove None values to let DB defaults work (though we set most fields)
-            data = {k: v for k, v in data.items() if v is not None}
+            # data = {k: v for k, v in data.items() if v is not None}
+            # UPDATE: We WANT to update fields to None (e.g. image_url) if they are cleared.
+            # But we should remove keys that are NOT in the model fields or should be handled by DB defaults if missing?
+            # Pydantic model_dump already handles this. We just need to ensure we don't send 'id' if it's auto-generated (Notice model doesn't have id field).
+            pass
             
             response = self.db.table('notices').upsert(data, on_conflict='site_key, article_id').execute()
             

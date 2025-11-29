@@ -150,6 +150,56 @@ class AIService:
             logger.error(f"AI Diff failed: {e}")
             return "내용 변경 (AI 분석 실패)"
 
+    async def extract_menu_from_image(self, image_url: str) -> Dict[str, Any]:
+        """
+        Extracts menu text from an image URL using Gemini Vision.
+        Returns JSON with 'raw_text', 'start_date', 'end_date'.
+        """
+        if not self.model: return {}
+        
+        import aiohttp
+        
+        try:
+            # 1. Download Image
+            async with aiohttp.ClientSession() as session:
+                async with session.get(image_url) as resp:
+                    if resp.status != 200:
+                        logger.error(f"[AI] Failed to download menu image: {resp.status}")
+                        return {}
+                    image_data = await resp.read()
+
+            # 2. Prepare Prompt
+            prompt = (
+                "Extract the weekly meal plan from this image. Respond in JSON format.\n"
+                "1. 'raw_text': string. A clean, formatted text representation of the menu for the whole week.\n"
+                "   - Group by Date (e.g., '## 11월 25일 (월)').\n"
+                "   - List Breakfast/Lunch/Dinner clearly.\n"
+                "2. 'start_date': string (YYYY-MM-DD). The first date in the menu.\n"
+                "3. 'end_date': string (YYYY-MM-DD). The last date in the menu.\n"
+            )
+            
+            # 3. Call Gemini Vision
+            loop = asyncio.get_running_loop()
+            response = await loop.run_in_executor(
+                None,
+                lambda: self.model.generate_content(
+                    [prompt, {"mime_type": "image/jpeg", "data": image_data}],
+                    generation_config={"response_mime_type": "application/json"}
+                )
+            )
+            
+            # 4. Token Tracking
+            try:
+                usage = response.usage_metadata
+                await self._save_token_usage(usage.prompt_token_count, usage.candidates_token_count)
+            except: pass
+            
+            return json.loads(response.text)
+            
+        except Exception as e:
+            logger.error(f"[AI] Menu extraction failed: {e}")
+            return {}
+
     async def get_embedding(self, text: str) -> list:
         if not settings.GEMINI_API_KEY: return []
         try:

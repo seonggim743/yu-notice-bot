@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS notices (
     
     -- AI Embeddings
     embedding VECTOR(768),
+    image_url TEXT,
     
     UNIQUE(site_key, article_id)
 );
@@ -53,6 +54,18 @@ CREATE TABLE IF NOT EXISTS token_usage (
     timestamp TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 4. Menus Table (Dormitory Meal Plans)
+CREATE TABLE IF NOT EXISTS menus (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    notice_id UUID REFERENCES notices(id) ON DELETE CASCADE,
+    image_url TEXT NOT NULL,
+    raw_text TEXT NOT NULL,
+    start_date DATE,
+    end_date DATE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_notices_site_key ON notices(site_key);
 CREATE INDEX IF NOT EXISTS idx_notices_created_at ON notices(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_menus_created_at ON menus(created_at DESC);

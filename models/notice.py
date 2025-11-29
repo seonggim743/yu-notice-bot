@@ -27,5 +27,5 @@ class Notice(BaseModel):
     
     # Internal
     content_hash: Optional[str] = None
-    embedding: List[float] = Field(default_factory=list)
+    embedding: Optional[List[float]] = None
     change_details: Optional[Dict[str, Any]] = Field(default_factory=dict)

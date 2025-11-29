@@ -10,8 +10,8 @@ from services.scraper_service import ScraperService
 logger = get_logger(__name__)
 
 class Bot:
-    def __init__(self):
-        self.scraper = ScraperService()
+    def __init__(self, init_mode: bool = False, no_ai_mode: bool = False):
+        self.scraper = ScraperService(init_mode=init_mode, no_ai_mode=no_ai_mode)
         self.running = True
         self.error_count = 0
         self.MAX_CONSECUTIVE_ERRORS = 5
@@ -137,23 +137,36 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Yu Notice Bot V2")
     parser.add_argument("--once", action="store_true", help="Run once and exit")
+    parser.add_argument("--init", action="store_true", help="Initialize DB without notifications (Seeding)")
+    parser.add_argument('--no-ai', action='store_true', help='Run scraper without AI analysis (notifications enabled)')
+    parser.add_argument('--test-url', type=str, help='Test notification for a specific URL (forces notification)')
     args = parser.parse_args()
 
-    bot = Bot()
+    bot = Bot(init_mode=args.init, no_ai_mode=args.no_ai)
     exit_code = 0
     
-    if args.once:
+    if args.init:
+        logger.info("🚀 Starting in INIT MODE (Database Seeding)")
+        logger.info("AI analysis and Notifications will be DISABLED.")
+    
+    if args.once or args.init or args.test_url:
         # Run once logic
         try:
-            logger.info("Running in --once mode")
-            asyncio.run(bot.scraper.run())
+            if args.once: logger.info("Running in --once mode")
+            
+            if args.test_url:
+                logger.info(f"🧪 Running Test Notification for: {args.test_url}")
+                asyncio.run(bot.scraper.run_test(args.test_url))
+            else:
+                asyncio.run(bot.scraper.run())
+                
             logger.info("Run completed successfully")
         except Exception as e:
             logger.critical(f"Run failed: {e}", exc_info=True)
             # Send error notification
             asyncio.run(
                 get_error_notifier().send_critical_error(
-                    "Bot run failed in --once mode",
+                    "Bot run failed in --once/--init mode",
                     exception=e,
                     severity=ErrorSeverity.CRITICAL
                 )
