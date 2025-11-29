@@ -56,21 +56,8 @@ class NotificationService:
         }
         site_name = site_name_map.get(notice.site_key, notice.site_key)
 
-        # Hashtags Mapping
-        category_map = {
-            "장학": "#Scholarship #장학",
-            "학사": "#Academic #학사",
-            "취업": "#Job #취업",
-            "생활관": "#Dormitory #생활관",
-            "일반": "#General #일반"
-        }
-        # Use localized site name in hashtag if category is generic
-        if notice.category == "일반":
-            hashtag = f"#{site_name}"
-        else:
-            hashtag = category_map.get(notice.category, f"#General #{notice.category}")
-            # Append site name for context
-            hashtag += f" #{site_name}"
+        # Hashtags
+        hashtag = f"#{notice.category} #{site_name}"
         
         # Enhanced Message Format
         msg = (
