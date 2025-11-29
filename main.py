@@ -1,8 +1,19 @@
 import asyncio
 import signal
 import sys
-from core.config import settings
 import os
+
+# 1. Setup Logging First (to capture config errors)
+from core.logger import setup_logging, get_logger
+setup_logging()
+logger = get_logger(__name__)
+
+# 2. Load Config
+try:
+    from core.config import settings
+except Exception as e:
+    logger.critical(f"Failed to load configuration: {e}", exc_info=True)
+    sys.exit(1)
 
 # Debug: Verify Config Loading
 print(f"DEBUG: CWD = {os.getcwd()}")
@@ -10,12 +21,9 @@ print(f"DEBUG: CWD = {os.getcwd()}")
 discord_token = settings.DISCORD_BOT_TOKEN or ""
 print(f"DEBUG: Loaded Discord Token = {discord_token[:5]}...{discord_token[-5:] if len(discord_token) > 10 else 'TooShort'}")
 
-from core.logger import get_logger
 from core.database import Database
 from core.error_notifier import get_error_notifier, ErrorSeverity
 from services.scraper_service import ScraperService
-
-logger = get_logger(__name__)
 
 class Bot:
     def __init__(self, init_mode: bool = False, no_ai_mode: bool = False):
