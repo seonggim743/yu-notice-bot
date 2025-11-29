@@ -46,7 +46,7 @@ class ScraperService:
             },
             {
                 "key": "bachelor_guide",
-                "url": "https://hcms.yu.ac.kr/main/bachelor/bachelor-guide.do",
+                "url": "https://hcms.yu.ac.kr/main/bachelor/bachelor-guide.do?mode=list&articleLimit=30",
                 "base_url": "https://hcms.yu.ac.kr/main/bachelor/bachelor-guide.do",
                 "parser": HTMLParser("table tbody tr", "a", "a", ".b-view-content")
             },
