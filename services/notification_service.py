@@ -2,6 +2,8 @@ import aiohttp
 import json
 import asyncio
 import html
+from aiohttp import MultipartWriter
+from aiohttp.payload import BytesPayload, StringPayload
 from datetime import datetime
 from typing import List, Dict, Optional
 from core.config import settings
@@ -483,21 +485,40 @@ class NotificationService:
 
             if image_data or attachment_files:
                 is_multipart = True
-                form = aiohttp.FormData()
+                # Use MultipartWriter directly to control headers
+                writer = MultipartWriter('form-data')
+                
                 # IMPORTANT: payload_json MUST be the first field
-                form.add_field('payload_json', json.dumps({"embeds": [embed]}))
+                json_payload = StringPayload(json.dumps({"embeds": [embed]}), content_type='application/json')
+                json_payload.set_content_disposition('form-data', name='payload_json')
+                writer.append_payload(json_payload)
                 
                 file_index = 0
                 if image_data:
-                    form.add_field(f'file{file_index}', image_data, filename=image_filename, content_type='image/png')
+                    # Image usually doesn't need special encoding if filename is simple
+                    img_payload = BytesPayload(image_data, content_type='image/png')
+                    img_payload.set_content_disposition('form-data', name=f'file{file_index}', filename=image_filename)
+                    writer.append_payload(img_payload)
+                    
                     embed["image"] = {"url": f"attachment://{image_filename}"}
                     file_index += 1
                 
                 for file_info in attachment_files:
-                    form.add_field(f'file{file_index}', file_info['data'], filename=file_info['safe_filename'])
+                    # Use BytesPayload and manually set header to avoid URL encoding
+                    file_payload = BytesPayload(file_info['data'], content_type='application/octet-stream')
+                    
+                    # Manually construct Content-Disposition with raw UTF-8 filename
+                    # Discord expects: filename="한글.pdf" (raw bytes/string), NOT filename*=utf-8''%ED...
+                    filename_str = file_info['filename']
+                    # Escape quotes in filename just in case
+                    filename_str = filename_str.replace('"', '\\"')
+                    
+                    file_payload.headers['Content-Disposition'] = f'form-data; name="file{file_index}"; filename="{filename_str}"'
+                    writer.append_payload(file_payload)
+                    
                     file_index += 1
                 
-                payload_data = form
+                payload_data = writer
             else:
                 payload_data = {"embeds": [embed]}
 
