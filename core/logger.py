@@ -24,9 +24,17 @@ class SensitiveDataFilter(logging.Filter):
     ]
     
     def filter(self, record: logging.LogRecord) -> bool:
-        record.msg = self._mask_sensitive(str(record.msg))
+        if isinstance(record.msg, str):
+            record.msg = self._mask_sensitive(record.msg)
+        
         if record.args:
-            record.args = tuple(self._mask_sensitive(str(arg)) for arg in record.args)
+            new_args = []
+            for arg in record.args:
+                if isinstance(arg, str):
+                    new_args.append(self._mask_sensitive(arg))
+                else:
+                    new_args.append(arg)
+            record.args = tuple(new_args)
         return True
     
     def _mask_sensitive(self, text: str) -> str:
@@ -200,6 +208,9 @@ def get_logger(
     
     # Add console handler
     logger.addHandler(console_handler)
+    
+    # Prevent propagation to root logger to avoid duplicate logs
+    logger.propagate = False
     
     # Return wrapped logger with structured context support
     return StructuredLoggerAdapter(logger, {})
