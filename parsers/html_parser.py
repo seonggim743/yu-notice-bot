@@ -24,8 +24,10 @@ class HTMLParser(BaseParser):
         self.link_selector = link_selector
         # Expanded selectors for YU sites
         self.content_selectors = [
-            content_selector, 
+            content_selector,
+            ".b-content-box .fr-view",  # Froala editor content (most precise)
             ".b-content-box", 
+            ".fr-view",                  # Froala editor (fallback)
             ".view-con", 
             ".board-view-con", 
             "#article_text", 
@@ -48,6 +50,12 @@ class HTMLParser(BaseParser):
                 if not title_el: continue
                 
                 title = title_el.get_text(strip=True)
+                
+                # Clean up title - remove common markers (N=New, HOT, UP, etc.)
+                # These appear at the end of titles on YU notice boards
+                title = re.sub(r'\s*[NUHOT]+\s*$', '', title)
+                title = re.sub(r'\s*New\s*$', '', title, flags=re.IGNORECASE)
+                title = title.strip()
                 
                 # Link
                 link_el = row.select_one(self.link_selector)

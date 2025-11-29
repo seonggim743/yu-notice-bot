@@ -388,10 +388,20 @@ class ScraperService:
                     title_text = title_elem.get_text(strip=True)
                     # Skip if it's just whitespace or too short
                     if title_text and len(title_text) > 3:
-                        # For <title> tag, remove site name suffix
+                        # Clean up title
+                        # 1. For <title> tag, remove site name suffix
                         if selector == 'title' and '|' in title_text:
                             title_text = title_text.split('|')[0].strip()
-                        title = title_text
+                        
+                        # 2. Remove common markers (N=New, HOT, UP, etc.)
+                        # These appear at the end of titles on YU notice boards
+                        import re
+                        # Remove single letter markers at the end (N, U, etc.)
+                        title_text = re.sub(r'\s*[NUHOT]+\s*$', '', title_text)
+                        # Remove "New" marker
+                        title_text = re.sub(r'\s*New\s*$', '', title_text, flags=re.IGNORECASE)
+                        
+                        title = title_text.strip()
                         logger.info(f"[TEST] Found title with selector '{selector}': {title}")
                         break
             
