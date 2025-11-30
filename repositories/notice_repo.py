@@ -122,3 +122,12 @@ class NoticeRepository:
             self.db.table('notices').update({'message_ids': current_ids}).eq('id', notice_id).execute()
         except Exception as e:
             logger.error(f"Failed to update message ID for {notice_id}: {e}")
+
+    def update_discord_thread_id(self, notice_id: str, thread_id: str):
+        """
+        Updates the discord_thread_id column.
+        """
+        try:
+            self.db.table('notices').update({'discord_thread_id': thread_id}).eq('id', notice_id).execute()
+        except Exception as e:
+            logger.error(f"Failed to update Discord Thread ID for {notice_id}: {e}")

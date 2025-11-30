@@ -36,3 +36,6 @@ class Notice(BaseModel):
     content_hash: Optional[str] = None
     embedding: Optional[List[float]] = None
     change_details: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    
+    # Discord Thread Tracking
+    discord_thread_id: Optional[str] = None

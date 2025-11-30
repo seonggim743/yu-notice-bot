@@ -20,6 +20,7 @@ olefile>=0.46
 pypdf>=3.17.0
 pdf2image>=1.16.3
 Pillow>=10.0.0
+brotli>=1.1.0
 
 # Optional: Development Dependencies
 # pytest>=7.4.0

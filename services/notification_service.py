@@ -304,35 +304,39 @@ class NotificationService:
         return main_msg_id
 
 
-        return main_msg_id
-
-    async def send_discord(self, session: aiohttp.ClientSession, notice: Notice, is_new: bool, modified_reason: str = "", max_retries: int = 2):
+    async def send_discord(self, session: aiohttp.ClientSession, notice: Notice, is_new: bool, modified_reason: str = "", existing_thread_id: str = None) -> Optional[str]:
         """
-        Sends a notice to Discord via Bot API.
+        Sends a notice to Discord (Forum Channel preferred).
+        Returns the Thread ID (or Message ID) if successful, None otherwise.
         """
         bot_token = settings.DISCORD_BOT_TOKEN
         channel_map = settings.DISCORD_CHANNEL_MAP
         
-        if bot_token and channel_map:
-            channel_id = channel_map.get(notice.site_key)
+        if not bot_token or not channel_map: return None
+        
+        channel_id = channel_map.get(notice.site_key)
+        
+        if channel_id:
+            # 1. Try sending as a Forum Thread
+            thread_url = f"https://discord.com/api/v10/channels/{channel_id}/threads"
+            message_url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
             
-            if channel_id:
-                url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
-                headers = {
-                    "Authorization": f"Bot {bot_token}",
-                    # No explicit User-Agent to match working test script
-                }
-                
-                return await self._send_discord_common(session, notice, is_new, modified_reason, url, headers, max_retries)
-            else:
-                logger.warning(f"[NOTIFIER] No Discord channel found for key '{notice.site_key}'")
+            headers = {
+                "Authorization": f"Bot {bot_token}",
+                "User-Agent": "DiscordBot (https://github.com/yu-notice-bot, v1.0)"
+            }
+            
+            return await self._send_discord_common(session, notice, is_new, modified_reason, thread_url, message_url, headers, existing_thread_id=existing_thread_id)
         else:
-            logger.warning("[NOTIFIER] Discord Bot API not configured (Missing Token or Channel Map)")
+            logger.warning(f"[NOTIFIER] No Discord channel found for key '{notice.site_key}'")
+            return None
 
-    async def _send_discord_common(self, session: aiohttp.ClientSession, notice: Notice, is_new: bool, modified_reason: str, url: str, headers: Dict[str, str], max_retries: int):
+    async def _send_discord_common(self, session: aiohttp.ClientSession, notice: Notice, is_new: bool, modified_reason: str, thread_url: str, message_url: str, headers: Dict, max_retries: int = 3, existing_thread_id: str = None) -> Optional[str]:
         """
         Common method to send Discord notifications.
-        Uses a dedicated session for API calls to avoid header conflicts.
+        Tries to create a Forum Thread first, falls back to Message.
+        If existing_thread_id is provided for a modified notice, it sends a reply.
+        Returns the ID of the created thread/message, or existing_thread_id if updated, None otherwise.
         """
         # Site Name Mapping (Localization)
         site_name_map = {
@@ -348,6 +352,12 @@ class NotificationService:
         # Color & Title Prefix
         color = 0x00ff00 if is_new else 0xffa500 # Green for New, Orange for Modified
         title_prefix = "🆕" if is_new else "🔄"
+        
+        # Thread Name (Title)
+        thread_name = f"[{notice.category}] {notice.title}"
+        if len(thread_name) > 100: thread_name = thread_name[:97] + "..."
+        
+        # ... (Rest of embed construction remains similar) ...
         
         # Ensure every line starts with a hyphen
         lines = notice.summary.split('\n')
@@ -406,179 +416,272 @@ class NotificationService:
         image_data = None
         image_filename = "image.png"
 
-        if notice.attachments:
-            for idx, att in enumerate(notice.attachments[:10], 1):
-                try:
-                    # Use shared session for download
-                    async with session.get(att.url, headers={'Referer': notice.url}, timeout=aiohttp.ClientTimeout(total=30)) as file_resp:
-                        if file_resp.status == 200:
-                            file_data = await file_resp.read()
-                            file_size = len(file_data)
-                            if file_size > 25 * 1024 * 1024: continue
-                            
-                            actual_filename = att.name
-                            actual_filename = att.name
-                            
-                            # Debug: Check what filename we're using
-                            logger.info(f"[NOTIFIER] Original filename: '{actual_filename}'")
-                            
-                            attachment_files.append({
-                                'data': file_data,
-                                'filename': actual_filename,
-                                'safe_filename': actual_filename,  # Use original as safe_filename too
-                                'url': att.url
-                            })
-                except Exception as e:
-                    logger.error(f"[NOTIFIER] Error downloading {att.name}: {e}")
-
-        # Download Image
+        # 1. Handle Main Image (Priority: URL > Preview Bytes)
         if notice.image_url:
             try:
                 async with session.get(notice.image_url, headers={'Referer': notice.url}, timeout=aiohttp.ClientTimeout(total=10)) as img_resp:
                     if img_resp.status == 200:
                         image_data = await img_resp.read()
-                        image_filename = notice.image_url.split('/')[-1] or 'image.png'
-            except Exception:
-                pass
+                        image_filename = "image.jpg"
+                        embed["image"] = {"url": f"attachment://{image_filename}"}
+            except Exception as e:
+                logger.error(f"[NOTIFIER] Failed to download image {notice.image_url}: {e}")
 
-        # Validate embed size
-        if len(embed.get("description", "")) > 4000:
-            embed["description"] = embed["description"][:3950] + "...\n\n(내용이 잘렸습니다)"
+        if not image_data and notice.preview_image:
+            image_data = notice.preview_image
+            image_filename = "preview.jpg"
+            embed["image"] = {"url": f"attachment://{image_filename}"}
 
-        # Update embed field with better formatting
-        if attachment_files:
-            file_count = len(attachment_files)
-            more_text = f" (+{len(notice.attachments) - 10} more)" if len(notice.attachments) > 10 else ""
+        # 2. Handle Attachments
+        if notice.attachments:
+            for idx, att in enumerate(notice.attachments[:10], 1):
+                max_retries = 2
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        download_headers = {
+                            'Referer': notice.url,
+                            'User-Agent': settings.USER_AGENT,
+                            'Accept': '*/*',
+                            'Connection': 'keep-alive'
+                        }
+                        # Use shared session for download
+                        async with session.get(att.url, headers=download_headers, timeout=aiohttp.ClientTimeout(total=30)) as file_resp:
+                            if file_resp.status == 200:
+                                file_data = await file_resp.read()
+                                file_size = len(file_data)
+                                if file_size > 25 * 1024 * 1024: break # Skip > 25MB
+                                
+                                actual_filename = att.name
+                                # Try to get filename from Content-Disposition if available
+                                if 'Content-Disposition' in file_resp.headers:
+                                    import re
+                                    from urllib.parse import unquote
+                                    match = re.search(r'filename\*?=["\']?(?:UTF-8\'\')?([^"\';]+)', file_resp.headers['Content-Disposition'])
+                                    if match: actual_filename = unquote(match.group(1))
+                                
+                                logger.info(f"[NOTIFIER] Downloaded attachment: '{actual_filename}' ({file_size} bytes)")
+                                
+                                attachment_files.append({
+                                    'data': file_data,
+                                    'filename': actual_filename,
+                                    'safe_filename': actual_filename,
+                                    'url': att.url
+                                })
+                                break # Success, exit retry loop
+                            elif file_resp.status in [404, 403]:
+                                logger.warning(f"[NOTIFIER] Failed to download {att.name}: Status {file_resp.status}")
+                                break # Don't retry for 404/403
+                            else:
+                                if attempt < max_retries: await asyncio.sleep(1)
+                    except Exception as e:
+                        logger.error(f"[NOTIFIER] Error downloading {att.name}: {e}")
+                        if attempt < max_retries: await asyncio.sleep(1)
+
+        # Logic for Splitting Attachments
+        # Rule: 
+        # - 1 Attachment: Send with Main Message
+        # - 2+ Attachments: Send via Reply (Thread/Message)
+        
+        files_to_send_now = []
+        files_to_send_later = []
+        
+        if len(attachment_files) == 1:
+            files_to_send_now = attachment_files
+        elif len(attachment_files) >= 2:
+            files_to_send_later = attachment_files
             
-            # Create nicely formatted file list
-            file_list_lines = [f"📎 **첨부파일 ({file_count}개{more_text})**", "━━━━━━━━━━━━━━━"]
+        logger.info(f"[NOTIFIER] Attachments: {len(attachment_files)} | Now: {len(files_to_send_now)} | Later: {len(files_to_send_later)}")
+        logger.info(f"[NOTIFIER] Has Image: {bool(image_data)}")
             
-            for idx, file_info in enumerate(attachment_files, 1):
-                # Get file extension for emoji
-                ext = file_info['filename'].split('.')[-1].lower() if '.' in file_info['filename'] else ''
-                emoji = {
-                    'pdf': '📕',
-                    'doc': '📘', 'docx': '📘',
-                    'xls': '📗', 'xlsx': '📗',
-                    'ppt': '📙', 'pptx': '📙',
-                    'zip': '📦', 'rar': '📦',
-                    'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️'
-                }.get(ext, '📄')
+        # Prepare Payload
+        # We need to construct the payload differently for Thread vs Message
+        
+        # 0. Handle Update Reply (if existing_thread_id)
+        if not is_new and existing_thread_id:
+            logger.info(f"[NOTIFIER] Sending update reply to existing thread: {existing_thread_id}")
+            
+            # Construct Update Embed (Override the default one)
+            update_embed = {
+                "title": "⚠️ 공지사항 수정 알림",
+                "description": f"**수정 사유:** {modified_reason}\n\n[원본 공지 보러가기]({notice.url})",
+                "color": 0xFFA500, # Orange
+                "footer": {"text": "Yu Notice Bot • 업데이트됨"},
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            if notice.summary:
+                update_embed["fields"] = [{"name": "📝 요약 (업데이트)", "value": notice.summary[:1000], "inline": False}]
+
+            # Prepare Payload
+            payload = {"embeds": [update_embed]}
+            
+            # Determine if we need Multipart (Files) or JSON
+            has_files_now = bool(image_data or files_to_send_now)
+            
+            if has_files_now:
+                form = aiohttp.FormData()
+                form.add_field('payload_json', json.dumps(payload))
                 
-                # Add hyperlink to filename
-                # Note: Discord doesn't support linking to attachment:// in fields, so we link to original URL
-                file_list_lines.append(f"{emoji} [{file_info['filename']}]({notice.attachments[idx-1].url})")
-            
-            embed["fields"].append({
-                "name": "\u200b",
-                "value": "\n".join(file_list_lines),
-                "inline": False
-            })
+                if image_data:
+                    filename = 'image.jpg' if notice.image_url else 'preview.jpg'
+                    form.add_field('files[0]', image_data, filename=filename)
+                    
+                for idx, file_info in enumerate(files_to_send_now):
+                    field_name = f"files[{idx + 1}]" if image_data else f"files[{idx}]"
+                    form.add_field(field_name, file_info['data'], filename=file_info['filename'])
+                    
+                kwargs = {'data': form}
+            else:
+                kwargs = {'json': payload}
 
-        # Send to Discord using DEDICATED session
-        async with aiohttp.ClientSession() as discord_session:
+            # Send Reply
+            reply_url = f"https://discord.com/api/v10/channels/{existing_thread_id}/messages"
             
-            # Group 1: Embed + Image (Always sent)
-            # Group 2: Attachments (Sent with Group 1 if count=1, else sent separately)
-            
-            has_attachments = len(attachment_files) > 0
-            split_attachments = len(attachment_files) > 1
-            
-            # Step A: Prepare Main Payload (Embed + Image + Optional Single Attachment)
-            writer = MultipartWriter('form-data')
-            
-            # Add Embed
-            json_payload = StringPayload(json.dumps({"embeds": [embed]}), content_type='application/json')
-            json_payload.set_content_disposition('form-data', name='payload_json')
-            writer.append_payload(json_payload)
-            
-            file_index = 0
-            
-            # Add Image (if exists)
-            if image_data:
-                img_payload = BytesPayload(image_data, content_type='image/png')
-                img_payload.set_content_disposition('form-data', name=f'file{file_index}', filename=image_filename)
-                writer.append_payload(img_payload)
-                embed["image"] = {"url": f"attachment://{image_filename}"} # Update embed to point to this file
-                file_index += 1
-            
-            # Add Single Attachment (if NOT splitting)
-            if has_attachments and not split_attachments:
-                file_info = attachment_files[0]
-                # ... (Add file logic) ...
-                # Copying the RFC 5987 logic
-                file_payload = BytesPayload(file_info['data'], content_type='application/octet-stream')
-                filename_utf8 = file_info['filename']
-                encoded_filename = urllib.parse.quote(filename_utf8)
-                ext = filename_utf8.split('.')[-1] if '.' in filename_utf8 else 'file'
-                fallback_filename = f"attachment_{file_index}.{ext}" # Use file_index for unique fallback
-                file_payload.headers['Content-Disposition'] = (
-                    f'form-data; name="file{file_index}"; '
-                    f'filename="{fallback_filename}"; '
-                    f'filename*=utf-8\'\'{encoded_filename}'
-                )
-                writer.append_payload(file_payload)
-                file_index += 1
+            try:
+                async with session.post(reply_url, headers=headers, **kwargs) as resp:
+                    if resp.status in [200, 201]:
+                        logger.info(f"[NOTIFIER] Discord update reply sent.")
+                        
+                        # Send remaining files if any
+                        if files_to_send_later:
+                            await self._send_discord_reply(session, existing_thread_id, files_to_send_later, headers, is_thread=True)
+                            
+                        return existing_thread_id
+                    elif resp.status == 404:
+                         logger.warning(f"[NOTIFIER] Thread {existing_thread_id} not found. Creating new thread.")
+                         # Fall through to create new thread
+                    else:
+                        logger.error(f"[NOTIFIER] Failed to send update reply: {await resp.text()}")
+            except Exception as e:
+                logger.error(f"[NOTIFIER] Error sending update reply: {e}")
 
-            # Send Main Message
-            logger.info(f"[NOTIFIER] Sending Discord Main Message (Split={split_attachments})...")
-            for attempt in range(1, max_retries + 1):
-                try:
-                    async with discord_session.post(url, headers=headers, data=writer) as resp:
-                        if resp.status in [200, 204]:
-                            logger.info(f"[NOTIFIER] Discord Main sent")
-                            break
-                        else:
-                            logger.error(f"[NOTIFIER] Discord Main failed: {resp.status} - {await resp.text()}")
-                            if attempt < max_retries: await asyncio.sleep(1)
-                except Exception as e:
-                    logger.error(f"[NOTIFIER] Discord Main error: {e}")
-                    if attempt < max_retries: await asyncio.sleep(1)
-
-            # Step B: Send Remaining Attachments (if splitting)
-            if has_attachments and split_attachments:
-                logger.info(f"[NOTIFIER] Sending {len(attachment_files)} separate attachments...")
+        created_thread_id = None
+        created_message_id = None
+        
+        # 1. Try Thread Creation (Forum)
+        try:
+            # Forum Thread Payload
+            payload = {
+                "name": thread_name,
+                "message": {
+                    "embeds": [embed]
+                },
+                "auto_archive_duration": 4320 # 3 days
+            }
+            
+            # Determine if we need Multipart (Files) or JSON
+            has_files_now = bool(image_data or files_to_send_now)
+            
+            if has_files_now:
+                form = aiohttp.FormData()
+                form.add_field('payload_json', json.dumps(payload))
                 
-                # Discord limit: 10 files per message. Batch them.
-                for batch_idx in range(0, len(attachment_files), 10):
-                    batch = attachment_files[batch_idx:batch_idx + 10]
-                    logger.info(f"[NOTIFIER] Sending Discord attachment batch {batch_idx//10 + 1} ({len(batch)} files)")
+                # Add Files (Main Image + Attachments)
+                if image_data:
+                    filename = 'image.jpg' if notice.image_url else 'preview.jpg'
+                    form.add_field('files[0]', image_data, filename=filename)
                     
-                    writer_atts = MultipartWriter('form-data')
-                    file_index = 0
-                    for idx, file_info in enumerate(batch, 1):
-                        file_payload = BytesPayload(file_info['data'], content_type='application/octet-stream')
-                        filename_utf8 = file_info['filename']
-                        encoded_filename = urllib.parse.quote(filename_utf8)
-                        ext = filename_utf8.split('.')[-1] if '.' in filename_utf8 else 'file'
-                        fallback_filename = f"attachment_{batch_idx + idx}.{ext}"
-                        file_payload.headers['Content-Disposition'] = (
-                            f'form-data; name="file{file_index}"; '
-                            f'filename="{fallback_filename}"; '
-                            f'filename*=utf-8\'\'{encoded_filename}'
-                        )
-                        writer_atts.append_payload(file_payload)
-                        file_index += 1
+                for idx, file_info in enumerate(files_to_send_now):
+                    field_name = f"files[{idx + 1}]" if image_data else f"files[{idx}]"
+                    form.add_field(field_name, file_info['data'], filename=file_info['filename'])
                     
-                    for attempt in range(1, max_retries + 1):
-                        try:
-                            async with discord_session.post(url, headers=headers, data=writer_atts) as resp:
-                                if resp.status in [200, 204]:
-                                    logger.info(f"[NOTIFIER] Discord Attachments batch sent")
-                                    break
-                                else:
-                                    logger.error(f"[NOTIFIER] Discord Attachments batch failed: {resp.status} - {await resp.text()}")
-                                    if attempt < max_retries: await asyncio.sleep(1)
-                        except Exception as e:
-                            logger.error(f"[NOTIFIER] Discord Attachments batch error: {e}")
-                            if attempt < max_retries: await asyncio.sleep(1)
+                kwargs = {'data': form}
+            else:
+                kwargs = {'json': payload}
+            
+            async with session.post(thread_url, headers=headers, **kwargs) as resp:
+                if resp.status in [200, 201]:
+                    logger.info(f"[NOTIFIER] Discord Forum Thread created: {thread_name}")
+                    resp_data = await resp.json()
+                    created_thread_id = resp_data.get('id')
+                    
+                    # If we have files to send later, send them to the thread
+                    if files_to_send_later and created_thread_id:
+                        await self._send_discord_reply(session, created_thread_id, files_to_send_later, headers, is_thread=True)
+                        
+                    return created_thread_id
+                elif resp.status == 400 or resp.status == 404:
+                    logger.warning(f"[NOTIFIER] Failed to create thread (Status {resp.status}). Fallback to normal message.")
+                else:
+                    logger.error(f"[NOTIFIER] Discord Thread creation failed: {await resp.text()}")
+                    pass
+
+        except Exception as e:
+            logger.error(f"[NOTIFIER] Discord Thread error: {e}")
+
+        # 2. Fallback: Normal Message (Text Channel)
+        try:
+            payload = {"embeds": [embed]}
+            
+            has_files_now = bool(image_data or files_to_send_now)
+            
+            if has_files_now:
+                form = aiohttp.FormData()
+                form.add_field('payload_json', json.dumps(payload))
+                
+                if image_data:
+                    filename = 'image.jpg' if notice.image_url else 'preview.jpg'
+                    form.add_field('files[0]', image_data, filename=filename)
+                    
+                for idx, file_info in enumerate(files_to_send_now):
+                    field_name = f"files[{idx + 1}]" if image_data else f"files[{idx}]"
+                    form.add_field(field_name, file_info['data'], filename=file_info['filename'])
+                    
+                kwargs = {'data': form}
+            else:
+                kwargs = {'json': payload}
+                
+            async with session.post(message_url, headers=headers, **kwargs) as resp:
+                if resp.status in [200, 204]:
+                    logger.info(f"[NOTIFIER] Discord Message sent: {notice.title}")
+                    resp_data = await resp.json()
+                    created_message_id = resp_data.get('id')
+                    channel_id = message_url.split('/')[-2] # Extract channel ID from URL
+                    
+                    # If we have files to send later, reply to the message
+                    if files_to_send_later and created_message_id:
+                        await self._send_discord_reply(session, channel_id, files_to_send_later, headers, is_thread=False, reply_to_id=created_message_id)
+                        
+                    return created_message_id
+                else:
+                    logger.error(f"[NOTIFIER] Discord Message failed: {await resp.text()}")
+                    return None
+        except Exception as e:
+            logger.error(f"[NOTIFIER] Discord Message error: {e}")
+            return None
+
+    async def _send_discord_reply(self, session: aiohttp.ClientSession, channel_id: str, files: List[Dict], headers: Dict, is_thread: bool, reply_to_id: str = None):
+        """
+        Sends a reply (follow-up message) with attachments.
+        """
+        url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+        
+        # Batch files (max 10 per message)
+        for batch_idx in range(0, len(files), 10):
+            batch = files[batch_idx:batch_idx + 10]
+            
+            form = aiohttp.FormData()
+            payload = {}
+            if reply_to_id and not is_thread:
+                payload["message_reference"] = {"message_id": reply_to_id}
+            
+            form.add_field('payload_json', json.dumps(payload))
+            
+            for idx, file_info in enumerate(batch):
+                field_name = f"files[{idx}]"
+                form.add_field(field_name, file_info['data'], filename=file_info['filename'])
+                
+            try:
+                async with session.post(url, headers=headers, data=form) as resp:
+                    if resp.status not in [200, 201, 204]:
+                        logger.error(f"[NOTIFIER] Failed to send reply attachments: {await resp.text()}")
+            except Exception as e:
+                logger.error(f"[NOTIFIER] Error sending reply attachments: {e}")
 
     async def send_menu_notification(self, session: aiohttp.ClientSession, notice: Notice, menu_data: Dict[str, Any]):
         """
         Sends extracted menu text to Telegram and Pins it.
         """
         if not self.telegram_token: return
-
         # 1. Construct Message
         raw_text = menu_data.get('raw_text', '식단 정보 없음')
         start_date = menu_data.get('start_date', '')

@@ -319,8 +319,17 @@ class ScraperService:
                 msg_id = await self.notifier.send_telegram(session, item, is_new, modified_reason)
                 if msg_id:
                     self.repo.update_message_ids(notice_id, 'telegram', msg_id)
-                    
-                await self.notifier.send_discord(session, item, is_new, modified_reason)
+                
+                # Discord Notification
+                # Check for existing thread ID if modified
+                existing_thread_id = None
+                if is_modified and 'old_notice' in locals() and old_notice:
+                    existing_thread_id = old_notice.discord_thread_id
+                
+                discord_thread_id = await self.notifier.send_discord(session, item, is_new, modified_reason, existing_thread_id=existing_thread_id)
+                
+                if discord_thread_id:
+                    self.repo.update_discord_thread_id(notice_id, discord_thread_id)
             
             # Small delay between notices
             await asyncio.sleep(self.NOTICE_PROCESS_DELAY)
@@ -545,10 +554,21 @@ class ScraperService:
                 logger.info(f"[TEST] - {att.name}: {att.url}")
             
             # 4. Force Notify
-            logger.info("[TEST] Sending Test Notification...")
+            logger.info("[TEST] Sending Test Notification (New)...")
             
-            # Send Test Notification
+            # Send Test Notification (New)
             await self.notifier.send_telegram(session, item, is_new=True, modified_reason="[TEST] 강제 알림 테스트")
-            await self.notifier.send_discord(session, item, is_new=True, modified_reason="[TEST] 강제 알림 테스트")
+            discord_thread_id = await self.notifier.send_discord(session, item, is_new=True, modified_reason="[TEST] 강제 알림 테스트")
             
-            logger.info("[TEST] Notification Sent!")
+            logger.info(f"[TEST] New Notification Sent! Thread ID: {discord_thread_id}")
+            
+            if discord_thread_id:
+                logger.info("[TEST] Waiting 2s before sending update test...")
+                await asyncio.sleep(2)
+                
+                logger.info("[TEST] Sending Test Notification (Update)...")
+                # Simulate Update
+                await self.notifier.send_discord(session, item, is_new=False, modified_reason="[TEST] 업데이트 테스트 (답글)", existing_thread_id=discord_thread_id)
+                logger.info("[TEST] Update Notification Sent!")
+            else:
+                logger.warning("[TEST] Failed to get Thread ID, skipping update test.")
