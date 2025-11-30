@@ -60,10 +60,34 @@ class NotificationService:
         hashtag = f"#{notice.category} #{site_name}"
         
         # Enhanced Message Format
+        # Ensure every line starts with a hyphen
+        lines = safe_summary.split('\n')
+        formatted_lines = []
+        for line in lines:
+            line = line.strip()
+            if not line: continue
+            if not line.startswith("-"):
+                line = f"- {line}"
+            formatted_lines.append(line)
+        formatted_summary = "\n".join(formatted_lines)
+
         msg = (
             f"{prefix} <a href='{notice.url}'><b>{cat_emoji} {safe_title}</b></a>\n\n"
-            f"{safe_summary}\n\n"
+            f"📝 <b>요약</b>\n"
+            f"{formatted_summary}\n\n"
         )
+        
+        # Tier 2: Deadline & Eligibility
+        if notice.deadline:
+            msg += f"📅 <b>마감일</b>: {notice.deadline}\n"
+            
+        if notice.eligibility:
+            # Limit to 3 items to keep it clean
+            items = notice.eligibility[:3]
+            reqs = "\n".join([f"• {html.escape(req)}" for req in items])
+            msg += f"✅ <b>자격요건</b>\n{reqs}\n\n"
+        elif notice.deadline: # Add newline if only deadline exists
+            msg += "\n"
         
         if modified_reason:
             msg += f"⚠️ <b>수정 사항</b>: {modified_reason}\n\n"
@@ -194,29 +218,39 @@ class NotificationService:
         # (Used if >1 files, or caption too long, or image exists, or single file send failed)
         
         # 2.1 Send Main Message (Text or Photo)
-        if notice.image_url:
-             # ... (Existing Photo Logic) ...
-             # Re-implementing photo logic briefly
+        # Check for Image URL OR Preview Image
+        if notice.image_url or notice.preview_image:
              try:
-                headers = {'Referer': notice.url, 'User-Agent': 'Mozilla/5.0'}
-                async with session.get(notice.image_url, headers=headers) as resp:
-                    if resp.status == 200:
-                        photo_data = await resp.read()
-                        caption_text = msg[:1020] + "..." if len(msg) > 1024 else msg
-                        
-                        form = aiohttp.FormData()
-                        form.add_field('photo', photo_data, filename='image.jpg')
-                        form.add_field('caption', caption_text)
-                        form.add_field('parse_mode', 'HTML')
-                        form.add_field('chat_id', str(self.chat_id))
-                        if topic_id: form.add_field('message_thread_id', str(topic_id))
-                        if buttons: form.add_field('reply_markup', json.dumps({"inline_keyboard": inline_keyboard}))
-                        
-                        async with session.post(f"https://api.telegram.org/bot{self.telegram_token}/sendPhoto", data=form) as photo_resp:
-                            if photo_resp.status == 200:
-                                result = await photo_resp.json()
-                                main_msg_id = result.get('result', {}).get('message_id')
-             except Exception: pass
+                photo_data = None
+                
+                if notice.image_url:
+                    headers = {'Referer': notice.url, 'User-Agent': 'Mozilla/5.0'}
+                    async with session.get(notice.image_url, headers=headers) as resp:
+                        if resp.status == 200:
+                            photo_data = await resp.read()
+                elif notice.preview_image:
+                    photo_data = notice.preview_image
+                    logger.info(f"[NOTIFIER] Using PDF preview image for Telegram ({len(photo_data)} bytes)")
+
+                if photo_data:
+                    caption_text = msg[:1020] + "..." if len(msg) > 1024 else msg
+                    
+                    form = aiohttp.FormData()
+                    form.add_field('photo', photo_data, filename='image.jpg')
+                    form.add_field('caption', caption_text)
+                    form.add_field('parse_mode', 'HTML')
+                    form.add_field('chat_id', str(self.chat_id))
+                    if topic_id: form.add_field('message_thread_id', str(topic_id))
+                    if buttons: form.add_field('reply_markup', json.dumps({"inline_keyboard": inline_keyboard}))
+                    
+                    async with session.post(f"https://api.telegram.org/bot{self.telegram_token}/sendPhoto", data=form) as photo_resp:
+                        if photo_resp.status == 200:
+                            result = await photo_resp.json()
+                            main_msg_id = result.get('result', {}).get('message_id')
+                        else:
+                            logger.error(f"[NOTIFIER] Telegram photo send failed: {await photo_resp.text()}")
+             except Exception as e:
+                 logger.error(f"[NOTIFIER] Telegram photo error: {e}")
 
         if not main_msg_id:
             # Fallback to Text
@@ -315,11 +349,22 @@ class NotificationService:
         color = 0x00ff00 if is_new else 0xffa500 # Green for New, Orange for Modified
         title_prefix = "🆕" if is_new else "🔄"
         
+        # Ensure every line starts with a hyphen
+        lines = notice.summary.split('\n')
+        formatted_lines = []
+        for line in lines:
+            line = line.strip()
+            if not line: continue
+            if not line.startswith("-"):
+                line = f"- {line}"
+            formatted_lines.append(line)
+        formatted_summary = "\n".join(formatted_lines)
+        
         # Embed Construction
         embed = {
             "title": f"{title_prefix} {notice.title}",
             "url": notice.url,
-            "description": notice.summary,
+            "description": f"📝 **요약**\n{formatted_summary}",
             "color": color,
             "author": {
                 "name": "Yu Notice Bot",
@@ -332,6 +377,23 @@ class NotificationService:
             "fields": []
         }
         
+        # Tier 2: Deadline & Eligibility
+        if notice.deadline:
+            embed["fields"].append({
+                "name": "📅 마감일",
+                "value": notice.deadline,
+                "inline": True
+            })
+            
+        if notice.eligibility:
+            items = notice.eligibility[:3]
+            reqs = "\n".join([f"• {req}" for req in items])
+            embed["fields"].append({
+                "name": "✅ 자격요건",
+                "value": reqs,
+                "inline": False
+            })
+
         if modified_reason:
             embed["fields"].append({
                 "name": "⚠️ 수정 사항",

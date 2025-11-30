@@ -8,6 +8,7 @@ from models.notice import Notice
 from repositories.notice_repo import NoticeRepository
 from services.ai_service import AIService
 from services.notification_service import NotificationService
+from services.file_service import FileService
 from parsers.html_parser import HTMLParser
 from core.performance import get_performance_monitor
 
@@ -18,6 +19,7 @@ class ScraperService:
         self.repo = NoticeRepository()
         self.ai = AIService()
         self.notifier = NotificationService()
+        self.file_service = FileService()
         self.init_mode = init_mode
         self.no_ai_mode = no_ai_mode
         
@@ -158,6 +160,40 @@ class ScraperService:
                 logger.warning(f"[SCRAPER] Empty or very short content for '{item.title}' and no media. Skipping.")
                 continue
             
+            # --- ATTACHMENT TEXT EXTRACTION (Tier 1) ---
+            if item.attachments:
+                extracted_texts = []
+                # Limit to first 2 attachments to avoid timeout/memory issues
+                for att in item.attachments[:2]:
+                    ext = att.name.split('.')[-1].lower() if '.' in att.name else ''
+                    if ext in ['hwp', 'hwpx', 'pdf']:
+                        logger.info(f"[SCRAPER] Downloading attachment for text extraction: {att.name}")
+                        # Use Referer to avoid 403
+                        headers = {'Referer': item.url, 'User-Agent': settings.USER_AGENT}
+                        file_data = await self.file_service.download_file(session, att.url, headers=headers)
+                        
+                        if file_data:
+                            text = self.file_service.extract_text(file_data, att.name)
+                            if text:
+                                # Clean up text slightly
+                                text = text.strip()
+                                if len(text) > 100:
+                                    extracted_texts.append(f"--- 첨부파일: {att.name} ---\n{text[:3000]}...") # Limit 3000 chars per file
+                                    logger.info(f"[SCRAPER] Extracted {len(text)} chars from {att.name}")
+                            
+                            # PDF Preview Generation (Tier 1)
+                            # Only if no main image exists and we haven't generated one yet
+                            if ext == 'pdf' and not item.image_url and not item.preview_image:
+                                logger.info(f"[SCRAPER] Attempting to generate PDF preview for {att.name}...")
+                                preview_bytes = self.file_service.generate_preview_image(file_data, att.name)
+                                if preview_bytes:
+                                    item.preview_image = preview_bytes
+                                    logger.info(f"[SCRAPER] PDF preview generated ({len(preview_bytes)} bytes)")
+
+                if extracted_texts:
+                    item.content += "\n\n" + "\n".join(extracted_texts)
+            # -------------------------------------------
+
             logger.info(f"[SCRAPER] Content length for '{item.title}': {len(item.content)}")
             logger.info(f"[SCRAPER] Content preview: {item.content[:100]}")
             current_hash = self.calculate_hash(item)
@@ -197,6 +233,7 @@ class ScraperService:
                 # AI Analysis with rate limiting
                 if self.ai_summary_count < self.MAX_AI_SUMMARIES:
                     # Skip AI if content is too short (use content as summary)
+                    # BUT if we extracted attachment text, content might be long now!
                     if len(item.content.strip()) < 50:
                         logger.info(f"[SCRAPER] Content too short for AI analysis. Using original content as summary.")
                         item.category = '일반'
@@ -215,6 +252,14 @@ class ScraperService:
                         
                         item.category = analysis.get('category', '일반')
                         item.summary = analysis.get('summary', item.content[:100])
+                        
+                        # Tier 2: Enhanced Metadata
+                        item.deadline = analysis.get('deadline')
+                        item.eligibility = analysis.get('eligibility', [])
+                        item.start_date = analysis.get('start_date')
+                        item.end_date = analysis.get('end_date')
+                        item.target_grades = analysis.get('target_grades', [])
+                        item.target_dept = analysis.get('target_dept')
                         
                         # 2. Get embedding (Wait BEFORE second call)
                         logger.info(f"[SCRAPER] Waiting {self.AI_CALL_DELAY}s before get_embedding...")
@@ -442,6 +487,57 @@ class ScraperService:
             # Use parser to fill content and attachments
             item = parser.parse_detail(html, item)
             
+            # --- ATTACHMENT TEXT EXTRACTION (Test Mode) ---
+            if item.attachments:
+                logger.info(f"[TEST] Found {len(item.attachments)} attachments. Attempting extraction...")
+                extracted_texts = []
+                for att in item.attachments[:2]:
+                    ext = att.name.split('.')[-1].lower() if '.' in att.name else ''
+                    if ext in ['hwp', 'hwpx', 'pdf']:
+                        logger.info(f"[TEST] Downloading {att.name}...")
+                        headers = {'Referer': item.url, 'User-Agent': settings.USER_AGENT}
+                        file_data = await self.file_service.download_file(session, att.url, headers=headers)
+                        
+                        if file_data:
+                            text = self.file_service.extract_text(file_data, att.name)
+                            if text:
+                                text = text.strip()
+                                if len(text) > 50:
+                                    extracted_texts.append(f"--- 첨부파일: {att.name} ---\n{text[:1000]}...")
+                                    logger.info(f"[TEST] ✅ Extracted {len(text)} chars from {att.name}")
+                                    logger.info(f"[TEST] Preview: {text[:200]}")
+                                else:
+                                    logger.warning(f"[TEST] Extracted text too short or empty.")
+                            else:
+                                logger.warning(f"[TEST] Extraction returned empty string.")
+                        else:
+                            logger.error(f"[TEST] Download failed.")
+                
+                if extracted_texts:
+                    item.content += "\n\n" + "\n".join(extracted_texts)
+                    logger.info(f"[TEST] Content updated with attachment text. New length: {len(item.content)}")
+            # ----------------------------------------------
+            
+            # --- AI ANALYSIS (Test Mode) ---
+            logger.info(f"[TEST] Starting AI analysis for verification...")
+            analysis = await self.ai.analyze_notice(item.content)
+            
+            item.category = analysis.get('category', '일반')
+            item.summary = analysis.get('summary', item.content[:100])
+            item.deadline = analysis.get('deadline')
+            item.eligibility = analysis.get('eligibility', [])
+            item.start_date = analysis.get('start_date')
+            item.end_date = analysis.get('end_date')
+            item.target_grades = analysis.get('target_grades', [])
+            item.target_dept = analysis.get('target_dept')
+            
+            logger.info(f"[TEST] AI Result:")
+            logger.info(f"  - Category: {item.category}")
+            logger.info(f"  - Summary: {item.summary}")
+            logger.info(f"  - Deadline: {item.deadline}")
+            logger.info(f"  - Eligibility: {item.eligibility}")
+            # -------------------------------
+
             logger.info(f"[TEST] Parsed Item: {item.title}")
             logger.info(f"[TEST] Content Length: {len(item.content)}")
             logger.info(f"[TEST] Attachments Found: {len(item.attachments)}")
@@ -451,13 +547,7 @@ class ScraperService:
             # 4. Force Notify
             logger.info("[TEST] Sending Test Notification...")
             
-            # AI Analysis (Optional, skip for speed or use if needed)
-            # Use scraped content as summary for test mode
-            if item.content:
-                item.summary = item.content[:500] + ("..." if len(item.content) > 500 else "") + "\n\n(테스트 모드: 원본 본문 사용)"
-            else:
-                item.summary = "본문 내용 없음 (이미지/첨부파일 참조)"
-            
+            # Send Test Notification
             await self.notifier.send_telegram(session, item, is_new=True, modified_reason="[TEST] 강제 알림 테스트")
             await self.notifier.send_discord(session, item, is_new=True, modified_reason="[TEST] 강제 알림 테스트")
             

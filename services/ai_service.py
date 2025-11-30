@@ -34,6 +34,17 @@ class AIService:
         except Exception as e:
             logger.error(f"Failed to save token usage: {e}")
 
+    def _clean_text(self, text: str) -> str:
+        """
+        Removes null bytes and excessive control characters to prevent AI confusion.
+        """
+        if not text: return ""
+        # Remove null bytes
+        text = text.replace('\x00', '')
+        # Remove other control characters (except newlines/tabs)
+        text = "".join(ch for ch in text if ch == '\n' or ch == '\t' or ch >= ' ')
+        return text
+
     async def analyze_notice(self, text: str) -> Dict[str, Any]:
         """
         Analyzes notice text to extract summary, category, and metadata.
@@ -41,18 +52,26 @@ class AIService:
         if not self.model:
             return {"summary": "AI Key Missing", "category": "일반"}
 
+        # Pre-process text to remove noise
+        text = self._clean_text(text)
+
         prompt = (
-            "Analyze this university notice. Respond in JSON format.\n\n"
-            "1. 'category': string. Choose one: '장학', '학사', '취업', '생활관', '일반'.\n"
-            "2. 'summary': string. Summarize concisely in Korean (3 lines max).\n"
-            "   - End sentences with noun-endings (~함).\n"
-            "   - Use structured format ONLY if applicable (e.g., '- 일시: ...').\n"
-            "   - Otherwise, use natural bullet points starting with a hyphen (-).\n"
-            "3. 'start_date': string (optional, YYYY-MM-DD).\n"
-            "4. 'end_date': string (optional, YYYY-MM-DD).\n"
-            "5. 'target_grades': list of integers (optional, [1,2,3,4]).\n"
-            "6. 'target_dept': string (optional).\n\n"
-            f"Content:\n{text[:4000]}"
+            "Role: You are a university administrative assistant.\n"
+            "Task: Analyze the provided university notice (including text extracted from attachments).\n"
+            "Handling Noise: The input text may contain broken characters (e.g., ^@#, \\x00) from PDF/HWP conversion. "
+            "STRICTLY IGNORE these encoding errors and focus only on coherent Korean sentences and dates.\n\n"
+            "Output JSON format:\n"
+            "{\n"
+            "  'category': string (Choose one: '장학', '학사', '취업', '생활관', '일반'),\n"
+            "  'summary': string (Concise 3-line summary in Korean. End with noun-endings ~함),\n"
+            "  'deadline': string or null (Application end date in YYYY-MM-DD format. If none/ongoing, null),\n"
+            "  'eligibility': list[string] (List of specific requirements e.g. '3,4학년', '평점 3.0 이상'. If all students, empty list),\n"
+            "  'start_date': string or null (YYYY-MM-DD),\n"
+            "  'end_date': string or null (YYYY-MM-DD),\n"
+            "  'target_grades': list[int] ([1,2,3,4]),\n"
+            "  'target_dept': string or null\n"
+            "}\n\n"
+            f"Content:\n{text[:8000]}"  # Increased limit for attachment text
         )
 
         try:

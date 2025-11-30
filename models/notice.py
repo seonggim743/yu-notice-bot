@@ -25,6 +25,13 @@ class Notice(BaseModel):
     target_grades: List[int] = Field(default_factory=list)
     target_dept: Optional[str] = None
     
+    # Enhanced AI Metadata (Tier 2)
+    deadline: Optional[str] = None  # YYYY-MM-DD
+    eligibility: List[str] = Field(default_factory=list)
+    
+    # PDF Preview (Tier 1) - Memory Only
+    preview_image: Optional[bytes] = Field(default=None, exclude=True) # Exclude from DB dump
+    
     # Internal
     content_hash: Optional[str] = None
     embedding: Optional[List[float]] = None
