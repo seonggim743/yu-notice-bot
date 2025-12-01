@@ -312,6 +312,41 @@ class NotificationService:
                         if resp.status != 200: logger.error(f"MediaGroup failed: {await resp.text()}")
                 except Exception as e: logger.error(f"MediaGroup error: {e}")
 
+        # 2.3 Send Detailed Change Content (if modified)
+        if main_msg_id and modified_reason and notice.change_details:
+            old_content = notice.change_details.get('old_content')
+            new_content = notice.change_details.get('new_content')
+            
+            if old_content and new_content:
+                # Limit content length to avoid message too long error (4096 chars max)
+                max_len = 1800  # Leave room for headers
+                old_truncated = old_content[:max_len] + "..." if len(old_content) > max_len else old_content
+                new_truncated = new_content[:max_len] + "..." if len(new_content) > max_len else new_content
+                
+                detail_msg = (
+                    f"━━━ 📄 <b>변경 전 본문</b> ━━━\n"
+                    f"{html.escape(old_truncated)}\n\n"
+                    f"━━━ 📄 <b>변경 후 본문</b> ━━━\n"
+                    f"{html.escape(new_truncated)}"
+                )
+                
+                reply_payload = {
+                    'chat_id': self.chat_id,
+                    'text': detail_msg,
+                    'reply_to_message_id': main_msg_id,
+                    'parse_mode': 'HTML'
+                }
+                if topic_id: reply_payload['message_thread_id'] = topic_id
+                
+                try:
+                    async with session.post(f"https://api.telegram.org/bot{self.telegram_token}/sendMessage", json=reply_payload) as resp:
+                        if resp.status == 200:
+                            logger.info(f"[NOTIFIER] Telegram detail reply sent for: {notice.title}")
+                        else:
+                            logger.error(f"[NOTIFIER] Failed to send detail reply: {await resp.text()}")
+                except Exception as e:
+                    logger.error(f"[NOTIFIER] Error sending detail reply: {e}")
+
         return main_msg_id
 
 
@@ -421,6 +456,29 @@ class NotificationService:
                 "value": modified_reason,
                 "inline": False
             })
+            
+            # Add detailed change content with spoiler tags (if available)
+            if notice.change_details:
+                old_content = notice.change_details.get('old_content')
+                new_content = notice.change_details.get('new_content')
+                
+                if old_content and new_content:
+                    # Limit to 1024 chars per field (Discord limit)
+                    max_len = 950  # Leave room for spoiler tags and ellipsis
+                    old_truncated = old_content[:max_len] + "..." if len(old_content) > max_len else old_content
+                    new_truncated = new_content[:max_len] + "..." if len(new_content) > max_len else new_content
+                    
+                    embed["fields"].append({
+                        "name": "📄 변경 전 본문 (클릭하여 보기)",
+                        "value": f"||{old_truncated}||",
+                        "inline": False
+                    })
+                    
+                    embed["fields"].append({
+                        "name": "📄 변경 후 본문 (클릭하여 보기)",
+                        "value": f"||{new_truncated}||",
+                        "inline": False
+                    })
         
         # Add attachment links as the last field (before footer)
         if notice.attachments:

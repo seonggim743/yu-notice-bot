@@ -73,10 +73,15 @@ class ScraperService:
         ]
 
     def calculate_hash(self, notice: Notice) -> str:
-        """Hash of Title + Content + Attachments (sorted for stability)"""
-        sorted_atts = sorted([a.name for a in notice.attachments])
+        """Hash of Title + Content + Image + Attachments (name + URL)"""
+        # Include attachment name AND url to detect file replacements
+        sorted_atts = sorted([f"{a.name}|{a.url}" for a in notice.attachments])
         att_str = "".join(sorted_atts)
-        raw = f"{notice.title}{notice.content}{att_str}"
+        
+        # Include image URL (empty string if None)
+        img_str = notice.image_url or ""
+        
+        raw = f"{notice.title}{notice.content}{img_str}{att_str}"
         return hashlib.sha256(raw.encode()).hexdigest()
 
     async def process_menu_notice(self, session: aiohttp.ClientSession, notice: Notice):
@@ -286,6 +291,10 @@ class ScraperService:
                         changes['title'] = f"'{old_notice.title}' -> '{item.title}'"
                     
                     if old_notice.content != item.content:
+                        # Store old and new content for detailed diff display
+                        changes['old_content'] = old_notice.content
+                        changes['new_content'] = item.content
+                        
                         if self.ai_summary_count < self.MAX_AI_SUMMARIES:
                             logger.info(f"[SCRAPER] Waiting {self.AI_CALL_DELAY}s before get_diff_summary...")
                             await asyncio.sleep(self.AI_CALL_DELAY)
@@ -294,13 +303,32 @@ class ScraperService:
                         else:
                             changes['content'] = "내용 변경됨 (AI 한도 초과)"
                     
-                    # Attachments
+                    # Image change detection
+                    if old_notice.image_url != item.image_url:
+                        old_img = old_notice.image_url or "없음"
+                        new_img = item.image_url or "없음"
+                        changes['image'] = f"{old_img} → {new_img}"
+                    
+                    # Attachments (name and URL)
                     old_atts = {a.name for a in old_notice.attachments}
                     new_atts = {a.name for a in item.attachments}
                     added = new_atts - old_atts
                     removed = old_atts - new_atts
-                    if added or removed:
-                        changes['attachments'] = f"Added: {', '.join(added)}, Removed: {', '.join(removed)}"
+                    
+                    # Check for URL changes (same name, different URL)
+                    old_att_map = {a.name: a.url for a in old_notice.attachments}
+                    new_att_map = {a.name: a.url for a in item.attachments}
+                    url_changed = []
+                    for name in old_atts & new_atts:  # Common attachments
+                        if old_att_map[name] != new_att_map[name]:
+                            url_changed.append(name)
+                    
+                    if added or removed or url_changed:
+                        att_changes = []
+                        if added: att_changes.append(f"추가: {', '.join(added)}")
+                        if removed: att_changes.append(f"제거: {', '.join(removed)}")
+                        if url_changed: att_changes.append(f"재업로드: {', '.join(url_changed)}")
+                        changes['attachments'] = ", ".join(att_changes)
                 
                 item.change_details = changes
                 
@@ -308,7 +336,8 @@ class ScraperService:
                 reasons = []
                 if 'title' in changes: reasons.append("제목 변경")
                 if 'content' in changes: reasons.append(f"내용 변경: {changes['content']}")
-                if 'attachments' in changes: reasons.append("첨부파일 변경")
+                if 'image' in changes: reasons.append("이미지 변경")
+                if 'attachments' in changes: reasons.append(f"첨부파일 변경 ({changes['attachments']})")
                 
                 modified_reason = ", ".join(reasons) if reasons else "내용 변경됨"
 
