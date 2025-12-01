@@ -169,34 +169,38 @@ class ScraperService:
             if item.content:
                 item.content = item.content.replace('\x00', '')
             
-            # --- ATTACHMENT TEXT EXTRACTION (Tier 1) ---
+            # --- ATTACHMENT TEXT EXTRACTION & PREVIEW (Tier 1) ---
             if item.attachments:
                 extracted_texts = []
-                # Limit to first 2 attachments to avoid timeout/memory issues
-                for att in item.attachments[:2]:
+                pdf_preview_count = 0
+                MAX_PDF_PREVIEWS = 3
+                
+                # Limit to first 5 attachments for processing to avoid timeout
+                for att in item.attachments[:5]:
                     ext = att.name.split('.')[-1].lower() if '.' in att.name else ''
+                    
+                    # 1. Text Extraction (HWP, PDF)
                     if ext in ['hwp', 'hwpx', 'pdf']:
-                        logger.info(f"[SCRAPER] Downloading attachment for text extraction: {att.name}")
-                        # Use Referer to avoid 403
+                        logger.info(f"[SCRAPER] Downloading attachment for processing: {att.name}")
                         headers = {'Referer': item.url, 'User-Agent': settings.USER_AGENT}
                         file_data = await self.file_service.download_file(session, att.url, headers=headers)
                         
                         if file_data:
+                            # Extract Text
                             text = self.file_service.extract_text(file_data, att.name)
                             if text:
-                                # Clean up text slightly
                                 text = text.strip()
                                 if len(text) > 100:
-                                    extracted_texts.append(f"--- 첨부파일: {att.name} ---\n{text[:3000]}...") # Limit 3000 chars per file
+                                    extracted_texts.append(f"--- 첨부파일: {att.name} ---\n{text[:3000]}...")
                                     logger.info(f"[SCRAPER] Extracted {len(text)} chars from {att.name}")
                             
-                            # PDF Preview Generation (Tier 1)
-                            # Only if no main image exists and we haven't generated one yet
-                            if ext == 'pdf' and not item.image_url and not item.preview_image:
-                                logger.info(f"[SCRAPER] Attempting to generate PDF preview for {att.name}...")
+                            # 2. PDF Preview Generation (Multi-PDF Support)
+                            if ext == 'pdf' and pdf_preview_count < MAX_PDF_PREVIEWS:
+                                logger.info(f"[SCRAPER] Generating PDF preview for {att.name}...")
                                 preview_bytes = self.file_service.generate_preview_image(file_data, att.name)
                                 if preview_bytes:
-                                    item.preview_image = preview_bytes
+                                    att.preview_bytes = preview_bytes # Store in Attachment model
+                                    pdf_preview_count += 1
                                     logger.info(f"[SCRAPER] PDF preview generated ({len(preview_bytes)} bytes)")
 
                 if extracted_texts:

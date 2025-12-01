@@ -6,6 +6,7 @@ import uuid
 class Attachment(BaseModel):
     name: str
     url: str
+    preview_bytes: Optional[bytes] = Field(default=None, exclude=True) # Memory only
 
 class Notice(BaseModel):
     site_key: str

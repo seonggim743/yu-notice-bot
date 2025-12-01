@@ -191,7 +191,8 @@ class FileService:
             image.save(img_buffer, format='JPEG', quality=85)
             img_buffer.seek(0)
             
-            return img_buffer.getvalue()
+            # Add Watermark
+            return self.add_watermark(img_buffer.getvalue())
             
         except Exception as e:
             error_msg = str(e)
@@ -200,3 +201,63 @@ class FileService:
             else:
                 logger.warning(f"[FILE] Preview generation failed for {filename}: {e}")
             return None
+
+    def add_watermark(self, image_bytes: bytes, text: str = "PREVIEW") -> bytes:
+        """
+        Adds a semi-transparent watermark to the center of the image.
+        """
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            
+            with Image.open(io.BytesIO(image_bytes)) as base:
+                # Make the image editable
+                txt = Image.new("RGBA", base.size, (255, 255, 255, 0))
+                draw = ImageDraw.Draw(txt)
+                
+                # Calculate font size based on image width (e.g., 15% of width)
+                fontsize = int(base.width / 6)
+                try:
+                    # Try to load a default font, otherwise use default
+                    # On Windows, arial.ttf is usually available
+                    font = ImageFont.truetype("arial.ttf", fontsize)
+                except:
+                    font = ImageFont.load_default()
+                
+                # Calculate text size and position
+                # textbbox is available in Pillow >= 8.0.0
+                try:
+                    bbox = draw.textbbox((0, 0), text, font=font)
+                    text_width = bbox[2] - bbox[0]
+                    text_height = bbox[3] - bbox[1]
+                except AttributeError:
+                    # Fallback for older Pillow
+                    text_width, text_height = draw.textsize(text, font=font)
+
+                x = (base.width - text_width) / 2
+                y = (base.height - text_height) / 2
+                
+                # Draw text with transparency (RGBA)
+                # White text with 50% opacity
+                draw.text((x, y), text, font=font, fill=(255, 255, 255, 128))
+                
+                # Outline (Black with 50% opacity) for better visibility
+                stroke_width = 2
+                draw.text((x-stroke_width, y), text, font=font, fill=(0, 0, 0, 128))
+                draw.text((x+stroke_width, y), text, font=font, fill=(0, 0, 0, 128))
+                draw.text((x, y-stroke_width), text, font=font, fill=(0, 0, 0, 128))
+                draw.text((x, y+stroke_width), text, font=font, fill=(0, 0, 0, 128))
+                
+                # Composite
+                out = Image.alpha_composite(base.convert("RGBA"), txt)
+                
+                # Save back to bytes
+                out_buffer = io.BytesIO()
+                out.convert("RGB").save(out_buffer, format='JPEG', quality=85)
+                return out_buffer.getvalue()
+                
+        except ImportError:
+            logger.warning("[FILE] Pillow not installed. Skipping watermark.")
+            return image_bytes
+        except Exception as e:
+            logger.error(f"[FILE] Watermark failed: {e}")
+            return image_bytes
