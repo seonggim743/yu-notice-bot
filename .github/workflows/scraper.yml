@@ -55,6 +55,7 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
           DISCORD_WEBHOOK_MAP: ${{ secrets.DISCORD_WEBHOOK_MAP || '{}' }}
           DISCORD_CHANNEL_MAP: ${{ secrets.DISCORD_CHANNEL_MAP || '{}' }}
+          DISCORD_TAG_MAP: ${{ secrets.DISCORD_TAG_MAP || '{}' }}
           DISCORD_BOT_TOKEN: ${{ secrets.DISCORD_BOT_TOKEN }}
           CANVAS_TOKEN: ${{ secrets.CANVAS_TOKEN }}
           LOG_LEVEL: INFO
