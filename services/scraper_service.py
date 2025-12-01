@@ -25,7 +25,7 @@ class ScraperService:
         
         # Safety Limits
         self.ai_summary_count = 0
-        self.MAX_AI_SUMMARIES = 10
+        self.MAX_AI_SUMMARIES = 30
         
         # Rate Limiting (Gemini 2.5 Flash: 10 RPM = 6 seconds per request)
         # Using 7s for safety margin + each notice has multiple AI calls
@@ -272,6 +272,7 @@ class ScraperService:
                         
                         item.category = analysis.get('category', '일반')
                         item.tags = analysis.get('tags', [])  # NEW: Store AI-selected tags
+                        logger.info(f"[SCRAPER] AI Tags for {item.title}: {item.tags}")
                         item.summary = analysis.get('summary', item.content[:100])
                         
                         # Tier 2: Enhanced Metadata

@@ -653,7 +653,9 @@ class NotificationService:
         if is_new and notice.tags:
             tag_ids = TagMatcher.get_tag_ids(notice.tags, notice.site_key)
             if tag_ids:
-                logger.info(f"[NOTIFIER] Applying {len(tag_ids)} tags: {notice.tags}")
+                logger.info(f"[NOTIFIER] Applying {len(tag_ids)} tags: {notice.tags} -> {tag_ids}")
+            else:
+                logger.info(f"[NOTIFIER] No tags matched for {notice.tags} (Site: {notice.site_key})")
         
         # 1. Try Thread Creation (Forum)
         try:
