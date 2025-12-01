@@ -312,6 +312,7 @@ class ScraperService:
                                 logger.info(f"[SCRAPER] Waiting {self.AI_CALL_DELAY}s before get_diff_summary...")
                                 await asyncio.sleep(self.AI_CALL_DELAY)
                                 diff_summary = await self.ai.get_diff_summary(old_notice.content, item.content)
+                                logger.info(f"[DEBUG] AI Diff Summary: '{diff_summary}'")
                                 
                                 # Check for "No Change" response
                                 if diff_summary in ["NO_CHANGE", "변동사항 없음", "내용 변경 없음"] or "내용 변화는 없습니다" in diff_summary or "변경사항이 없습니다" in diff_summary:
