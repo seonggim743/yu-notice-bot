@@ -33,13 +33,19 @@ class FileService:
         
         try:
             if ext == 'pdf':
-                return self._extract_pdf_text(file_data)
+                text = self._extract_pdf_text(file_data)
             elif ext == 'hwp':
-                return self._extract_hwp_text(file_data)
+                text = self._extract_hwp_text(file_data)
             elif ext == 'hwpx':
-                return self._extract_hwpx_text(file_data)
+                text = self._extract_hwpx_text(file_data)
             else:
-                return ""
+                text = ""
+            
+            # Sanitize: Remove null bytes
+            if text:
+                text = text.replace('\x00', '')
+                
+            return text
         except Exception as e:
             logger.error(f"[FILE] Extraction failed for {filename}: {e}")
             return ""

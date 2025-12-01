@@ -165,6 +165,10 @@ class ScraperService:
                 logger.warning(f"[SCRAPER] Empty or very short content for '{item.title}' and no media. Skipping.")
                 continue
             
+            # Sanitize content (remove null bytes)
+            if item.content:
+                item.content = item.content.replace('\x00', '')
+            
             # --- ATTACHMENT TEXT EXTRACTION (Tier 1) ---
             if item.attachments:
                 extracted_texts = []
