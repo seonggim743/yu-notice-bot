@@ -330,6 +330,13 @@ class ScraperService:
                         if url_changed: att_changes.append(f"재업로드: {', '.join(url_changed)}")
                         changes['attachments'] = ", ".join(att_changes)
                 
+                # [FIX] If hash changed but no actual changes detected (e.g. hash algo update),
+                # update DB but do NOT notify.
+                if not changes:
+                    logger.info(f"[SCRAPER] Hash mismatch but no content changes detected for '{item.title}'. Updating hash only.")
+                    self.repo.upsert_notice(item)
+                    continue
+
                 item.change_details = changes
                 
                 # Construct readable reason
