@@ -168,6 +168,7 @@ class ScraperService:
             # Sanitize content (remove null bytes)
             if item.content:
                 item.content = item.content.replace('\x00', '')
+                item.content = item.content.strip() # Normalize whitespace
             
             # --- ATTACHMENT TEXT EXTRACTION & PREVIEW (Tier 1) ---
             if item.attachments:
@@ -299,17 +300,30 @@ class ScraperService:
                         changes['title'] = f"'{old_notice.title}' -> '{item.title}'"
                     
                     if old_notice.content != item.content:
-                        # Store old and new content for detailed diff display
-                        changes['old_content'] = old_notice.content
-                        changes['new_content'] = item.content
-                        
-                        if self.ai_summary_count < self.MAX_AI_SUMMARIES:
-                            logger.info(f"[SCRAPER] Waiting {self.AI_CALL_DELAY}s before get_diff_summary...")
-                            await asyncio.sleep(self.AI_CALL_DELAY)
-                            changes['content'] = await self.ai.get_diff_summary(old_notice.content, item.content)
-                            self.ai_summary_count += 1  # Count diff as an AI call
+                        # Pre-check: Ignore whitespace-only changes
+                        if old_notice.content.strip() == item.content.strip():
+                            logger.info(f"[SCRAPER] Content change detected but is whitespace-only for '{item.title}'. Ignoring.")
                         else:
-                            changes['content'] = "내용 변경됨 (AI 한도 초과)"
+                            # Store old and new content for detailed diff display
+                            changes['old_content'] = old_notice.content
+                            changes['new_content'] = item.content
+                            
+                            if self.ai_summary_count < self.MAX_AI_SUMMARIES:
+                                logger.info(f"[SCRAPER] Waiting {self.AI_CALL_DELAY}s before get_diff_summary...")
+                                await asyncio.sleep(self.AI_CALL_DELAY)
+                                diff_summary = await self.ai.get_diff_summary(old_notice.content, item.content)
+                                
+                                # Check for "No Change" response
+                                if diff_summary in ["NO_CHANGE", "변동사항 없음", "내용 변경 없음"] or "내용 변화는 없습니다" in diff_summary or "변경사항이 없습니다" in diff_summary:
+                                    logger.info(f"[SCRAPER] AI reported no semantic change for '{item.title}'. Ignoring content change.")
+                                    # Remove content change from tracking
+                                    if 'old_content' in changes: del changes['old_content']
+                                    if 'new_content' in changes: del changes['new_content']
+                                else:
+                                    changes['content'] = diff_summary
+                                    self.ai_summary_count += 1  # Count diff as an AI call
+                            else:
+                                changes['content'] = "내용 변경됨 (AI 한도 초과)"
                     
                     # Image change detection
                     if old_notice.image_url != item.image_url:

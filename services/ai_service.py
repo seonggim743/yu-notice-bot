@@ -166,6 +166,7 @@ class AIService:
         prompt = (
             "Compare the following two versions of a notice and summarize the changes in Korean.\n"
             "Output ONLY the summary of what changed (e.g., '신청 기간이 11/25에서 11/30으로 연장되었습니다.').\n"
+            "If the changes are only whitespace, formatting, or semantically identical, output 'NO_CHANGE'.\n"
             "Keep it concise (1 sentence).\n\n"
             f"--- OLD VERSION ---\n{old_text[:2000]}\n\n"
             f"--- NEW VERSION ---\n{new_text[:2000]}"
