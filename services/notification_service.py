@@ -410,7 +410,29 @@ class NotificationService:
                 "value": modified_reason,
                 "inline": False
             })
+        
+        # Add attachment links as the last field (before footer)
+        if notice.attachments:
+            attachment_links = ""
+            for att in notice.attachments:
+                fname = att.name
+                ext = fname.split('.')[-1].lower() if '.' in fname else ''
+                emoji = {
+                    'pdf': '📕',
+                    'doc': '📘', 'docx': '📘',
+                    'xls': '📗', 'xlsx': '📗',
+                    'ppt': '📙', 'pptx': '📙',
+                    'zip': '📦', 'rar': '📦',
+                    'jpg': '🖼️', 'jpeg': '🖼️', 'png': '🖼️', 'gif': '🖼️'
+                }.get(ext, '📄')
+                attachment_links += f"{emoji} [{fname}]({att.url})\n"
             
+            embed["fields"].append({
+                "name": "📎 첨부파일",
+                "value": attachment_links.strip(),
+                "inline": False
+            })
+             
         # Download attachments using the SHARED session (to handle hotlink protection/cookies)
         attachment_files = []
         image_data = None
