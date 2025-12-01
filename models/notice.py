@@ -13,6 +13,7 @@ class Notice(BaseModel):
     article_id: str
     title: str
     content: str = ""
+    attachment_text: Optional[str] = ""  # Extracted text from attachments
     url: str
     category: str = "일반"
     tags: List[str] = Field(default_factory=list)  # AI-selected tags (1-5)

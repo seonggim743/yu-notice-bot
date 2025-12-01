@@ -3,6 +3,7 @@ import json
 import asyncio
 import html
 import urllib.parse
+import difflib
 from aiohttp import MultipartWriter
 from aiohttp.payload import BytesPayload, StringPayload
 from datetime import datetime
@@ -19,6 +20,30 @@ class NotificationService:
     def __init__(self):
         self.telegram_token = settings.TELEGRAM_TOKEN
         self.chat_id = settings.TELEGRAM_CHAT_ID
+
+    def generate_clean_diff(self, old_text: str, new_text: str) -> str:
+        """
+        Generates a clean, line-by-line diff showing only changes.
+        """
+        if not old_text or not new_text: return ""
+        
+        d = difflib.Differ()
+        diff = list(d.compare(old_text.splitlines(), new_text.splitlines()))
+        
+        changes = []
+        for line in diff:
+            if line.startswith('- '):
+                changes.append(f"🔴 {line[2:].strip()}")
+            elif line.startswith('+ '):
+                changes.append(f"🟢 {line[2:].strip()}")
+            elif line.startswith('? '):
+                continue
+        
+        # Limit length
+        result = "\n".join(changes)
+        if len(result) > 1500:
+            result = result[:1500] + "\n...(생략)..."
+        return result
 
     async def send_telegram(self, session: aiohttp.ClientSession, notice: Notice, is_new: bool, modified_reason: str = "") -> Optional[int]:
         """
@@ -288,16 +313,16 @@ class NotificationService:
             new_content = notice.change_details.get('new_content')
             
             if old_content and new_content:
-                max_len = 1800
-                old_truncated = old_content[:max_len] + "..." if len(old_content) > max_len else old_content
-                new_truncated = new_content[:max_len] + "..." if len(new_content) > max_len else new_content
-                
-                detail_msg = (
-                    f"━━━ 📄 <b>변경 전 본문</b> ━━━\n"
-                    f"{html.escape(old_truncated)}\n\n"
-                    f"━━━ 📄 <b>변경 후 본문</b> ━━━\n"
-                    f"{html.escape(new_truncated)}"
-                )
+                if old_content and new_content:
+                    diff_text = self.generate_clean_diff(old_content, new_content)
+                    
+                    if diff_text:
+                        detail_msg = (
+                            f"🔍 <b>상세 변경 내용</b>\n"
+                            f"<pre>{html.escape(diff_text)}</pre>"
+                        )
+                    else:
+                        detail_msg = "⚠️ 내용이 변경되었으나 상세 비교를 생성할 수 없습니다."
                 
                 reply_payload = {
                     'chat_id': self.chat_id,
@@ -428,22 +453,14 @@ class NotificationService:
                 new_content = notice.change_details.get('new_content')
                 
                 if old_content and new_content:
-                    # Limit to 1024 chars per field (Discord limit)
-                    max_len = 950  # Leave room for spoiler tags and ellipsis
-                    old_truncated = old_content[:max_len] + "..." if len(old_content) > max_len else old_content
-                    new_truncated = new_content[:max_len] + "..." if len(new_content) > max_len else new_content
+                    diff_text = self.generate_clean_diff(old_content, new_content)
                     
-                    embed["fields"].append({
-                        "name": "📄 변경 전 본문 (클릭하여 보기)",
-                        "value": f"||{old_truncated}||",
-                        "inline": False
-                    })
-                    
-                    embed["fields"].append({
-                        "name": "📄 변경 후 본문 (클릭하여 보기)",
-                        "value": f"||{new_truncated}||",
-                        "inline": False
-                    })
+                    if diff_text:
+                        embed["fields"].append({
+                            "name": "🔍 상세 변경 내용",
+                            "value": f"```diff\n{diff_text}\n```",
+                            "inline": False
+                        })
         
         # Add attachment links as the last field (before footer)
         if notice.attachments:

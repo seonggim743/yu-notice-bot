@@ -81,7 +81,10 @@ class ScraperService:
         # Include image URL (empty string if None)
         img_str = notice.image_url or ""
         
-        raw = f"{notice.title}{notice.content}{img_str}{att_str}"
+        # Include attachment text in hash
+        att_text = notice.attachment_text or ""
+        
+        raw = f"{notice.title}{notice.content}{img_str}{att_str}{att_text}"
         return hashlib.sha256(raw.encode()).hexdigest()
 
     async def process_menu_notice(self, session: aiohttp.ClientSession, notice: Notice):
@@ -205,7 +208,8 @@ class ScraperService:
                                     logger.info(f"[SCRAPER] PDF preview generated ({len(preview_bytes)} bytes)")
 
                 if extracted_texts:
-                    item.content += "\n\n" + "\n".join(extracted_texts)
+                    # Save extracted text to attachment_text field instead of appending to content
+                    item.attachment_text = "\n\n".join(extracted_texts)
             # -------------------------------------------
 
             logger.info(f"[SCRAPER] Content length for '{item.title}': {len(item.content)}")
@@ -262,7 +266,9 @@ class ScraperService:
                         await asyncio.sleep(self.AI_CALL_DELAY)
                         
                         with monitor.measure("ai_analysis", {"type": "summary", "title": item.title}):
-                            analysis = await self.ai.analyze_notice(item.content, site_key=item.site_key)
+                            # Combine content and attachment text for AI analysis
+                            full_text = f"{item.content}\n\n{item.attachment_text or ''}"
+                            analysis = await self.ai.analyze_notice(full_text, site_key=item.site_key)
                         
                         item.category = analysis.get('category', '일반')
                         item.tags = analysis.get('tags', [])  # NEW: Store AI-selected tags
@@ -312,7 +318,6 @@ class ScraperService:
                                 logger.info(f"[SCRAPER] Waiting {self.AI_CALL_DELAY}s before get_diff_summary...")
                                 await asyncio.sleep(self.AI_CALL_DELAY)
                                 diff_summary = await self.ai.get_diff_summary(old_notice.content, item.content)
-                                logger.info(f"[DEBUG] AI Diff Summary: '{diff_summary}'")
                                 
                                 # Check for "No Change" response
                                 if diff_summary in ["NO_CHANGE", "변동사항 없음", "내용 변경 없음"] or "내용 변화는 없습니다" in diff_summary or "변경사항이 없습니다" in diff_summary:
@@ -325,6 +330,10 @@ class ScraperService:
                                     self.ai_summary_count += 1  # Count diff as an AI call
                             else:
                                 changes['content'] = "내용 변경됨 (AI 한도 초과)"
+                    
+                    # Attachment Text Change Detection
+                    if (old_notice.attachment_text or "").strip() != (item.attachment_text or "").strip():
+                        changes['attachment_text'] = "첨부파일 내용 변경됨 (상세 내용 생략)"
                     
                     # Image change detection
                     if old_notice.image_url != item.image_url:
@@ -365,9 +374,10 @@ class ScraperService:
                 # Construct readable reason
                 reasons = []
                 if 'title' in changes: reasons.append("제목 변경")
-                if 'content' in changes: reasons.append(f"내용 변경: {changes['content']}")
+                if 'content' in changes: reasons.append(f"내용 변경")
+                if 'attachment_text' in changes: reasons.append("첨부파일 내용 변경")
                 if 'image' in changes: reasons.append("이미지 변경")
-                if 'attachments' in changes: reasons.append(f"첨부파일 변경 ({changes['attachments']})")
+                if 'attachments' in changes: reasons.append(f"첨부파일 목록 변경 ({changes['attachments']})")
                 
                 modified_reason = ", ".join(reasons) if reasons else "내용 변경됨"
 
