@@ -11,6 +11,7 @@ from core.config import settings
 from core.logger import get_logger
 from core.performance import get_performance_monitor
 from models.notice import Notice
+from services.tag_matcher import TagMatcher
 
 logger = get_logger(__name__)
 
@@ -56,8 +57,18 @@ class NotificationService:
         }
         site_name = site_name_map.get(notice.site_key, notice.site_key)
 
-        # Hashtags
-        hashtag = f"#{notice.category} #{site_name}"
+        # Hashtags: Use AI-selected tags + site name
+        hashtags = []
+        if notice.tags:
+            # Use AI-selected tags
+            hashtags = [f"#{tag.replace('/', '_').replace(' ', '_')}" for tag in notice.tags]
+        else:
+            # Fallback to category if no tags
+            hashtags = [f"#{notice.category}"]
+        
+        # Add site name hashtag
+        hashtags.append(f"#{site_name}")
+        hashtag = " ".join(hashtags)
         
         # Enhanced Message Format
         # Ensure every line starts with a hyphen
@@ -353,8 +364,8 @@ class NotificationService:
         color = 0x00ff00 if is_new else 0xffa500 # Green for New, Orange for Modified
         title_prefix = "🆕" if is_new else "🔄"
         
-        # Thread Name (Title)
-        thread_name = f"[{notice.category}] {notice.title}"
+        # Thread Name (Title only - tags will show category)
+        thread_name = f"{notice.title}"
         if len(thread_name) > 100: thread_name = thread_name[:97] + "..."
         
         # ... (Rest of embed construction remains similar) ...
@@ -381,7 +392,7 @@ class NotificationService:
                 "icon_url": "https://www.yu.ac.kr/_res/yu/kr/img/common/logo.png"
             },
             "footer": {
-                "text": f"Category: {notice.category} • {site_name}"
+                "text": f"{site_name}"
             },
             "timestamp": datetime.utcnow().isoformat(),
             "fields": []
@@ -579,6 +590,13 @@ class NotificationService:
         created_thread_id = None
         created_message_id = None
         
+        # Get tag IDs from AI-selected tags (for new threads only)
+        tag_ids = []
+        if is_new and notice.tags:
+            tag_ids = TagMatcher.get_tag_ids(notice.tags, notice.site_key)
+            if tag_ids:
+                logger.info(f"[NOTIFIER] Applying {len(tag_ids)} tags: {notice.tags}")
+        
         # 1. Try Thread Creation (Forum)
         try:
             # Forum Thread Payload
@@ -589,6 +607,10 @@ class NotificationService:
                 },
                 "auto_archive_duration": 4320 # 3 days
             }
+            
+            # Apply matched tags if available
+            if tag_ids:
+                payload["applied_tags"] = tag_ids
             
             # Determine if we need Multipart (Files) or JSON
             has_files_now = bool(image_data or files_to_send_now)

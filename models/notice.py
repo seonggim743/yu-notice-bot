@@ -14,6 +14,7 @@ class Notice(BaseModel):
     content: str = ""
     url: str
     category: str = "일반"
+    tags: List[str] = Field(default_factory=list)  # AI-selected tags (1-5)
     published_at: Optional[datetime] = None
     attachments: List[Attachment] = Field(default_factory=list)
     image_url: Optional[str] = None

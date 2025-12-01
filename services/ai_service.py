@@ -45,33 +45,49 @@ class AIService:
         text = "".join(ch for ch in text if ch == '\n' or ch == '\t' or ch >= ' ')
         return text
 
-    async def analyze_notice(self, text: str) -> Dict[str, Any]:
+    async def analyze_notice(self, text: str, site_key: str = "yu_news") -> Dict[str, Any]:
         """
-        Analyzes notice text to extract summary, category, and metadata.
+        Analyzes notice text to extract summary, category, tags, and metadata.
+        
+        Args:
+            text: Notice content to analyze
+            site_key: Site identifier for tag selection
         """
         if not self.model:
-            return {"summary": "AI Key Missing", "category": "일반"}
+            return {"summary": "AI Key Missing", "category": "일반", "tags": []}
 
         # Pre-process text to remove noise
         text = self._clean_text(text)
+        
+        # Get available tags for this site
+        available_tags = settings.AVAILABLE_TAGS.get(site_key, [])
+        tags_instruction = ""
+        if available_tags:
+            tags_list = ", ".join([f"'{tag}'" for tag in available_tags])
+            tags_instruction = (
+                f"  'tags': list[string] (Select 1-5 most relevant tags from: {tags_list}.\\n"
+                f"    Choose tags that best describe this notice. Multiple tags are encouraged if applicable.\\n"
+                f"    For example, urgent scholarship notices should have both '긴급' and '장학'.),\\n"
+            )
 
         prompt = (
-            "Role: You are a university administrative assistant.\n"
-            "Task: Analyze the provided university notice (including text extracted from attachments).\n"
-            "Handling Noise: The input text may contain broken characters (e.g., ^@#, \\x00) from PDF/HWP conversion. "
-            "STRICTLY IGNORE these encoding errors and focus only on coherent Korean sentences and dates.\n\n"
-            "Output JSON format:\n"
-            "{\n"
-            "  'category': string (Choose one: '장학', '학사', '취업', '생활관', '일반'),\n"
-            "  'summary': string (Concise 3-line summary in Korean. End with noun-endings ~함),\n"
-            "  'deadline': string or null (Application end date in YYYY-MM-DD format. If none/ongoing, null),\n"
-            "  'eligibility': list[string] (List of specific requirements e.g. '3,4학년', '평점 3.0 이상'. If all students, empty list),\n"
-            "  'start_date': string or null (YYYY-MM-DD),\n"
-            "  'end_date': string or null (YYYY-MM-DD),\n"
-            "  'target_grades': list[int] ([1,2,3,4]),\n"
-            "  'target_dept': string or null\n"
-            "}\n\n"
-            f"Content:\n{text[:8000]}"  # Increased limit for attachment text
+            "Role: You are a university administrative assistant.\\n"
+            "Task: Analyze the provided university notice (including text extracted from attachments).\\n"
+            "Handling Noise: The input text may contain broken characters (e.g., ^@#, \\\\x00) from PDF/HWP conversion. "
+            "STRICTLY IGNORE these encoding errors and focus only on coherent Korean sentences and dates.\\n\\n"
+            "Output JSON format:\\n"
+            "{\\n"
+            "  'category': string (Choose one: '장학', '학사', '취업', '생활관', '일반'),\\n"
+            f"{tags_instruction}"
+            "  'summary': string (Concise 3-line summary in Korean. End with noun-endings ~함),\\n"
+            "  'deadline': string or null (Application end date in YYYY-MM-DD format. If none/ongoing, null),\\n"
+            "  'eligibility': list[string] (List of specific requirements e.g. '3,4학년', '평점 3.0 이상'. If all students, empty list),\\n"
+            "  'start_date': string or null (YYYY-MM-DD),\\n"
+            "  'end_date': string or null (YYYY-MM-DD),\\n"
+            "  'target_grades': list[int] ([1,2,3,4]),\\n"
+            "  'target_dept': string or null\\n"
+            "}\\n\\n"
+            f"Content:\\n{text[:8000]}"  # Increased limit for attachment text
         )
 
         try:

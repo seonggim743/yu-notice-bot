@@ -248,9 +248,10 @@ class ScraperService:
                         await asyncio.sleep(self.AI_CALL_DELAY)
                         
                         with monitor.measure("ai_analysis", {"type": "summary", "title": item.title}):
-                            analysis = await self.ai.analyze_notice(item.content)
+                            analysis = await self.ai.analyze_notice(item.content, site_key=item.site_key)
                         
                         item.category = analysis.get('category', '일반')
+                        item.tags = analysis.get('tags', [])  # NEW: Store AI-selected tags
                         item.summary = analysis.get('summary', item.content[:100])
                         
                         # Tier 2: Enhanced Metadata
@@ -529,9 +530,10 @@ class ScraperService:
             
             # --- AI ANALYSIS (Test Mode) ---
             logger.info(f"[TEST] Starting AI analysis for verification...")
-            analysis = await self.ai.analyze_notice(item.content)
+            analysis = await self.ai.analyze_notice(item.content, site_key=item.site_key)
             
             item.category = analysis.get('category', '일반')
+            item.tags = analysis.get('tags', [])  # NEW: Store AI-selected tags
             item.summary = analysis.get('summary', item.content[:100])
             item.deadline = analysis.get('deadline')
             item.eligibility = analysis.get('eligibility', [])
