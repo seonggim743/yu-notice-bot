@@ -19,7 +19,13 @@ class Notice(BaseModel):
     tags: List[str] = Field(default_factory=list)  # AI-selected tags (1-5)
     published_at: Optional[datetime] = None
     attachments: List[Attachment] = Field(default_factory=list)
-    image_url: Optional[str] = None
+    image_urls: List[str] = Field(default_factory=list)  # Multiple images support
+    
+    # Backward compatibility property
+    @property
+    def image_url(self) -> Optional[str]:
+        """Returns the first image URL for backward compatibility."""
+        return self.image_urls[0] if self.image_urls else None
     
     # AI Metadata
     summary: str = ""

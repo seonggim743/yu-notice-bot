@@ -78,8 +78,8 @@ class ScraperService:
         sorted_atts = sorted([f"{a.name}|{a.url}" for a in notice.attachments])
         att_str = "".join(sorted_atts)
         
-        # Include image URL (empty string if None)
-        img_str = notice.image_url or ""
+        # Include all image URLs (sorted for consistency)
+        img_str = "|".join(sorted(notice.image_urls)) if notice.image_urls else ""
         
         # Include attachment text in hash
         att_text = notice.attachment_text or ""
@@ -91,14 +91,14 @@ class ScraperService:
         """
         Special handling for Dormitory Menu notices.
         """
-        if not notice.image_url:
+        if not notice.image_urls:
             logger.warning(f"[MENU] Notice {notice.title} has no image, skipping menu extraction.")
             return
 
         logger.info(f"[MENU] Extracting menu from image: {notice.title}")
         
-        # 1. AI Extraction
-        menu_data = await self.ai.extract_menu_from_image(notice.image_url)
+        # 1. AI Extraction (use first image)
+        menu_data = await self.ai.extract_menu_from_image(notice.image_urls[0])
         if not menu_data or 'raw_text' not in menu_data:
             logger.error("[MENU] Failed to extract menu text")
             return
@@ -162,8 +162,8 @@ class ScraperService:
             
             item = parser.parse_detail(detail_html, item)
             
-            # Detect empty content (Allow if has attachments or image)
-            has_media = bool(item.attachments or item.image_url)
+            # Detect empty content (Allow if has attachments or images)
+            has_media = bool(item.attachments or item.image_urls)
             if (not item.content or len(item.content.strip()) < 10) and not has_media:
                 logger.warning(f"[SCRAPER] Empty or very short content for '{item.title}' and no media. Skipping.")
                 continue
@@ -336,11 +336,16 @@ class ScraperService:
                     if (old_notice.attachment_text or "").strip() != (item.attachment_text or "").strip():
                         changes['attachment_text'] = "첨부파일 내용 변경됨 (상세 내용 생략)"
                     
-                    # Image change detection
-                    if old_notice.image_url != item.image_url:
-                        old_img = old_notice.image_url or "없음"
-                        new_img = item.image_url or "없음"
-                        changes['image'] = f"{old_img} → {new_img}"
+                    # Image change detection (compare sets of URLs)
+                    old_imgs = set(old_notice.image_urls) if old_notice.image_urls else set()
+                    new_imgs = set(item.image_urls) if item.image_urls else set()
+                    if old_imgs != new_imgs:
+                        added_imgs = new_imgs - old_imgs
+                        removed_imgs = old_imgs - new_imgs
+                        img_changes = []
+                        if added_imgs: img_changes.append(f"추가: {len(added_imgs)}개")
+                        if removed_imgs: img_changes.append(f"제거: {len(removed_imgs)}개")
+                        changes['image'] = ", ".join(img_changes)
                     
                     # Attachments (name and URL)
                     old_atts = {a.name for a in old_notice.attachments}

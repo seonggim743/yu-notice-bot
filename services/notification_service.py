@@ -155,30 +155,33 @@ class NotificationService:
         
         images_to_send = []
         
-        # A. Content Image (Priority 1)
-        if notice.image_url:
-            try:
-                headers = {'Referer': notice.url, 'User-Agent': settings.USER_AGENT}
-                async with session.get(notice.image_url, headers=headers) as resp:
-                    if resp.status == 200:
-                        data = await resp.read()
-                        images_to_send.append({
-                            'type': 'content',
-                            'data': data,
-                            'filename': 'image.jpg',
-                            'caption': msg  # Main caption goes to first image
-                        })
-            except Exception as e:
-                logger.error(f"[NOTIFIER] Failed to download content image: {e}")
+        # A. Content Images (Multiple images support)
+        if notice.image_urls:
+            for idx, image_url in enumerate(notice.image_urls):
+                try:
+                    headers = {'Referer': notice.url, 'User-Agent': settings.USER_AGENT}
+                    async with session.get(image_url, headers=headers) as resp:
+                        if resp.status == 200:
+                            data = await resp.read()
+                            # Only first image gets the main caption
+                            caption = msg if idx == 0 else None
+                            images_to_send.append({
+                                'type': 'content',
+                                'data': data,
+                                'filename': f'image_{idx}.jpg',
+                                'caption': caption
+                            })
+                            logger.info(f"[NOTIFIER] Added content image {idx + 1}/{len(notice.image_urls)}")
+                except Exception as e:
+                    logger.error(f"[NOTIFIER] Failed to download content image {idx}: {e}")
 
-        # B. PDF Previews (Priority 2)
+        # B. PDF Previews (All previews as separate images)
         # Check attachments for preview_bytes
         if notice.attachments:
             for att in notice.attachments:
                 if getattr(att, 'preview_bytes', None):
-                    # If we already have a content image, the caption is already assigned.
-                    # If not, the first preview gets the caption.
-                    caption = msg if not images_to_send else f"📑 [미리보기] {att.name}"
+                    # Add caption to identify this as a PDF preview
+                    caption = f"📑 [미리보기] {att.name}"
                     
                     images_to_send.append({
                         'type': 'preview',
@@ -186,6 +189,8 @@ class NotificationService:
                         'filename': f"preview_{att.name}.jpg",
                         'caption': caption
                     })
+                    logger.info(f"[NOTIFIER] Added PDF preview for {att.name}")
+
 
         # C. Send Logic
         if not images_to_send:
@@ -502,47 +507,58 @@ class NotificationService:
                 "value": attachment_links.strip(),
                 "inline": False
             })
-             
+              
         # Download attachments using the SHARED session (to handle hotlink protection/cookies)
         attachment_files = []
-        image_data = None
-        image_filename = "image.png"
+        
+        # === COMBINE ALL IMAGES: Content Images + PDF Previews ===
+        all_images = []  # Will hold all images to display
+        
+        # 1. Handle Main Images (Multiple content images)
+        if notice.image_urls:
+            for idx, image_url in enumerate(notice.image_urls):
+                try:
+                    async with session.get(image_url, headers={'Referer': notice.url}, timeout=aiohttp.ClientTimeout(total=10)) as img_resp:
+                        if img_resp.status == 200:
+                            image_data = await img_resp.read()
+                            all_images.append({
+                                'data': image_data,
+                                'filename': f'image_{idx}.jpg',
+                                'type': 'content'
+                            })
+                            logger.info(f"[NOTIFIER] Added Discord content image {idx + 1}/{len(notice.image_urls)}")
+                except Exception as e:
+                    logger.error(f"[NOTIFIER] Failed to download image {idx} for Discord: {e}")
 
-        # 1. Handle Main Image (Priority: URL)
-        if notice.image_url:
-            try:
-                async with session.get(notice.image_url, headers={'Referer': notice.url}, timeout=aiohttp.ClientTimeout(total=10)) as img_resp:
-                    if img_resp.status == 200:
-                        image_data = await img_resp.read()
-                        image_filename = "image.jpg"
-                        embed["image"] = {"url": f"attachment://{image_filename}"}
-            except Exception as e:
-                logger.error(f"[NOTIFIER] Failed to download image {notice.image_url}: {e}")
-
-        # 2. Handle PDF Previews (As Attachments)
-        # If no main image, use the first preview as the main image
-        preview_files = []
+        # 2. Handle PDF Previews (Add all as images)
         if notice.attachments:
             for att in notice.attachments:
                 if getattr(att, 'preview_bytes', None):
-                    preview_files.append({
+                    all_images.append({
                         'data': att.preview_bytes,
-                        'filename': f"Preview_{att.name}.jpg", # Label as Preview
-                        'safe_filename': f"Preview_{att.name}.jpg",
-                        'url': None # It's memory data
+                        'filename': f"Preview_{att.name}.jpg",
+                        'type': 'preview'
                     })
+                    logger.info(f"[NOTIFIER] Added Discord PDF preview for {att.name}")
         
-        # If no main image but we have previews, use the first preview as main image
-        if not image_data and preview_files:
-            first_preview = preview_files.pop(0) # Remove from list, use as main
-            image_data = first_preview['data']
-            image_filename = first_preview['filename']
+        # 3. Use first image as embed image, rest as attachment files
+        image_data = None
+        image_filename = "image.png"
+        
+        if all_images:
+            first_image = all_images[0]
+            image_data = first_image['data']
+            image_filename = first_image['filename']
             embed["image"] = {"url": f"attachment://{image_filename}"}
+            logger.info(f"[NOTIFIER] Using first image as Discord embed: {image_filename}")
             
-        # Add remaining previews to attachment_files
-        attachment_files.extend(preview_files)
+            # Add remaining images as attachment files
+            for img in all_images[1:]:
+                attachment_files.append(img)
+                logger.info(f"[NOTIFIER] Adding remaining image as attachment: {img['filename']}")
 
-        # 2. Handle Attachments
+        # 4. Handle Attachments (PDF files, etc.)
+
         if notice.attachments:
             for idx, att in enumerate(notice.attachments[:10], 1):
                 max_retries = 2
@@ -632,7 +648,7 @@ class NotificationService:
                 form.add_field('payload_json', json.dumps(payload))
                 
                 if image_data:
-                    filename = 'image.jpg' if notice.image_url else 'preview.jpg'
+                    filename = 'image.jpg' if notice.image_urls else 'preview.jpg'
                     form.add_field('files[0]', image_data, filename=filename)
                     
                 for idx, file_info in enumerate(files_to_send_now):
@@ -700,7 +716,7 @@ class NotificationService:
                 
                 # Add Files (Main Image + Attachments)
                 if image_data:
-                    filename = 'image.jpg' if notice.image_url else 'preview.jpg'
+                    filename = 'image.jpg' if notice.image_urls else 'preview.jpg'
                     form.add_field('files[0]', image_data, filename=filename)
                     
                 for idx, file_info in enumerate(files_to_send_now):
@@ -742,7 +758,7 @@ class NotificationService:
                 form.add_field('payload_json', json.dumps(payload))
                 
                 if image_data:
-                    filename = 'image.jpg' if notice.image_url else 'preview.jpg'
+                    filename = 'image.jpg' if notice.image_urls else 'preview.jpg'
                     form.add_field('files[0]', image_data, filename=filename)
                     
                 for idx, file_info in enumerate(files_to_send_now):

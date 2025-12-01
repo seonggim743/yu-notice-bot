@@ -240,22 +240,60 @@ class HTMLParser(BaseParser):
             notice.content = content_div.get_text(separator=' ', strip=True)
             
         
-        # Image (Always try to find images)
-        img = None
+        # === IMAGE EXTRACTION ===
+        # Extract all images (not just the first one)
+        images = []
+        
         # 1. Try finding inside content_div if it exists
         if content_div:
-            img = content_div.find('img')
+            images = content_div.find_all('img')
         
         # 2. If not found, look for YU Editor images globally (strong signal)
-        if not img:
-            img = soup.select_one('img[src*="_attach/yu/editor-image"]')
+        if not images:
+            images = soup.select('img[src*="_attach/yu/editor-image"]')
         
         # 3. If still not found, look for any large image in the view area
-        if not img:
-            # Try generic view classes again for images
-            img = soup.select_one('.b-view-content img, .view-con img, .board-view-con img')
+        if not images:
+            images = soup.select('.b-view-content img, .view-con img, .board-view-con img')
 
-        if img and img.get('src'):
-            notice.image_url = urllib.parse.urljoin(notice.url, img['src'])
+        # Extract all valid image URLs
+        for img in images:
+            src = img.get('src')
+            if not src:
+                continue
+                
+            full_url = urllib.parse.urljoin(notice.url, src)
+            
+            # Skip duplicates
+            if full_url in notice.image_urls:
+                continue
+            
+            # Optional: Filter out tiny images (icons, spacers, emoticons)
+            # Check width/height attributes to skip small icons
+            width = img.get('width', '')
+            height = img.get('height', '')
+            
+            # Skip if explicitly marked as small (< 50px)
+            try:
+                if width and width.replace('px', '').isdigit():
+                    if int(width.replace('px', '')) < 50:
+                        logger.debug(f"[PARSER] Skipping small image (width={width}): {full_url}")
+                        continue
+                if height and height.replace('px', '').isdigit():
+                    if int(height.replace('px', '')) < 50:
+                        logger.debug(f"[PARSER] Skipping small image (height={height}): {full_url}")
+                        continue
+            except ValueError:
+                pass  # width/height not parsable, include the image
+            
+            # Skip common icon patterns in URL
+            skip_patterns = ['/icon/', '/emoji/', '/spacer.', '/blank.']
+            if any(pattern in full_url.lower() for pattern in skip_patterns):
+                logger.debug(f"[PARSER] Skipping icon/spacer image: {full_url}")
+                continue
+            
+            notice.image_urls.append(full_url)
+            logger.info(f"[PARSER] Added image: {full_url}")
                 
         return notice
+
