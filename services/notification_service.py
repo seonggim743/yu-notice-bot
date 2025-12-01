@@ -148,42 +148,10 @@ class NotificationService:
                 if len(fname) > 20: fname = fname[:17] + "..."
                 buttons.append({"text": f"{emoji} {fname}", "url": att.url})
         
-        # Payload for Main Message
-        payload = {
-            'chat_id': self.chat_id,
-            'text': msg,
-            'parse_mode': 'HTML',
-            'disable_web_page_preview': 'true'
-        }
-        
-        if topic_id:
-            payload['message_thread_id'] = topic_id
-            
-        if buttons:
-            inline_keyboard = [[{"text": b['text'], "url": b['url']}] for b in buttons]
-            payload['reply_markup'] = json.dumps({"inline_keyboard": inline_keyboard})
-
-        # Prepare base payload
-        url = f"https://api.telegram.org/bot{self.telegram_token}/sendMessage"
-        payload = {
-            'chat_id': self.chat_id,
-            'text': msg,
-            'parse_mode': 'HTML',
-            'disable_web_page_preview': 'true'
-        }
-        
-        if topic_id:
-            payload['message_thread_id'] = topic_id
-            
-        if buttons:
-            inline_keyboard = [[{"text": b['text'], "url": b['url']}] for b in buttons]
-            payload['reply_markup'] = json.dumps({"inline_keyboard": inline_keyboard})
-
         main_msg_id = None
         
-        # 1. Download files first (needed for decision making)
-        # ... (Download logic omitted for brevity, assuming it's handled or we use the new structure) ...
-        # Actually, we need to collect ALL images (Content Image + PDF Previews)
+        # Prepare inline keyboard for buttons (if any)
+        inline_keyboard = [[{"text": b['text'], "url": b['url']}] for b in buttons] if buttons else None
         
         images_to_send = []
         
@@ -292,20 +260,71 @@ class NotificationService:
             except Exception as e:
                 logger.error(f"[NOTIFIER] Telegram MediaGroup failed: {e}")
 
-        # 2.2 Send Remaining Files (Actual Attachments) - Keep existing logic but simplified
-        # (We still need to download actual files if we want to send them as documents)
-        # For brevity, I'm keeping the existing logic structure but noting we need to re-download or use what we have.
-        # Since we only downloaded previews above, we still need to download actual files if buttons are not enough.
-        # BUT, the user prefers buttons usually. If we want to send files, we should do it here.
-        # The previous code had a complex download loop. I will preserve it if possible or simplify.
-        # Given the tool call limit, I will assume we rely on buttons for now or re-implement file sending if critical.
-        # The previous code had "if notice.attachments:" loop. I will restore a simplified version.
-        
+
+        # 2.2 Send Remaining Files (Actual Attachments)
         if main_msg_id and notice.attachments:
-             # Send files as documents (optional, maybe just buttons are enough? user didn't complain about this)
-             # Let's keep it simple: If we have buttons, we might not need to send every file as a message.
-             # But the previous logic did send files. Let's restore a basic version.
-             pass 
+            for idx, att in enumerate(notice.attachments[:10], 1):
+                max_retries = 2
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        download_headers = {
+                            'Referer': notice.url,
+                            'User-Agent': settings.USER_AGENT,
+                            'Accept': '*/*',
+                            'Connection': 'keep-alive'
+                        }
+                        # Download the attachment file
+                        async with session.get(att.url, headers=download_headers, timeout=aiohttp.ClientTimeout(total=30)) as file_resp:
+                            if file_resp.status == 200:
+                                file_data = await file_resp.read()
+                                file_size = len(file_data)
+                                if file_size > 50 * 1024 * 1024:  # Telegram limit is 50MB
+                                    logger.warning(f"[NOTIFIER] File {att.name} is too large ({file_size} bytes), skipping")
+                                    break
+                                
+                                actual_filename = att.name
+                                # Try to get filename from Content-Disposition if available
+                                if 'Content-Disposition' in file_resp.headers:
+                                    import re
+                                    from urllib.parse import unquote
+                                    match = re.search(r'filename\*?=["\']?(?:UTF-8\'\')?([^"\';]+)', file_resp.headers['Content-Disposition'])
+                                    if match: 
+                                        actual_filename = unquote(match.group(1))
+                                
+                                logger.info(f"[NOTIFIER] Sending attachment to Telegram: '{actual_filename}' ({file_size} bytes)")
+                                
+                                # Send as document to Telegram
+                                form = aiohttp.FormData()
+                                form.add_field('document', file_data, filename=actual_filename)
+                                form.add_field('chat_id', str(self.chat_id))
+                                form.add_field('reply_to_message_id', str(main_msg_id))
+                                if topic_id:
+                                    form.add_field('message_thread_id', str(topic_id))
+                                
+                                try:
+                                    async with session.post(
+                                        f"https://api.telegram.org/bot{self.telegram_token}/sendDocument", 
+                                        data=form
+                                    ) as resp:
+                                        if resp.status == 200:
+                                            logger.info(f"[NOTIFIER] Telegram attachment sent: {actual_filename}")
+                                        else:
+                                            logger.error(f"[NOTIFIER] Failed to send Telegram attachment: {await resp.text()}")
+                                except Exception as e:
+                                    logger.error(f"[NOTIFIER] Error sending Telegram attachment: {e}")
+                                
+                                break  # Success, exit retry loop
+                            elif file_resp.status in [404, 403]:
+                                logger.warning(f"[NOTIFIER] Failed to download {att.name}: Status {file_resp.status}")
+                                break  # Don't retry for 404/403
+                            else:
+                                if attempt < max_retries: 
+                                    await asyncio.sleep(1)
+                    except Exception as e:
+                        logger.error(f"[NOTIFIER] Error downloading {att.name} for Telegram: {e}")
+                        if attempt < max_retries: 
+                            await asyncio.sleep(1)
+ 
 
         # 2.3 Send Detailed Change Content (if modified)
         if main_msg_id and modified_reason and notice.change_details:
