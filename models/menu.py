@@ -3,6 +3,7 @@ from typing import Optional
 from datetime import datetime, date
 import uuid
 
+
 class Menu(BaseModel):
     id: Optional[uuid.UUID] = None
     notice_id: uuid.UUID

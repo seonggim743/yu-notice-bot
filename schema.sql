@@ -1,5 +1,11 @@
 -- =====================================================
--- Yeungnam University Notice Bot V2 - Schema
+-- Yeungnam University Notice Bot V2 - Database Schema
+-- Latest Version: v5
+-- =====================================================
+-- 
+-- This is the COMPLETE schema for NEW installations.
+-- For existing databases, see migrations/ folder.
+--
 -- =====================================================
 
 -- Enable pgvector for embeddings
@@ -12,26 +18,34 @@ CREATE TABLE IF NOT EXISTS notices (
     article_id TEXT NOT NULL,        -- Unique ID from source
     title TEXT NOT NULL,
     content TEXT,                    -- Body text
-    content_hash TEXT,               -- Hash(Title + Body + Attachments)
+    content_hash TEXT,               -- Hash(Title + Body + Attachments + Images)
     url TEXT,
     category TEXT,                   -- AI Classified Category
     summary TEXT,                    -- AI Summary
+    tags TEXT[],                     -- AI-selected tags (Phase 6)
     target_grades INTEGER[],         -- [1, 2, 3, 4]
     target_dept TEXT,                -- e.g. "Computer Science"
-    start_date DATE,
-    end_date DATE,
+    eligibility TEXT[],              -- Eligibility criteria
+    deadline DATE,                   -- Application deadline
+    start_date DATE,                 -- Event/program start
+    end_date DATE,                   -- Event/program end
     
-    -- Metadata
+    -- Metadata (Phase 5)
     published_at TIMESTAMPTZ,        -- Original post date
+    author TEXT,                     -- Notice author/department
+    attachment_text TEXT,            -- Extracted text from HWP/PDF
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW(),
     
     -- Notification Status
-    message_ids JSONB DEFAULT '{}'::jsonb, -- {'telegram': 123, 'discord': 'id'}
+    message_ids JSONB DEFAULT '{}'::jsonb,   -- {'telegram': 123, 'discord': 'id'}
+    discord_thread_id TEXT,                  -- Discord forum thread ID (Phase 6)
     
     -- AI Embeddings
     embedding VECTOR(768),
-    image_url TEXT,
+    
+    -- Images (Phase 5: v5 migration)
+    image_urls TEXT[] DEFAULT '{}',  -- Multiple images support
     
     UNIQUE(site_key, article_id)
 );
@@ -68,4 +82,11 @@ CREATE TABLE IF NOT EXISTS menus (
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_notices_site_key ON notices(site_key);
 CREATE INDEX IF NOT EXISTS idx_notices_created_at ON notices(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notices_tags ON notices USING GIN(tags);
 CREATE INDEX IF NOT EXISTS idx_menus_created_at ON menus(created_at DESC);
+
+-- Comments
+COMMENT ON COLUMN notices.image_urls IS 'Array of image URLs found in notice content';
+COMMENT ON COLUMN notices.tags IS 'AI-selected tags for Discord forum categorization';
+COMMENT ON COLUMN notices.discord_thread_id IS 'Discord forum thread ID for update replies';
+COMMENT ON COLUMN notices.attachment_text IS 'Extracted text from HWP/PDF files for AI analysis';

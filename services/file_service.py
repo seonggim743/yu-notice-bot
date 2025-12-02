@@ -2,22 +2,26 @@ import aiohttp
 import io
 import zlib
 import olefile
-import struct
 import logging
-from typing import Optional, Tuple
+from typing import Optional, List
 from pypdf import PdfReader
 from pdf2image import convert_from_bytes
 
 logger = logging.getLogger(__name__)
 
+
 class FileService:
     def __init__(self):
         pass
 
-    async def download_file(self, session: aiohttp.ClientSession, url: str, headers: dict = None) -> Optional[bytes]:
+    async def download_file(
+        self, session: aiohttp.ClientSession, url: str, headers: dict = None
+    ) -> Optional[bytes]:
         """Downloads a file into memory."""
         try:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+            async with session.get(
+                url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
                 if resp.status == 200:
                     return await resp.read()
                 else:
@@ -29,22 +33,22 @@ class FileService:
 
     def extract_text(self, file_data: bytes, filename: str) -> str:
         """Extracts text from PDF or HWP files."""
-        ext = filename.split('.')[-1].lower() if '.' in filename else ''
-        
+        ext = filename.split(".")[-1].lower() if "." in filename else ""
+
         try:
-            if ext == 'pdf':
+            if ext == "pdf":
                 text = self._extract_pdf_text(file_data)
-            elif ext == 'hwp':
+            elif ext == "hwp":
                 text = self._extract_hwp_text(file_data)
-            elif ext == 'hwpx':
+            elif ext == "hwpx":
                 text = self._extract_hwpx_text(file_data)
             else:
                 text = ""
-            
+
             # Sanitize: Remove null bytes
             if text:
-                text = text.replace('\x00', '')
-                
+                text = text.replace("\x00", "")
+
             return text
         except Exception as e:
             logger.error(f"[FILE] Extraction failed for {filename}: {e}")
@@ -71,15 +75,15 @@ class FileService:
         try:
             f = io.BytesIO(data)
             ole = olefile.OleFileIO(f)
-            
+
             dirs = ole.listdir()
             body_sections = [d for d in dirs if d[0] == "BodyText"]
-            
+
             text = ""
             for section in body_sections:
                 stream = ole.openstream(section)
                 data = stream.read()
-                
+
                 # HWP 5.0 BodyText is zlib compressed
                 # Usually raw deflate, so wbits=-15
                 try:
@@ -88,8 +92,8 @@ class FileService:
                     # But it contains control characters and struct formatting.
                     # A simple decode might be messy but better than nothing for LLM.
                     # We filter for printable characters or just decode.
-                    section_text = decompressed.decode('utf-16-le', errors='ignore')
-                    
+                    section_text = decompressed.decode("utf-16-le", errors="ignore")
+
                     # Clean up: Filter for printable characters
                     # HWP text often contains control codes mixed with text.
                     # We keep: Korean (Hangul), English, Numbers, Punctuation, Whitespace
@@ -102,27 +106,31 @@ class FileService:
                         # Basic Latin + Latin-1 Supplement: 0x0020-0x00FF
                         # Common Punctuation
                         code = ord(char)
-                        if (0xAC00 <= code <= 0xD7A3) or \
-                           (0x0020 <= code <= 0x007E) or \
-                           (code == 0x000A) or (code == 0x0009) or \
-                           (0x3130 <= code <= 0x318F) or \
-                           (0x1100 <= code <= 0x11FF):
+                        if (
+                            (0xAC00 <= code <= 0xD7A3)
+                            or (0x0020 <= code <= 0x007E)
+                            or (code == 0x000A)
+                            or (code == 0x0009)
+                            or (0x3130 <= code <= 0x318F)
+                            or (0x1100 <= code <= 0x11FF)
+                        ):
                             cleaned_text += char
                         else:
                             # Replace unknown/control chars with space if they are not just nulls
-                            if code > 0x001F: 
+                            if code > 0x001F:
                                 cleaned_text += " "
-                    
+
                     # Collapse multiple spaces
                     import re
-                    cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
-                    
-                    if len(cleaned_text) > 5: # Ignore very short garbage sections
+
+                    cleaned_text = re.sub(r"\s+", " ", cleaned_text).strip()
+
+                    if len(cleaned_text) > 5:  # Ignore very short garbage sections
                         text += cleaned_text + "\n"
                 except Exception as zlib_error:
                     logger.warning(f"[FILE] HWP zlib error: {zlib_error}")
                     continue
-                    
+
             return text
         except Exception as e:
             logger.error(f"[FILE] HWP parse error: {e}")
@@ -134,17 +142,17 @@ class FileService:
         """
         import zipfile
         import xml.etree.ElementTree as ET
-        
+
         try:
             f = io.BytesIO(data)
             if not zipfile.is_zipfile(f):
                 return ""
-            
+
             text = ""
             with zipfile.ZipFile(f) as zf:
                 # Find section XMLs in Contents/
                 for name in zf.namelist():
-                    if name.startswith('Contents/section') and name.endswith('.xml'):
+                    if name.startswith("Contents/section") and name.endswith(".xml"):
                         with zf.open(name) as xml_file:
                             tree = ET.parse(xml_file)
                             root = tree.getroot()
@@ -159,48 +167,61 @@ class FileService:
             logger.error(f"[FILE] HWPX parse error: {e}")
             return ""
 
-    def generate_preview_image(self, file_data: bytes, filename: str) -> Optional[bytes]:
+    def generate_preview_images(
+        self, file_data: bytes, filename: str, max_pages: int = 5
+    ) -> List[bytes]:
         """
-        Generates a preview image (first page) for PDF.
-        Returns bytes of JPEG image.
+        Generates preview images (up to max_pages) for PDF.
+        Returns list of bytes of JPEG images.
         """
-        ext = filename.split('.')[-1].lower() if '.' in filename else ''
-        
-        if ext != 'pdf':
-            return None
-            
+        ext = filename.split(".")[-1].lower() if "." in filename else ""
+
+        if ext != "pdf":
+            return []
+
         try:
-            # Convert first page only
+            # Convert up to max_pages
             # fmt='jpeg' and grayscale=False reduces size
-            images = convert_from_bytes(file_data, first_page=1, last_page=1, fmt='jpeg')
-            
+            images = convert_from_bytes(
+                file_data, first_page=1, last_page=max_pages, fmt="jpeg"
+            )
+
             if not images:
-                return None
+                return []
 
-            image = images[0]
-            
-            # Optimization: Resize if too large (max width 1024px)
+            preview_images = []
             max_width = 1024
-            if image.width > max_width:
-                ratio = max_width / float(image.width)
-                new_height = int(image.height * ratio)
-                image = image.resize((max_width, new_height))
 
-            # Save to memory buffer as JPEG
-            img_buffer = io.BytesIO()
-            image.save(img_buffer, format='JPEG', quality=85)
-            img_buffer.seek(0)
-            
-            # Add Watermark
-            return self.add_watermark(img_buffer.getvalue())
-            
+            for image in images:
+                # Optimization: Resize if too large (max width 1024px)
+                if image.width > max_width:
+                    ratio = max_width / float(image.width)
+                    new_height = int(image.height * ratio)
+                    image = image.resize((max_width, new_height))
+
+                # Save to memory buffer as JPEG
+                img_buffer = io.BytesIO()
+                image.save(img_buffer, format="JPEG", quality=85)
+                img_buffer.seek(0)
+
+                # Add Watermark
+                watermarked = self.add_watermark(img_buffer.getvalue())
+                preview_images.append(watermarked)
+
+            return preview_images
+
         except Exception as e:
             error_msg = str(e)
-            if "poppler" in error_msg.lower() or "pdfinfonotinstallederror" in error_msg.lower():
-                logger.warning(f"[FILE] Poppler not found. Skipping PDF preview for {filename}. (Expected on Windows without manual install)")
+            if (
+                "poppler" in error_msg.lower()
+                or "pdfinfonotinstallederror" in error_msg.lower()
+            ):
+                logger.warning(
+                    f"[FILE] Poppler not found. Skipping PDF preview for {filename}. (Expected on Windows without manual install)"
+                )
             else:
                 logger.warning(f"[FILE] Preview generation failed for {filename}: {e}")
-            return None
+            return []
 
     def add_watermark(self, image_bytes: bytes, text: str = "PREVIEW") -> bytes:
         """
@@ -208,12 +229,12 @@ class FileService:
         """
         try:
             from PIL import Image, ImageDraw, ImageFont
-            
+
             with Image.open(io.BytesIO(image_bytes)) as base:
                 # Make the image editable
                 txt = Image.new("RGBA", base.size, (255, 255, 255, 0))
                 draw = ImageDraw.Draw(txt)
-                
+
                 # Calculate font size based on image width (e.g., 15% of width)
                 fontsize = int(base.width / 6)
                 try:
@@ -222,7 +243,7 @@ class FileService:
                     font = ImageFont.truetype("arial.ttf", fontsize)
                 except:
                     font = ImageFont.load_default()
-                
+
                 # Calculate text size and position
                 # textbbox is available in Pillow >= 8.0.0
                 try:
@@ -235,29 +256,68 @@ class FileService:
 
                 x = (base.width - text_width) / 2
                 y = (base.height - text_height) / 2
-                
+
                 # Draw text with transparency (RGBA)
                 # White text with 50% opacity
                 draw.text((x, y), text, font=font, fill=(255, 255, 255, 128))
-                
+
                 # Outline (Black with 50% opacity) for better visibility
                 stroke_width = 2
-                draw.text((x-stroke_width, y), text, font=font, fill=(0, 0, 0, 128))
-                draw.text((x+stroke_width, y), text, font=font, fill=(0, 0, 0, 128))
-                draw.text((x, y-stroke_width), text, font=font, fill=(0, 0, 0, 128))
-                draw.text((x, y+stroke_width), text, font=font, fill=(0, 0, 0, 128))
-                
+                draw.text((x - stroke_width, y), text, font=font, fill=(0, 0, 0, 128))
+                draw.text((x + stroke_width, y), text, font=font, fill=(0, 0, 0, 128))
+                draw.text((x, y - stroke_width), text, font=font, fill=(0, 0, 0, 128))
+                draw.text((x, y + stroke_width), text, font=font, fill=(0, 0, 0, 128))
+
                 # Composite
                 out = Image.alpha_composite(base.convert("RGBA"), txt)
-                
+
                 # Save back to bytes
                 out_buffer = io.BytesIO()
-                out.convert("RGB").save(out_buffer, format='JPEG', quality=85)
+                out.convert("RGB").save(out_buffer, format="JPEG", quality=85)
                 return out_buffer.getvalue()
-                
+
         except ImportError:
             logger.warning("[FILE] Pillow not installed. Skipping watermark.")
             return image_bytes
         except Exception as e:
             logger.error(f"[FILE] Watermark failed: {e}")
             return image_bytes
+
+    def is_pdf(self, filename: str) -> bool:
+        return filename.lower().endswith(".pdf")
+
+    def is_image(self, filename: str) -> bool:
+        return filename.lower().endswith(
+            (".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp")
+        )
+
+    def validate_file_size(self, file_data: bytes, max_mb: int) -> bool:
+        return len(file_data) <= max_mb * 1024 * 1024
+
+    def extract_filename(self, url: str) -> str:
+        import urllib.parse
+
+        parsed = urllib.parse.urlparse(url)
+        path = parsed.path
+        filename = path.split("/")[-1]
+
+        # If filename is empty or generic, try query params
+        if not filename or "." not in filename:
+            qs = urllib.parse.parse_qs(parsed.query)
+            if "file" in qs:
+                filename = qs["file"][0]
+            elif "filename" in qs:
+                filename = qs["filename"][0]
+
+        return urllib.parse.unquote(filename)
+
+    def sanitize_filename(self, filename: str) -> str:
+        import re
+
+        # Remove directory traversal
+        filename = re.sub(r"[/\\]", "", filename)
+        # Remove ..
+        filename = filename.replace("..", "")
+        # Remove control characters
+        filename = re.sub(r"[\x00-\x1f]", "", filename)
+        return filename

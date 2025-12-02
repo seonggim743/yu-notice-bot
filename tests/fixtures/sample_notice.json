@@ -1,0 +1,24 @@
+{
+  "site_key": "yu_news",
+  "article_id": "12345",
+  "title": "2024학년도 2학기 장학금 신청 안내",
+  "content": "장학금 신청 기간: 2024-12-01 ~ 2024-12-15\\n신청 대상: 전체 학년\\n\\n신청 방법:\\n1. 학생포털 접속\\n2. 장학금 메뉴 선택\\n3. 신청서 작성 및 제출\\n\\n문의: 학생지원팀 (053-810-1234)",
+  "url": "https://www.yu.ac.kr/notice/12345",
+  "category": "장학",
+  "summary": "2024학년도 2학기 장학금 신청 기간 및 방법 안내",
+  "target_grades": [1, 2, 3, 4],
+  "target_dept": "전체",
+  "published_at": "2024-12-01T09:00:00+09:00",
+  "image_url": null,
+  "image_urls": [],
+  "attachments": [
+    {
+      "name": "장학금_신청서.pdf",
+      "url": "https://www.yu.ac.kr/file/download?id=1"
+    },
+    {
+      "name": "지원서류_목록.hwp",
+      "url": "https://www.yu.ac.kr/file/download?id=2"
+    }
+  ]
+}

@@ -139,3 +139,23 @@ Thumbs.db
 *.log
 logs/
 bot.log*
+
+# Debug scripts (development only)
+debug_*.py
+reproduce_issue.py
+
+# Root-level test scripts (proper tests are in tests/)
+/test_*.py
+
+# Temporary debug files
+*.html
+!templates/*.html
+*.txt
+!requirements.txt
+!README.txt
+
+# JavaScript debug files
+board*.js
+
+# Temporary/resolved artifacts
+*.resolved

@@ -1,0 +1,35 @@
+version: '3.8'
+
+services:
+  scraper:
+    build: .
+    container_name: yu-notice-bot
+    # environment:
+    # Using mounted .env file instead of docker-compose env parsing
+    # This avoids Korean character encoding issues between Windows and Linux
+    # All environment variables will be read from /app/.env inside the container
+
+    volumes:
+      # Mount logs directory to persist logs
+      - ./logs:/app/logs
+      # Mount .env file directly (avoid docker-compose env parsing for Korean)
+      - ./.env:/app/.env:ro
+      # Network mode (optional)
+      # network_mode: bridge
+
+      # Restart policy
+      # 'no': Don't restart (for --once mode)
+      # 'unless-stopped': Always restart (for continuous mode)
+    restart: "no"
+    # Override default command for different modes
+    # command: python main.py          # Continuous mode (use with restart: unless-stopped)
+    # command: python main.py --once   # One-shot mode (default, use with restart: no)
+    # command: python main.py --init   # Initialize only
+
+    # Optional: Add a health check service
+    # healthcheck:
+    #   test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+    #   interval: 30s
+    #   timeout: 10s
+    #   retries: 3
+    #   start_period: 40s

@@ -1,8 +1,7 @@
 import google.generativeai as genai
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import json
 import asyncio
-import time
 import random
 import re
 from core.config import settings
@@ -10,6 +9,7 @@ from core.logger import get_logger
 from core.database import Database
 
 logger = get_logger(__name__)
+
 
 class AIService:
     def __init__(self):
@@ -22,15 +22,16 @@ class AIService:
             self.model = None
 
     async def _save_token_usage(self, prompt_tokens: int, completion_tokens: int):
-        if not self.db: return
+        if not self.db:
+            return
         try:
             data = {
-                'model': settings.GEMINI_MODEL,
-                'prompt_tokens': prompt_tokens,
-                'completion_tokens': completion_tokens,
-                'total_tokens': prompt_tokens + completion_tokens
+                "model": settings.GEMINI_MODEL,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
             }
-            self.db.table('token_usage').insert(data).execute()
+            self.db.table("token_usage").insert(data).execute()
         except Exception as e:
             logger.error(f"Failed to save token usage: {e}")
 
@@ -38,17 +39,20 @@ class AIService:
         """
         Removes null bytes and excessive control characters to prevent AI confusion.
         """
-        if not text: return ""
+        if not text:
+            return ""
         # Remove null bytes
-        text = text.replace('\x00', '')
+        text = text.replace("\x00", "")
         # Remove other control characters (except newlines/tabs)
-        text = "".join(ch for ch in text if ch == '\n' or ch == '\t' or ch >= ' ')
+        text = "".join(ch for ch in text if ch == "\n" or ch == "\t" or ch >= " ")
         return text
 
-    async def analyze_notice(self, text: str, site_key: str = "yu_news") -> Dict[str, Any]:
+    async def analyze_notice(
+        self, text: str, site_key: str = "yu_news"
+    ) -> Dict[str, Any]:
         """
         Analyzes notice text to extract summary, category, tags, and metadata.
-        
+
         Args:
             text: Notice content to analyze
             site_key: Site identifier for tag selection
@@ -58,16 +62,16 @@ class AIService:
 
         # Pre-process text to remove noise
         text = self._clean_text(text)
-        
+
         # Get available tags for this site
         available_tags = settings.AVAILABLE_TAGS.get(site_key, [])
         tags_instruction = ""
         if available_tags:
             tags_list = ", ".join([f"'{tag}'" for tag in available_tags])
             tags_instruction = (
-                f"  'tags': list[string] (Select 1-5 most relevant tags from: {tags_list}.\\n"
-                f"    Choose tags that best describe this notice. Multiple tags are encouraged if applicable.\\n"
-                f"    For example, urgent scholarship notices should have both '긴급' and '장학'.),\\n"
+                f"  'tags': list[string] (Select 1-2 most relevant tags from: {tags_list}.\\n"
+                f"    Choose tags that best describe this notice. Prioritize the single most important tag.\\n"
+                f"    For example, urgent scholarship notices should have '긴급' or '장학'.),\\n"
             )
 
         prompt = (
@@ -93,25 +97,27 @@ class AIService:
         try:
             loop = asyncio.get_running_loop()
             response = None
-            
+
             # Retry Logic with max attempts
             max_retries = 3
             for attempt in range(max_retries):
                 try:
                     response = await loop.run_in_executor(
-                        None, 
+                        None,
                         lambda: self.model.generate_content(
-                            prompt, 
-                            generation_config={"response_mime_type": "application/json"}
-                        )
+                            prompt,
+                            generation_config={
+                                "response_mime_type": "application/json"
+                            },
+                        ),
                     )
-                    break # Success
+                    break  # Success
                 except Exception as e:
                     err_str = str(e)
                     if "429" in err_str:
                         # Try to parse "retry in X seconds" or "retry_delay { seconds: 57 }"
                         wait_time = 0
-                        
+
                         match = re.search(r"retry in (\d+(\.\d+)?)s", err_str)
                         if match:
                             wait_time = float(match.group(1))
@@ -119,49 +125,63 @@ class AIService:
                             match = re.search(r"seconds:\s*(\d+)", err_str)
                             if match:
                                 wait_time = float(match.group(1))
-                        
+
                         # Fallback if parsing failed
                         if wait_time == 0:
-                            wait_time = (2 ** attempt) * 2 + random.uniform(0, 1)
+                            wait_time = (2**attempt) * 2 + random.uniform(0, 1)
                         else:
-                            wait_time += 1.0 # Add 1s buffer
-                        
+                            wait_time += 1.0  # Add 1s buffer
+
                         # Cap maximum wait time to 60 seconds
                         if wait_time > 60:
-                            logger.warning(f"[AI] Rate limit requires {wait_time:.0f}s wait, capping at 60s")
+                            logger.warning(
+                                f"[AI] Rate limit requires {wait_time:.0f}s wait, capping at 60s"
+                            )
                             wait_time = 60
-                        
+
                         if attempt < max_retries - 1:
-                            logger.warning(f"[AI] Rate limit hit (attempt {attempt + 1}/{max_retries}). Retrying in {wait_time:.1f}s...")
+                            logger.warning(
+                                f"[AI] Rate limit hit (attempt {attempt + 1}/{max_retries}). Retrying in {wait_time:.1f}s..."
+                            )
                             await asyncio.sleep(wait_time)
                         else:
-                            logger.error(f"[AI] Rate limit - max retries ({max_retries}) reached. Skipping analysis.")
-                            return {"summary": "AI 분석 실패 (Rate Limit)", "category": "일반"}
+                            logger.error(
+                                f"[AI] Rate limit - max retries ({max_retries}) reached. Skipping analysis."
+                            )
+                            return {
+                                "summary": "AI 분석 실패 (Rate Limit)",
+                                "category": "일반",
+                                "tags": [],
+                            }
                     else:
                         raise e
-            
+
             if not response:
                 raise Exception("Max retries exceeded for AI analysis")
 
             # Rate Limiting (Safety Delay) - reduced since scraper handles rate limiting
-            await asyncio.sleep(1.0) 
-            
+            await asyncio.sleep(1.0)
+
             # Token Tracking
             try:
                 usage = response.usage_metadata
-                await self._save_token_usage(usage.prompt_token_count, usage.candidates_token_count)
-            except: pass
+                await self._save_token_usage(
+                    usage.prompt_token_count, usage.candidates_token_count
+                )
+            except Exception:
+                pass
 
             return json.loads(response.text)
         except Exception as e:
             logger.error(f"[AI] Analysis failed: {e}")
-            return {"summary": "AI Analysis Failed", "category": "일반"}
+            return {"summary": "AI Analysis Failed", "category": "일반", "tags": []}
 
     async def get_diff_summary(self, old_text: str, new_text: str) -> str:
         """
         Generates a summary of changes between old and new text.
         """
-        if not self.model: return "내용 변경 (AI Key Missing)"
+        if not self.model:
+            return "내용 변경 (AI Key Missing)"
 
         prompt = (
             "Compare the following two versions of a notice and summarize the changes in Korean.\n"
@@ -174,12 +194,17 @@ class AIService:
 
         try:
             loop = asyncio.get_running_loop()
-            response = await loop.run_in_executor(None, lambda: self.model.generate_content(prompt))
-            
+            response = await loop.run_in_executor(
+                None, lambda: self.model.generate_content(prompt)
+            )
+
             try:
                 usage = response.usage_metadata
-                await self._save_token_usage(usage.prompt_token_count, usage.candidates_token_count)
-            except: pass
+                await self._save_token_usage(
+                    usage.prompt_token_count, usage.candidates_token_count
+                )
+            except Exception:
+                pass
 
             return response.text.strip()
         except Exception as e:
@@ -191,16 +216,19 @@ class AIService:
         Extracts menu text from an image URL using Gemini Vision.
         Returns JSON with 'raw_text', 'start_date', 'end_date'.
         """
-        if not self.model: return {}
-        
+        if not self.model:
+            return {}
+
         import aiohttp
-        
+
         try:
             # 1. Download Image
             async with aiohttp.ClientSession() as session:
                 async with session.get(image_url) as resp:
                     if resp.status != 200:
-                        logger.error(f"[AI] Failed to download menu image: {resp.status}")
+                        logger.error(
+                            f"[AI] Failed to download menu image: {resp.status}"
+                        )
                         return {}
                     image_data = await resp.read()
 
@@ -213,39 +241,43 @@ class AIService:
                 "2. 'start_date': string (YYYY-MM-DD). The first date in the menu.\n"
                 "3. 'end_date': string (YYYY-MM-DD). The last date in the menu.\n"
             )
-            
+
             # 3. Call Gemini Vision
             loop = asyncio.get_running_loop()
             response = await loop.run_in_executor(
                 None,
                 lambda: self.model.generate_content(
                     [prompt, {"mime_type": "image/jpeg", "data": image_data}],
-                    generation_config={"response_mime_type": "application/json"}
-                )
+                    generation_config={"response_mime_type": "application/json"},
+                ),
             )
-            
+
             # 4. Token Tracking
             try:
                 usage = response.usage_metadata
-                await self._save_token_usage(usage.prompt_token_count, usage.candidates_token_count)
-            except: pass
-            
+                await self._save_token_usage(
+                    usage.prompt_token_count, usage.candidates_token_count
+                )
+            except Exception:
+                pass
+
             return json.loads(response.text)
-            
+
         except Exception as e:
             logger.error(f"[AI] Menu extraction failed: {e}")
             return {}
 
     async def get_embedding(self, text: str) -> list:
-        if not settings.GEMINI_API_KEY: return []
+        if not settings.GEMINI_API_KEY:
+            return []
         try:
             result = genai.embed_content(
                 model="models/text-embedding-004",
                 content=text[:9000],
                 task_type="retrieval_document",
-                title="University Notice"
+                title="University Notice",
             )
-            return result['embedding']
+            return result["embedding"]
         except Exception as e:
             logger.error(f"Embedding failed: {e}")
             return []
