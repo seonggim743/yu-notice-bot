@@ -12,9 +12,11 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     poppler-utils \
     libreoffice \
+    libreoffice-writer \
     libreoffice-l10n-ko \
     fonts-nanum \
     libxml2-utils \
+    default-jre \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first (for Docker layer caching)

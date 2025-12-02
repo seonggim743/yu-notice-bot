@@ -9,6 +9,7 @@ import subprocess
 import os
 import shutil
 import tempfile
+import zipfile
 from pypdf import PdfReader
 
 logger = logging.getLogger(__name__)
@@ -353,6 +354,21 @@ class FileService:
                 with open(input_path, "wb") as f:
                     f.write(file_data)
 
+                # Validate HWPX (it must be a valid ZIP file)
+                if ext == "hwpx":
+                    if not zipfile.is_zipfile(input_path):
+                        logger.error(f"[FILE] Invalid HWPX file (not a zip): {filename}")
+                        return None
+                    else:
+                        try:
+                            with zipfile.ZipFile(input_path, 'r') as zf:
+                                if "Contents/content.hpf" not in zf.namelist() and "Content/content.hpf" not in zf.namelist():
+                                    # Just a warning, structure might vary
+                                    logger.warning(f"[FILE] HWPX structure might be invalid (content.hpf not found): {filename}")
+                        except Exception as e:
+                            logger.error(f"[FILE] HWPX zip check failed: {e}")
+                            return None
+
             # Run soffice to convert to PDF
             cmd = [
                 soffice_cmd,
@@ -367,6 +383,13 @@ class FileService:
                 f"-env:UserInstallation=file://{temp_dir}/LibreOffice_User",
                 input_path,
             ]
+
+            try:
+                # Log LibreOffice version for debugging
+                version_check = subprocess.run([soffice_cmd, "--version"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                logger.info(f"[FILE] LibreOffice Version: {version_check.stdout.decode().strip()}")
+            except Exception:
+                logger.warning("[FILE] Could not determine LibreOffice version")
 
             try:
                 # Run conversion
