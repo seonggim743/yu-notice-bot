@@ -9,14 +9,15 @@ WORKDIR /app
 # - poppler-utils: Useful for PDF tools (optional now but good to have)
 # - libreoffice: For converting HWP/DOCX/XLSX to PDF
 # - fonts-nanum: Korean fonts for correct rendering
+# - curl: For downloading files if needed
 RUN apt-get update && apt-get install -y \
     poppler-utils \
     libreoffice \
-    libreoffice-writer \
     libreoffice-l10n-ko \
     fonts-nanum \
     libxml2-utils \
     default-jre \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first (for Docker layer caching)
@@ -26,20 +27,13 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Playwright browsers (Chromium only for efficiency)
+# Set fixed path for browsers so they are found regardless of HOME dir
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN mkdir -p /ms-playwright
 RUN playwright install chromium
 RUN playwright install-deps chromium
 
-# Copy application code
-COPY . .
+# NOTE: We do NOT copy source code here.
+# This image is intended to be a "runtime environment" for GitHub Actions.
+# The source code will be mounted or checked out at runtime.
 
-# Set environment variables
-ENV PYTHONUNBUFFERED=1
-ENV PYTHONIOENCODING=utf-8
-
-# Healthcheck (optional but recommended for production)
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import sys; sys.exit(0)"
-
-# Default command: run once mode for GitHub Actions
-# For local development, override with docker-compose
-CMD ["python", "main.py", "--once"]
