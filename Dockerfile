@@ -5,9 +5,16 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Install system dependencies
-# poppler-utils: Required for PDF processing (pdf2image)
+# System dependencies:
+# - poppler-utils: Useful for PDF tools (optional now but good to have)
+# - libreoffice: For converting HWP/DOCX/XLSX to PDF
+# - fonts-nanum: Korean fonts for correct rendering
 RUN apt-get update && apt-get install -y \
     poppler-utils \
+    libreoffice \
+    libreoffice-l10n-ko \
+    fonts-nanum \
+    libxml2-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first (for Docker layer caching)
@@ -15,6 +22,10 @@ COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Install Playwright browsers (Chromium only for efficiency)
+RUN playwright install chromium
+RUN playwright install-deps chromium
 
 # Copy application code
 COPY . .

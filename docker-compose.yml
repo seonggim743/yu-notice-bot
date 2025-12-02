@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   scraper:
     build: .
@@ -14,6 +12,10 @@ services:
       - ./logs:/app/logs
       # Mount .env file directly (avoid docker-compose env parsing for Korean)
       - ./.env:/app/.env:ro
+      # Mount bot.log to persist logs
+      - ./bot.log:/app/bot.log
+      # Mount source code for hot-reloading/debugging
+      - .:/app
       # Network mode (optional)
       # network_mode: bridge
 

@@ -202,8 +202,8 @@ class ScraperService:
             # --- ATTACHMENT TEXT EXTRACTION & PREVIEW (Tier 1) ---
             if item.attachments:
                 extracted_texts = []
-                pdf_preview_count = 0
-                MAX_PDF_PREVIEWS = 10  # Increased limit
+                preview_count = 0
+                MAX_PREVIEWS = 10  # Increased limit
 
                 # Limit to first 10 attachments for processing
                 for att in item.attachments[:10]:
@@ -235,10 +235,21 @@ class ScraperService:
                                         f"[SCRAPER] Extracted {len(text)} chars from {att.name}"
                                     )
 
-                            # 2. PDF Preview Generation (Multi-PDF Support)
-                            if ext == "pdf" and pdf_preview_count < MAX_PDF_PREVIEWS:
+                            # 2. Document Preview Generation (PDF, HWP, DOCX, etc.)
+                            supported_preview_exts = [
+                                "pdf",
+                                "hwp",
+                                "hwpx",
+                                "doc",
+                                "docx",
+                                "xls",
+                                "xlsx",
+                                "ppt",
+                                "pptx",
+                            ]
+                            if ext in supported_preview_exts and preview_count < MAX_PREVIEWS:
                                 logger.info(
-                                    f"[SCRAPER] Generating PDF preview for {att.name}..."
+                                    f"[SCRAPER] Generating preview for {att.name}..."
                                 )
                                 # Generate up to 10 pages
                                 preview_images = (
@@ -250,9 +261,9 @@ class ScraperService:
                                     att.preview_images = (
                                         preview_images  # Store list in Attachment model
                                     )
-                                    pdf_preview_count += 1
+                                    preview_count += 1
                                     logger.info(
-                                        f"[SCRAPER] PDF preview generated ({len(preview_images)} pages)"
+                                        f"[SCRAPER] Preview generated for {att.name} ({len(preview_images)} pages)"
                                     )
 
                 if extracted_texts:
@@ -727,8 +738,25 @@ class ScraperService:
                 )
                 extracted_texts = []
                 for att in item.attachments[:2]:
-                    ext = att.name.split(".")[-1].lower() if "." in att.name else ""
-                    if ext in ["hwp", "hwpx", "pdf"]:
+                    ext = att.name.split(".")[-1].lower().strip() if "." in att.name else ""
+                    logger.info(f"[TEST] Processing attachment: {att.name} (ext: '{ext}')")
+                    
+                    # Check if we need to download (for extraction OR preview)
+                    needs_extraction = ext in ["hwp", "hwpx", "pdf"]
+                    supported_preview_exts = [
+                        "pdf",
+                        "hwp",
+                        "hwpx",
+                        "doc",
+                        "docx",
+                        "xls",
+                        "xlsx",
+                        "ppt",
+                        "pptx",
+                    ]
+                    needs_preview = ext in supported_preview_exts
+                    
+                    if needs_extraction or needs_preview:
                         logger.info(f"[TEST] Downloading {att.name}...")
                         headers = {
                             "Referer": item.url,
@@ -739,25 +767,41 @@ class ScraperService:
                         )
 
                         if file_data:
-                            text = self.file_service.extract_text(file_data, att.name)
-                            if text:
-                                text = text.strip()
-                                if len(text) > 50:
-                                    extracted_texts.append(
-                                        f"--- 첨부파일: {att.name} ---\n{text[:1000]}..."
-                                    )
-                                    logger.info(
-                                        f"[TEST] ✅ Extracted {len(text)} chars from {att.name}"
-                                    )
-                                    logger.info(f"[TEST] Preview: {text[:200]}")
+                            # 1. Extraction
+                            if needs_extraction:
+                                text = self.file_service.extract_text(file_data, att.name)
+                                if text:
+                                    text = text.strip()
+                                    if len(text) > 50:
+                                        extracted_texts.append(
+                                            f"--- 첨부파일: {att.name} ---\n{text[:1000]}..."
+                                        )
+                                        logger.info(
+                                            f"[TEST] ✅ Extracted {len(text)} chars from {att.name}"
+                                        )
+                                        logger.info(f"[TEST] Preview: {text[:200]}")
+                                    else:
+                                        logger.warning(
+                                            "[TEST] Extracted text too short or empty."
+                                        )
                                 else:
                                     logger.warning(
-                                        "[TEST] Extracted text too short or empty."
+                                        "[TEST] Extraction returned empty string."
                                     )
-                            else:
-                                logger.warning(
-                                    "[TEST] Extraction returned empty string."
+                            
+                            # 2. Preview Generation
+                            if needs_preview:
+                                logger.info(f"[TEST] Generating preview for {att.name}...")
+                                preview_images = self.file_service.generate_preview_images(
+                                    file_data, att.name, max_pages=3
                                 )
+                                if preview_images:
+                                    att.preview_images = preview_images
+                                    logger.info(
+                                        f"[TEST] ✅ Preview generated: {len(preview_images)} pages"
+                                    )
+                                else:
+                                    logger.warning("[TEST] Preview generation failed (returned empty).")
                         else:
                             logger.error("[TEST] Download failed.")
 

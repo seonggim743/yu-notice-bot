@@ -274,54 +274,67 @@ class NotificationService:
                     # Better approach: Iterate notice.attachments again to get groups directly
                     pass
 
-                # Re-iterate attachments to get grouped images directly (cleaner than parsing filenames)
+                # Re-iterate attachments to get grouped images directly
                 if notice.attachments:
                     for att in notice.attachments:
                         if getattr(att, "preview_images", None):
-                            media = []
-                            form = aiohttp.FormData()
+                            # Split into chunks of 10 (Telegram limit)
+                            preview_chunks = [
+                                att.preview_images[i : i + 10]
+                                for i in range(0, len(att.preview_images), 10)
+                            ]
 
-                            for idx, img_data in enumerate(att.preview_images):
-                                field_name = f"pdf_{idx}"
-                                form.add_field(
-                                    field_name,
-                                    img_data,
-                                    filename=f"preview_{att.name}_p{idx + 1}.jpg",
-                                )
+                            for chunk_idx, chunk in enumerate(preview_chunks):
+                                media = []
+                                form = aiohttp.FormData()
 
-                                media_item = {
-                                    "type": "photo",
-                                    "media": f"attach://{field_name}",
-                                }
-                                if idx == 0:
-                                    media_item["caption"] = f"📑 [미리보기] {att.name}"
-                                    media_item["parse_mode"] = "HTML"
-                                media.append(media_item)
-
-                            if media:
-                                form.add_field("chat_id", str(self.chat_id))
-                                form.add_field("media", json.dumps(media))
-                                form.add_field("reply_to_message_id", str(main_msg_id))
-                                if topic_id:
-                                    form.add_field("message_thread_id", str(topic_id))
-
-                                try:
-                                    async with session.post(
-                                        f"https://api.telegram.org/bot{self.telegram_token}/sendMediaGroup",
-                                        data=form,
-                                    ) as resp:
-                                        if resp.status == 200:
-                                            logger.info(
-                                                f"[NOTIFIER] Sent PDF preview MediaGroup for {att.name}"
-                                            )
-                                        else:
-                                            logger.error(
-                                                f"[NOTIFIER] Failed to send PDF preview MediaGroup: {await resp.text()}"
-                                            )
-                                except Exception as e:
-                                    logger.error(
-                                        f"[NOTIFIER] PDF preview MediaGroup error: {e}"
+                                for idx, img_data in enumerate(chunk):
+                                    # Global index for filename
+                                    global_idx = (chunk_idx * 10) + idx
+                                    field_name = f"pdf_{chunk_idx}_{idx}"
+                                    form.add_field(
+                                        field_name,
+                                        img_data,
+                                        filename=f"preview_{att.name}_p{global_idx + 1}.jpg",
                                     )
+
+                                    media_item = {
+                                        "type": "photo",
+                                        "media": f"attach://{field_name}",
+                                    }
+                                    # Caption only on the very first image of the first chunk
+                                    if chunk_idx == 0 and idx == 0:
+                                        media_item["caption"] = f"📑 [미리보기] {att.name}"
+                                        media_item["parse_mode"] = "HTML"
+                                    media.append(media_item)
+
+                                if media:
+                                    form.add_field("chat_id", str(self.chat_id))
+                                    form.add_field("media", json.dumps(media))
+                                    form.add_field("reply_to_message_id", str(main_msg_id))
+                                    if topic_id:
+                                        form.add_field("message_thread_id", str(topic_id))
+
+                                    try:
+                                        async with session.post(
+                                            f"https://api.telegram.org/bot{self.telegram_token}/sendMediaGroup",
+                                            data=form,
+                                        ) as resp:
+                                            if resp.status == 200:
+                                                logger.info(
+                                                    f"[NOTIFIER] Sent PDF preview chunk {chunk_idx + 1} for {att.name}"
+                                                )
+                                            else:
+                                                logger.error(
+                                                    f"[NOTIFIER] Failed to send PDF preview chunk: {await resp.text()}"
+                                                )
+                                    except Exception as e:
+                                        logger.error(
+                                            f"[NOTIFIER] PDF preview chunk error: {e}"
+                                        )
+                                    
+                                    # Small delay between chunks to prevent rate limiting
+                                    await asyncio.sleep(0.5)
 
         # 2.2 Send Attachments as MediaGroup (All Together)
         if main_msg_id and notice.attachments:
@@ -495,16 +508,33 @@ class NotificationService:
             if notice.attachments:
                 for att in notice.attachments:
                     if getattr(att, "preview_images", None):
-                        # Group images for this attachment
-                        group = {"filename": att.name, "images": []}
-                        for idx, img_data in enumerate(att.preview_images):
-                            group["images"].append(
-                                {
-                                    "data": img_data,
-                                    "filename": f"Preview_{att.name}_p{idx + 1}.jpg",
-                                }
+                        # Split into chunks of 10 (Discord limit)
+                        preview_chunks = [
+                            att.preview_images[i : i + 10]
+                            for i in range(0, len(att.preview_images), 10)
+                        ]
+
+                        for chunk_idx, chunk in enumerate(preview_chunks):
+                            # Add chunk suffix to filename if multiple chunks
+                            filename_suffix = (
+                                f" ({chunk_idx + 1}/{len(preview_chunks)})"
+                                if len(preview_chunks) > 1
+                                else ""
                             )
-                        pdf_previews.append(group)
+                            group = {
+                                "filename": f"{att.name}{filename_suffix}",
+                                "images": [],
+                            }
+
+                            for idx, img_data in enumerate(chunk):
+                                global_idx = (chunk_idx * 10) + idx
+                                group["images"].append(
+                                    {
+                                        "data": img_data,
+                                        "filename": f"Preview_{att.name}_p{global_idx + 1}.jpg",
+                                    }
+                                )
+                            pdf_previews.append(group)
 
             return await self._send_discord_common(
                 session,
