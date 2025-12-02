@@ -430,8 +430,8 @@ class FileService:
                         logger.warning(f"[FILE] ODT→PDF failed, trying text extraction fallback")
                         return self._fallback_text_to_pdf(file_data, filename, temp_dir, env, soffice_cmd)
                     
-                    # Fallback for DOCX/XLSX: Convert extracted text to PDF
-                    if ext in ["docx", "xlsx"]:
+                    # Fallback for HWP/DOCX/XLSX/HWPX: Convert extracted text to PDF
+                    if ext in ["hwp", "docx", "xlsx", "hwpx"]:
                         return self._fallback_text_to_pdf(file_data, filename, temp_dir, env, soffice_cmd)
 
                     return None
