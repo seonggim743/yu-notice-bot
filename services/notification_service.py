@@ -800,14 +800,33 @@ class NotificationService:
                 "footer": {"text": "Yu Notice Bot • 업데이트됨"},
                 "timestamp": datetime.utcnow().isoformat(),
             }
+            update_embed["fields"] = []
+
             if notice.summary:
-                update_embed["fields"] = [
+                update_embed["fields"].append(
                     {
                         "name": "📝 요약 (업데이트)",
                         "value": notice.summary[:1000],
                         "inline": False,
                     }
-                ]
+                )
+
+            # Add Detailed Diff if available
+            if notice.change_details:
+                old_content = notice.change_details.get("old_content")
+                new_content = notice.change_details.get("new_content")
+
+                if old_content and new_content:
+                    diff_text = self.generate_clean_diff(old_content, new_content)
+
+                    if diff_text:
+                        update_embed["fields"].append(
+                            {
+                                "name": "🔍 상세 변경 내용",
+                                "value": f"```diff\n{diff_text}\n```",
+                                "inline": False,
+                            }
+                        )
 
             # Prepare Payload
             payload = {"embeds": [update_embed]}
