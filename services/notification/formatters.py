@@ -212,11 +212,22 @@ def create_discord_embed(notice, is_new: bool, modified_reason: str = "") -> dic
         " • ".join(footer_parts) if footer_parts else get_site_name(notice.site_key)
     )
 
+    # Handle Short Article (단신)
+    summary_text = notice.summary
+    summary_header = "📝 **요약**"
+    
+    if notice.summary and notice.summary.startswith("[단신]"):
+        summary_text = notice.summary.replace("[단신]", "").strip()
+        summary_header = "📝 **원문**"
+    
+    description_text = ""
+    if summary_text:
+        formatted_summary = format_summary_lines(summary_text)
+        description_text = f"{summary_header}\n{formatted_summary}"
+
     embed = {
         "title": f"{prefix} {emoji} {truncate_text(notice.title, 200)}",
-        "description": (
-            format_summary_lines(notice.summary)[:2000] if notice.summary else ""
-        ),
+        "description": description_text[:2000],
         "color": color,
         "url": notice.url,
         "author": {"name": "Yu Notice Bot", "icon_url": SCHOOL_LOGO_URL},
@@ -281,13 +292,22 @@ def create_telegram_message(notice, is_new: bool, modified_reason: str = "") -> 
     prefix = "🆕" if is_new else "🔄"
 
     safe_title = escape_html(notice.title)
+    
+    # Handle Short Article (단신)
+    summary_header = "📝 <b>요약</b>"
+    summary_text = notice.summary
+    
+    if notice.summary and notice.summary.startswith("[단신]"):
+        summary_header = "📝 <b>원문</b>"
+        summary_text = notice.summary.replace("[단신]", "").strip()
+    
     safe_summary = (
-        format_summary_lines(escape_html(notice.summary)) if notice.summary else ""
+        format_summary_lines(escape_html(summary_text)) if summary_text else ""
     )
 
     msg = (
         f"{prefix} <a href='{notice.url}'><b>{emoji} {safe_title}</b></a>\n\n"
-        f"📝 <b>요약</b>\n"
+        f"{summary_header}\n"
         f"{safe_summary}\n\n"
     )
 

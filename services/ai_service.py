@@ -48,7 +48,7 @@ class AIService:
         return text
 
     async def analyze_notice(
-        self, text: str, site_key: str = "yu_news"
+        self, text: str, site_key: str = "yu_news", title: str = "", author: str = ""
     ) -> Dict[str, Any]:
         """
         Analyzes notice text to extract summary, category, tags, and metadata.
@@ -56,6 +56,8 @@ class AIService:
         Args:
             text: Notice content to analyze
             site_key: Site identifier for tag selection
+            title: Notice title (critical for context)
+            author: Notice author/department (critical for context)
         """
         if not self.model:
             return {"summary": "AI Key Missing", "category": "일반", "tags": []}
@@ -79,6 +81,9 @@ class AIService:
             "Task: Analyze the provided university notice (including text extracted from attachments).\\n"
             "Handling Noise: The input text may contain broken characters (e.g., ^@#, \\\\x00) from PDF/HWP conversion. "
             "STRICTLY IGNORE these encoding errors and focus only on coherent Korean sentences and dates.\\n\\n"
+            f"Title: {title}\\n"
+            f"Author/Dept: {author}\\n"
+            "Context Instruction: Use the Title and Author to infer the Category and Tags, especially if the Content is short or empty.\\n\\n"
             "Output JSON format:\\n"
             "{\\n"
             "  'category': string (Choose one: '장학', '학사', '취업', '생활관', '일반'),\\n"

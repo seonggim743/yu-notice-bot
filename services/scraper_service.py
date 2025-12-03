@@ -373,17 +373,6 @@ class ScraperService:
                 if self.ai_summary_count < self.MAX_AI_SUMMARIES:
                     # Skip AI if content is too short (use content as summary)
                     # BUT if we extracted attachment text, content might be long now!
-                    if len(item.content.strip()) < 50:
-                        logger.info(
-                            "[SCRAPER] Content too short for AI analysis. Using original content as summary."
-                        )
-                        item.category = "일반"
-                        item.summary = item.content.strip()
-                        # Optional: Embed title + content
-                        item.embedding = await self.ai.get_embedding(
-                            f"{item.title}\n{item.summary}"
-                        )
-                    else:
                         logger.info(
                             f"[SCRAPER] Starting AI analysis ({self.ai_summary_count + 1}/{self.MAX_AI_SUMMARIES})..."
                         )
@@ -402,7 +391,10 @@ class ScraperService:
                                 f"{item.content}\n\n{item.attachment_text or ''}"
                             )
                             analysis = await self.ai.analyze_notice(
-                                full_text, site_key=item.site_key
+                                full_text,
+                                site_key=item.site_key,
+                                title=item.title,
+                                author=item.author or "",
                             )
 
                         item.category = analysis.get("category", "일반")
@@ -410,7 +402,19 @@ class ScraperService:
                             "tags", []
                         )  # NEW: Store AI-selected tags
                         logger.info(f"[SCRAPER] AI Tags for {item.title}: {item.tags}")
-                        item.summary = analysis.get("summary", item.content[:100])
+                        
+                        # Handle Short Content Summary (Short Article / 단신)
+                        # If content is short (< 100 chars) and no meaningful attachment text
+                        content_len = len(item.content.strip())
+                        att_text_len = len((item.attachment_text or "").strip())
+                        
+                        logger.info(f"[SCRAPER] Content Len: {content_len}, Att Text Len: {att_text_len}")
+
+                        if content_len < 100 and att_text_len < 50:
+                             item.summary = f"[단신] {item.content.strip()}"
+                             logger.info(f"[SCRAPER] Treated as Short Article (단신)")
+                        else:
+                             item.summary = analysis.get("summary", item.content[:100])
 
                         # Tier 2: Enhanced Metadata
                         item.deadline = analysis.get("deadline")
@@ -951,12 +955,32 @@ class ScraperService:
             # --- AI ANALYSIS (Test Mode) ---
             logger.info("[TEST] Starting AI analysis for verification...")
             analysis = await self.ai.analyze_notice(
-                item.content, site_key=item.site_key
+                item.content,
+                site_key=item.site_key,
+                title=item.title,
+                author=item.author or "",
             )
 
             item.category = analysis.get("category", "일반")
             item.tags = analysis.get("tags", [])  # NEW: Store AI-selected tags
-            item.summary = analysis.get("summary", item.content[:100])
+            
+            # Handle Short Content Summary (Short Article / 단신)
+            # If content is short (< 100 chars) and no meaningful attachment text
+            content_len = len(item.content.strip())
+            # Note: In run_test, we appended extracted text to item.content, so we need to be careful.
+            # But wait, lines 948-949: item.content += "\n\n" + ...
+            # So item.content ALREADY includes attachment text if extracted.
+            # But for images, it won't have attachment text.
+            # So checking len(item.content) is correct.
+            # However, to match process_target logic exactly, we should check if it was appended?
+            # Actually, process_target keeps attachment_text separate until AI analysis, but here run_test merges it.
+            # Let's just check the total length. If it's short, it's short.
+            
+            if len(item.content.strip()) < 100:
+                 item.summary = f"[단신] {item.content.strip()}"
+                 logger.info(f"[TEST] Treated as Short Article (단신) - Len: {len(item.content.strip())}")
+            else:
+                 item.summary = analysis.get("summary", item.content[:100])
             item.deadline = analysis.get("deadline")
             item.eligibility = analysis.get("eligibility", [])
             item.start_date = analysis.get("start_date")
