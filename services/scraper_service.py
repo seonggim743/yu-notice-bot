@@ -283,36 +283,48 @@ class ScraperService:
                                         f"[SCRAPER] Extracted {len(text)} chars from {att.name}"
                                     )
 
-                            # 2. Document Preview Generation (PDF, HWP, DOCX, etc.)
-                            supported_preview_exts = [
-                                "pdf",
-                                "hwp",
-                                "hwpx",
-                                "doc",
-                                "docx",
-                                "xls",
-                                "xlsx",
-                                "ppt",
-                                "pptx",
-                            ]
-                            if ext in supported_preview_exts and preview_count < MAX_PREVIEWS:
-                                logger.info(
-                                    f"[SCRAPER] Generating preview for {att.name}..."
-                                )
-                                # Generate up to 10 pages
-                                preview_images = (
-                                    self.file_service.generate_preview_images(
-                                        file_data, att.name, max_pages=20
-                                    )
-                                )
-                                if preview_images:
-                                    att.preview_images = (
-                                        preview_images  # Store list in Attachment model
-                                    )
-                                    preview_count += 1
-                                    logger.info(
-                                        f"[SCRAPER] Preview generated for {att.name} ({len(preview_images)} pages)"
-                                    )
+                    # 2. Document Preview Generation (PDF, HWP, DOCX, etc.)
+                    supported_preview_exts = [
+                        "pdf",
+                        "hwp",
+                        "hwpx",
+                        "doc",
+                        "docx",
+                        "xls",
+                        "xlsx",
+                        "ppt",
+                        "pptx",
+                    ]
+                    
+                    if not file_data:
+                        logger.warning(f"[SCRAPER] Skipping preview for {att.name}: No file data")
+                    elif ext not in supported_preview_exts:
+                        logger.debug(f"[SCRAPER] Skipping preview for {att.name}: Unsupported extension {ext}")
+                    elif preview_count >= MAX_PREVIEWS:
+                        logger.warning(f"[SCRAPER] Skipping preview for {att.name}: Preview limit ({MAX_PREVIEWS}) reached")
+                    else:
+                        logger.info(
+                            f"[SCRAPER] Generating preview for {att.name}..."
+                        )
+                        # Generate up to 10 pages
+                        preview_images = (
+                            self.file_service.generate_preview_images(
+                                file_data, att.name, max_pages=20
+                            )
+                        )
+                        if preview_images:
+                            att.preview_images = (
+                                preview_images  # Store list in Attachment model
+                            )
+                            preview_count += 1
+                            logger.info(
+                                f"[SCRAPER] Preview generated for {att.name} ({len(preview_images)} pages)"
+                            )
+                        else:
+                            logger.warning(f"[SCRAPER] Preview generation returned empty for {att.name}")
+
+                    # Small delay to prevent rate limiting
+                    await asyncio.sleep(0.5)
 
                 if extracted_texts:
                     # Save extracted text to attachment_text field instead of appending to content
@@ -861,7 +873,7 @@ class ScraperService:
                     f"[TEST] Found {len(item.attachments)} attachments. Attempting extraction..."
                 )
                 extracted_texts = []
-                for att in item.attachments[:2]:
+                for att in item.attachments[:10]:
                     ext = att.name.split(".")[-1].lower().strip() if "." in att.name else ""
                     logger.info(f"[TEST] Processing attachment: {att.name} (ext: '{ext}')")
                     
