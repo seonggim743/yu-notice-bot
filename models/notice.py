@@ -6,6 +6,8 @@ from datetime import datetime
 class Attachment(BaseModel):
     name: str
     url: str
+    file_size: Optional[int] = None
+    etag: Optional[str] = None
     preview_images: List[bytes] = Field(
         default_factory=list, exclude=True
     )  # Memory only
@@ -40,7 +42,7 @@ class Notice(BaseModel):
 
     # Enhanced AI Metadata (Tier 2)
     deadline: Optional[str] = None  # YYYY-MM-DD
-    eligibility: List[str] = Field(default_factory=list)
+    eligibility: Optional[List[str]] = Field(default_factory=list)
 
     # PDF Preview (Tier 1) - Memory Only
     preview_image: Optional[bytes] = Field(

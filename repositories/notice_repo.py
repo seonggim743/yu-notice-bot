@@ -117,7 +117,13 @@ class NoticeRepository:
 
             if notice.attachments:
                 att_data = [
-                    {"notice_id": notice_id, "name": a.name, "url": a.url}
+                    {
+                        "notice_id": notice_id,
+                        "name": a.name,
+                        "url": a.url,
+                        "file_size": a.file_size,
+                        "etag": a.etag,
+                    }
                     for a in notice.attachments
                 ]
                 self.db.table("attachments").insert(att_data).execute()

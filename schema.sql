@@ -55,7 +55,9 @@ CREATE TABLE IF NOT EXISTS attachments (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     notice_id UUID REFERENCES notices(id) ON DELETE CASCADE,
     name TEXT NOT NULL,
-    url TEXT NOT NULL
+    url TEXT NOT NULL,
+    file_size BIGINT,
+    etag TEXT
 );
 
 -- 3. Token Usage Tracking

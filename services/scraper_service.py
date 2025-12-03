@@ -78,9 +78,14 @@ class ScraperService:
         ]
 
     def calculate_hash(self, notice: Notice) -> str:
-        """Hash of Title + Content + Image + Attachments (name + URL)"""
-        # Include attachment name AND url to detect file replacements
-        sorted_atts = sorted([f"{a.name}|{a.url}" for a in notice.attachments])
+        """Hash of Title + Content + Image + Attachments (name + URL + Size + ETag)"""
+        # Include attachment name, url, size, etag to detect file replacements/updates
+        sorted_atts = sorted(
+            [
+                f"{a.name}|{a.url}|{a.file_size or 0}|{a.etag or ''}"
+                for a in notice.attachments
+            ]
+        )
         att_str = "".join(sorted_atts)
 
         # Include all image URLs (sorted for consistency)
@@ -199,6 +204,20 @@ class ScraperService:
                 item.content = item.content.replace("\x00", "")
                 item.content = item.content.strip()  # Normalize whitespace
 
+            # --- SMART UPDATE CHECK ---
+            should_process = True
+            if not is_new:
+                old_notice = self.repo.get_notice(key, item.article_id)
+                if old_notice:
+                    should_process = await self.should_process_article(
+                        session, item, old_notice
+                    )
+                    if not should_process:
+                        logger.info(f"[SCRAPER] No changes detected for '{item.title}'. Skipping.")
+                        continue
+                    else:
+                        logger.info(f"[SCRAPER] Changes detected for '{item.title}'. Reprocessing.")
+
             # --- ATTACHMENT TEXT EXTRACTION & PREVIEW (Tier 1) ---
             if item.attachments:
                 extracted_texts = []
@@ -209,21 +228,50 @@ class ScraperService:
                 for att in item.attachments[:10]:
                     ext = att.name.split(".")[-1].lower() if "." in att.name else ""
 
-                    # 1. Text Extraction (HWP, PDF)
-                    if ext in ["hwp", "hwpx", "pdf"]:
-                        logger.info(
-                            f"[SCRAPER] Downloading attachment for processing: {att.name}"
-                        )
-                        headers = {
-                            "Referer": item.url,
-                            "User-Agent": settings.USER_AGENT,
-                        }
-                        file_data = await self.file_service.download_file(
-                            session, att.url, headers=headers
-                        )
+                    # --- METADATA CAPTURE (For Smart Update) ---
+                    # We need to capture file_size and etag for ALL attachments, 
+                    # not just the ones we extract text from.
+                    headers = {
+                        "Referer": item.url,
+                        "User-Agent": settings.USER_AGENT,
+                    }
+                    file_data = None
+                    
+                    # Try to download (or at least HEAD) to get metadata
+                    # If we need to extract text/preview, we download fully.
+                    # If not, we still need metadata.
+                    
+                    needs_processing = ext in ["hwp", "hwpx", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx"]
+                    
+                    try:
+                        if needs_processing:
+                            logger.info(f"[SCRAPER] Downloading attachment for processing: {att.name}")
+                            async with session.get(att.url, headers=headers) as resp:
+                                resp.raise_for_status()
+                                file_data = await resp.read()
+                                
+                                # Capture Metadata
+                                att.file_size = int(resp.headers.get("Content-Length", 0)) or len(file_data)
+                                att.etag = resp.headers.get("ETag")
+                        else:
+                            # Just get metadata via HEAD if we haven't already
+                            # (Actually, should_process_article might have done it, but we need to save it to DB)
+                            # Wait, should_process_article does NOT update the 'item' object's attachments with metadata.
+                            # It just checks. We need to populate 'att.file_size' and 'att.etag' here so it gets saved to DB.
+                            
+                            # Optimization: If we already have metadata from should_process_article (we don't pass it back),
+                            # we need to fetch it.
+                            # Let's do a HEAD request here if file_data is None.
+                             async with session.head(att.url, headers=headers, timeout=5) as resp:
+                                att.file_size = int(resp.headers.get("Content-Length", 0))
+                                att.etag = resp.headers.get("ETag")
 
-                        if file_data:
-                            # Extract Text
+                    except Exception as e:
+                        logger.warning(f"[SCRAPER] Failed to capture metadata/download for {att.name}: {e}")
+                        file_data = None
+
+                    # 1. Text Extraction (HWP, PDF)
+                    if file_data and ext in ["hwp", "hwpx", "pdf"]:
                             text = self.file_service.extract_text(file_data, att.name)
                             if text:
                                 text = text.strip()
@@ -534,6 +582,82 @@ class ScraperService:
             changes["attachments"] = ", ".join(att_changes)
 
         return changes
+
+    async def should_process_article(
+        self, session: aiohttp.ClientSession, new_item: Notice, old_item: Notice
+    ) -> bool:
+        """
+        Determines if an article should be processed (downloaded/updated)
+        by comparing metadata and performing HEAD requests for attachments.
+        """
+        # 1. Metadata Check
+        if new_item.title != old_item.title:
+            logger.info(f"[SMART-UPDATE] Title changed: {new_item.title}")
+            return True
+        if new_item.content != old_item.content:
+            logger.info(f"[SMART-UPDATE] Content changed: {new_item.title}")
+            return True
+
+        # Compare attachment counts
+        if len(new_item.attachments) != len(old_item.attachments):
+            logger.info(f"[SMART-UPDATE] Attachment count changed: {new_item.title}")
+            return True
+
+        # Compare attachment URLs
+        new_urls = {a.url for a in new_item.attachments}
+        old_urls = {a.url for a in old_item.attachments}
+        if new_urls != old_urls:
+            logger.info(f"[SMART-UPDATE] Attachment URLs changed: {new_item.title}")
+            return True
+
+        # 2. HEAD Request Check (for each attachment)
+        old_att_map = {a.url: a for a in old_item.attachments}
+
+        for new_att in new_item.attachments:
+            old_att = old_att_map.get(new_att.url)
+            if not old_att:
+                return True  # Should be caught by URL check, but safe guard
+
+            # Send HEAD request
+            try:
+                async with session.head(new_att.url, timeout=5) as resp:
+                    # Fail-safe: if not 200, assume changed/error -> Process
+                    if resp.status != 200:
+                        logger.warning(
+                            f"[SMART-UPDATE] HEAD request failed ({resp.status}) for {new_att.name}. Assuming changed."
+                        )
+                        return True
+
+                    remote_size = int(resp.headers.get("Content-Length", 0))
+                    remote_etag = resp.headers.get("ETag")
+
+                    # Priority: ETag -> Size
+                    if remote_etag:
+                        if not old_att.etag or remote_etag != old_att.etag:
+                            logger.info(
+                                f"[SMART-UPDATE] ETag mismatch/missing for {new_att.name}. Old: {old_att.etag}, New: {remote_etag}"
+                            )
+                            return True
+                    elif remote_size > 0:
+                        if not old_att.file_size or remote_size != old_att.file_size:
+                            logger.info(
+                                f"[SMART-UPDATE] File size mismatch/missing for {new_att.name}. Old: {old_att.file_size}, New: {remote_size}"
+                            )
+                            return True
+                    else:
+                        # Both missing from server, default to True (download)
+                        logger.warning(
+                            f"[SMART-UPDATE] No ETag or Content-Length for {new_att.name}. Forcing update."
+                        )
+                        return True
+
+            except Exception as e:
+                logger.warning(
+                    f"[SMART-UPDATE] HEAD request exception for {new_att.name}: {e}. Assuming changed."
+                )
+                return True
+
+        return False
 
     async def run(self):
         timeout = aiohttp.ClientTimeout(total=60, connect=10, sock_read=30)
