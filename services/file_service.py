@@ -10,14 +10,16 @@ import os
 import shutil
 import tempfile
 import zipfile
+import zipfile
 from pypdf import PdfReader
+from services.polaris_service import PolarisService
 
 logger = logging.getLogger(__name__)
 
 
 class FileService:
     def __init__(self):
-        pass
+        self.polaris_service = PolarisService()
 
     async def download_file(
         self, session: aiohttp.ClientSession, url: str, headers: dict = None
@@ -310,6 +312,55 @@ class FileService:
             logger.error(f"[FILE] Unexpected error during HWP→ODT conversion: {e}")
             return None
 
+    def _fallback_text_to_pdf(self, file_data: bytes, filename: str, temp_dir: str, env: dict, soffice_cmd: str) -> Optional[bytes]:
+        """
+        Fallback method: Extracts text from the file and converts it to a PDF.
+        Used when direct conversion or other strategies fail.
+        """
+        logger.info(f"[FILE] Attempting fallback: Convert extracted text to PDF for {filename}")
+        try:
+            text = self.extract_text(file_data, filename)
+            if text and len(text.strip()) > 0:
+                txt_filename = "fallback.txt"
+                txt_path = os.path.join(temp_dir, txt_filename)
+                with open(txt_path, "w", encoding="utf-8") as f:
+                    f.write(text)
+                
+                # Convert text to PDF
+                cmd_fallback = [
+                    soffice_cmd,
+                    "--headless",
+                    "--nologo",
+                    "--nofirststartwizard",
+                    "--convert-to",
+                    "pdf",
+                    "--outdir",
+                    temp_dir,
+                    f"-env:UserInstallation=file://{temp_dir}/LibreOffice_User",
+                    txt_path,
+                ]
+                
+                subprocess.run(
+                    cmd_fallback,
+                    check=True,
+                    timeout=30,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    env=env,
+                )
+                
+                fallback_pdf = os.path.join(temp_dir, "fallback.pdf")
+                if os.path.exists(fallback_pdf):
+                    logger.info(f"[FILE] Fallback successful: Generated PDF from text for {filename}")
+                    with open(fallback_pdf, "rb") as f:
+                        return f.read()
+            else:
+                logger.warning(f"[FILE] Fallback failed: Extracted text is empty for {filename}")
+        except Exception as e:
+            logger.error(f"[FILE] Fallback failed: {e}")
+        
+        return None
+
     def convert_to_pdf(self, file_data: bytes, filename: str) -> Optional[bytes]:
         """
         Converts Office documents (HWP, DOCX, XLSX, PPTX) to PDF using LibreOffice.
@@ -320,55 +371,101 @@ class FileService:
             return file_data
 
         soffice_cmd = self._get_soffice_command()
-        if not soffice_cmd:
-            logger.warning(
-                f"[FILE] LibreOffice (soffice) not found. Skipping PDF conversion for {filename}."
-            )
-            return None
-
+        
         # Create a temporary directory for the conversion
         with tempfile.TemporaryDirectory() as temp_dir:
             # Set HOME to temp_dir for LibreOffice (required in some Docker/Server environments)
             env = os.environ.copy()
             env["HOME"] = temp_dir
             
-            # For HWP files, use two-step conversion: HWP → ODT → PDF
+            # For HWP files, use multi-layered strategy:
+            # 1. Polaris Office (Web Automation) -> JPG
+            # 2. hwp5html -> HTML -> PNG
+            # 3. Text Extraction -> PDF
             if ext == "hwp":
-                logger.info(f"[FILE] Starting HWP→ODT→PDF conversion for {filename}")
+                logger.info(f"[FILE] Starting HWP conversion for {filename}")
                 
-                # Step 1: HWP → ODT using pyhwp
-                odt_path = self._convert_hwp_to_odt(file_data, temp_dir)
-                if not odt_path:
-                    logger.warning(f"[FILE] HWP→ODT conversion failed, trying fallback")
-                    # Fallback: Try text extraction to PDF
+                # Save input file
+                input_path = os.path.join(temp_dir, "input.hwp")
+                with open(input_path, "wb") as f:
+                    f.write(file_data)
+                
+                # Priority 1: Polaris Office
+                try:
+                    logger.info(f"[FILE] Attempting Polaris Office conversion for {filename}")
+                    jpg_files = self.polaris_service.convert_to_jpg(input_path, temp_dir)
+                    if jpg_files:
+                        logger.info(f"[FILE] Polaris conversion successful: {len(jpg_files)} images")
+                        # Convert JPGs to single PDF
+                        return self._images_to_pdf(jpg_files)
+                    else:
+                        logger.warning(f"[FILE] Polaris conversion failed, trying fallback")
+                except Exception as e:
+                    logger.error(f"[FILE] Polaris conversion error: {e}")
+
+                # Priority 2: hwp5html
+                logger.info(f"[FILE] Attempting hwp5html conversion for {filename}")
+                png_files = self._convert_hwp_to_png_via_html(file_data, filename, temp_dir)
+                if png_files:
+                    logger.info(f"[FILE] hwp5html conversion successful: {len(png_files)} images")
+                    return self._images_to_pdf(png_files)
+                
+                # Priority 3: Text Extraction Fallback
+                logger.warning(f"[FILE] hwp5html failed, trying text extraction fallback")
+                if soffice_cmd:
                     return self._fallback_text_to_pdf(file_data, filename, temp_dir, env, soffice_cmd)
+                else:
+                    logger.warning("[FILE] LibreOffice not found, cannot perform text fallback")
+                    return None
+
+            # For HWPX files:
+            # 1. Polaris Office
+            # 2. Text Extraction -> PDF
+            elif ext == "hwpx":
+                logger.info(f"[FILE] Starting HWPX conversion for {filename}")
                 
-                # Step 2: ODT → PDF using LibreOffice
-                input_path = odt_path
-                safe_filename = "input.odt"
+                # Save input file
+                input_path = os.path.join(temp_dir, "input.hwpx")
+                with open(input_path, "wb") as f:
+                    f.write(file_data)
+                
+                # Validate HWPX
+                if not zipfile.is_zipfile(input_path):
+                    logger.error(f"[FILE] Invalid HWPX file (not a zip): {filename}")
+                    return None
+                
+                # Priority 1: Polaris Office
+                try:
+                    logger.info(f"[FILE] Attempting Polaris Office conversion for {filename}")
+                    jpg_files = self.polaris_service.convert_to_jpg(input_path, temp_dir)
+                    if jpg_files:
+                        logger.info(f"[FILE] Polaris conversion successful: {len(jpg_files)} images")
+                        return self._images_to_pdf(jpg_files)
+                    else:
+                        logger.warning(f"[FILE] Polaris conversion failed, trying fallback")
+                except Exception as e:
+                    logger.error(f"[FILE] Polaris conversion error: {e}")
+
+                # Priority 2: Text Extraction Fallback
+                logger.warning(f"[FILE] Polaris failed, trying text extraction fallback")
+                if soffice_cmd:
+                    return self._fallback_text_to_pdf(file_data, filename, temp_dir, env, soffice_cmd)
+                else:
+                    logger.warning("[FILE] LibreOffice not found, cannot perform text fallback")
+                    return None
+
             else:
                 # Direct conversion for DOCX, XLSX, etc.
+                if not soffice_cmd:
+                    logger.warning(f"[FILE] LibreOffice not found. Skipping PDF conversion for {filename}.")
+                    return None
+
                 safe_filename = f"input.{ext}"
                 input_path = os.path.join(temp_dir, safe_filename)
                 
                 with open(input_path, "wb") as f:
                     f.write(file_data)
-
-                # Validate HWPX (it must be a valid ZIP file)
-                if ext == "hwpx":
-                    if not zipfile.is_zipfile(input_path):
-                        logger.error(f"[FILE] Invalid HWPX file (not a zip): {filename}")
-                        return None
-                    else:
-                        try:
-                            with zipfile.ZipFile(input_path, 'r') as zf:
-                                if "Contents/content.hpf" not in zf.namelist() and "Content/content.hpf" not in zf.namelist():
-                                    # Just a warning, structure might vary
-                                    logger.warning(f"[FILE] HWPX structure might be invalid (content.hpf not found): {filename}")
-                        except Exception as e:
-                            logger.error(f"[FILE] HWPX zip check failed: {e}")
-                            return None
-
+            
             # Run soffice to convert to PDF
             cmd = [
                 soffice_cmd,
@@ -447,51 +544,33 @@ class FileService:
                 logger.error(f"[FILE] Unexpected error during conversion: {e}")
                 return None
 
-    def _fallback_text_to_pdf(self, file_data: bytes, filename: str, temp_dir: str, env: dict, soffice_cmd: str) -> Optional[bytes]:
-        """
-        Fallback: Extract text and convert to PDF using LibreOffice.
-        """
-        logger.info(f"[FILE] Attempting fallback: Convert extracted text to PDF for {filename}")
+    def _images_to_pdf(self, image_paths: List[str]) -> Optional[bytes]:
+        """Converts a list of images to a single PDF."""
         try:
-            text = self.extract_text(file_data, filename)
-            if text and len(text.strip()) > 0:
-                txt_filename = "fallback.txt"
-                txt_path = os.path.join(temp_dir, txt_filename)
-                with open(txt_path, "w", encoding="utf-8") as f:
-                    f.write(text)
+            from PIL import Image
+            
+            if not image_paths:
+                return None
                 
-                # Convert text to PDF
-                cmd_fallback = [
-                    soffice_cmd,
-                    "--headless",
-                    "--nologo",
-                    "--nofirststartwizard",
-                    "--convert-to",
-                    "pdf",
-                    "--outdir",
-                    temp_dir,
-                    f"-env:UserInstallation=file://{temp_dir}/LibreOffice_User",
-                    txt_path,
-                ]
+            images = []
+            for path in image_paths:
+                try:
+                    img = Image.open(path)
+                    if img.mode != 'RGB':
+                        img = img.convert('RGB')
+                    images.append(img)
+                except Exception as e:
+                    logger.warning(f"[FILE] Failed to open image {path}: {e}")
+            
+            if not images:
+                return None
                 
-                subprocess.run(
-                    cmd_fallback,
-                    check=True,
-                    timeout=30,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    env=env,
-                )
-                
-                fallback_pdf = os.path.join(temp_dir, "fallback.pdf")
-                if os.path.exists(fallback_pdf):
-                    logger.info(f"[FILE] Fallback successful: Generated PDF from text for {filename}")
-                    with open(fallback_pdf, "rb") as f:
-                        return f.read()
+            output = io.BytesIO()
+            images[0].save(output, format='PDF', save_all=True, append_images=images[1:])
+            return output.getvalue()
         except Exception as e:
-            logger.error(f"[FILE] Fallback failed: {e}")
-        
-        return None
+            logger.error(f"[FILE] Image to PDF conversion failed: {e}")
+            return None
 
     def _convert_hwp_to_png_via_html(self, file_data: bytes, filename: str, temp_dir: str) -> List[str]:
         """
@@ -968,7 +1047,6 @@ except Exception as e:
                         img_width, img_height = img.size
                         
                         logger.info(f"[FILE] Full image size: {img_width}x{img_height}")
-                        
                         # Calculate number of pages based on A4 ratio (height = width * 1.414)
                         a4_ratio = 1.414
                         expected_page_height = int(img_width * a4_ratio)
@@ -1086,9 +1164,25 @@ except Exception as e:
             return []
 
         try:
-            # Special handling for HWP: hwp5html + Playwright conversion
+            # Special handling for HWP: Polaris -> hwp5html -> PDF Fallback
             if ext == "hwp":
                 with tempfile.TemporaryDirectory() as temp_dir:
+                    # Priority 1: Polaris Office
+                    try:
+                        logger.info(f"[FILE] Attempting Polaris Office conversion for {filename}")
+                        # Save input file
+                        input_path = os.path.join(temp_dir, "input.hwp")
+                        with open(input_path, "wb") as f:
+                            f.write(file_data)
+                            
+                        jpg_files = self.polaris_service.convert_to_jpg(input_path, temp_dir)
+                        if jpg_files:
+                            logger.info(f"[FILE] Polaris conversion successful: {len(jpg_files)} images")
+                            return self._process_png_files(jpg_files, max_pages)
+                    except Exception as e:
+                        logger.error(f"[FILE] Polaris conversion error: {e}")
+
+                    # Priority 2: hwp5html
                     png_files = self._convert_hwp_to_png_via_html(file_data, filename, temp_dir)
                     
                     if not png_files:

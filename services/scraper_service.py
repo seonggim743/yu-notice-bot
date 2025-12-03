@@ -254,7 +254,7 @@ class ScraperService:
                                 # Generate up to 10 pages
                                 preview_images = (
                                     self.file_service.generate_preview_images(
-                                        file_data, att.name, max_pages=10
+                                        file_data, att.name, max_pages=20
                                     )
                                 )
                                 if preview_images:
@@ -793,7 +793,7 @@ class ScraperService:
                             if needs_preview:
                                 logger.info(f"[TEST] Generating preview for {att.name}...")
                                 preview_images = self.file_service.generate_preview_images(
-                                    file_data, att.name, max_pages=3
+                                    file_data, att.name, max_pages=20
                                 )
                                 if preview_images:
                                     att.preview_images = preview_images

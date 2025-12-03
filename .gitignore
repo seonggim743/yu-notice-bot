@@ -159,3 +159,9 @@ board*.js
 
 # Temporary/resolved artifacts
 *.resolved
+
+# Polaris / PDF Conversion Debugging
+debug_screenshots/
+verified_output.pdf
+test.pdf
+
