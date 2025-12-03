@@ -82,7 +82,9 @@ class NotificationService:
             else None
         )
 
-        images_to_send = []
+        # Separate lists for Telegram
+        content_images_to_send = []
+        pdf_previews_to_send = []
 
         # A. Content Images (Multiple images support)
         if notice.image_urls:
@@ -94,7 +96,7 @@ class NotificationService:
                             data = await resp.read()
                             # Only first image gets the main caption
                             caption = msg if idx == 0 else None
-                            images_to_send.append(
+                            content_images_to_send.append(
                                 {
                                     "type": "content",
                                     "data": data,
@@ -120,7 +122,7 @@ class NotificationService:
                         # Only show filename on the first page
                         caption = f"📑 [미리보기] {att.name}" if idx == 0 else ""
 
-                        images_to_send.append(
+                        pdf_previews_to_send.append(
                             {
                                 "type": "preview",
                                 "data": img_data,
@@ -134,9 +136,7 @@ class NotificationService:
 
         # C. Send Logic
         # If we only have PDF previews (no content images), send text message first
-        has_content_images = any(img["type"] == "content" for img in images_to_send)
-
-        if images_to_send and not has_content_images:
+        if pdf_previews_to_send and not content_images_to_send:
             # Send text message first for PDF-only notices
             payload = {
                 "chat_id": self.chat_id,
@@ -165,7 +165,7 @@ class NotificationService:
             except Exception as e:
                 logger.error(f"[NOTIFIER] Telegram text send failed: {e}")
 
-        if not images_to_send:
+        if not content_images_to_send and not pdf_previews_to_send:
             # Text Only
             payload = {
                 "chat_id": self.chat_id,
@@ -191,9 +191,9 @@ class NotificationService:
             except Exception as e:
                 logger.error(f"[NOTIFIER] Telegram text send failed: {e}")
 
-        elif len(images_to_send) == 1:
-            # Single Photo
-            img = images_to_send[0]
+        elif len(content_images_to_send) == 1 and not pdf_previews_to_send:
+            # Single Photo (Content only)
+            img = content_images_to_send[0]
             form = aiohttp.FormData()
             form.add_field("photo", img["data"], filename=img["filename"])
             form.add_field("caption", img["caption"][:1024])  # Caption limit
@@ -218,16 +218,13 @@ class NotificationService:
                 logger.error(f"[NOTIFIER] Telegram photo send failed: {e}")
 
         else:
-            # Multiple Photos - separate content images and PDF previews
-            content_images = [img for img in images_to_send if img["type"] == "content"]
-            pdf_previews = [img for img in images_to_send if img["type"] == "preview"]
-
+            # Multiple Photos or Mix of Content + Previews
             # Send content images as MediaGroup (if any)
-            if content_images:
+            if content_images_to_send:
                 media = []
                 form = aiohttp.FormData()
 
-                for idx, img in enumerate(content_images):
+                for idx, img in enumerate(content_images_to_send):
                     field_name = f"file{idx}"
                     form.add_field(field_name, img["data"], filename=img["filename"])
 
@@ -254,26 +251,14 @@ class NotificationService:
                                 "message_id"
                             )
                             logger.info(
-                                f"[NOTIFIER] Sent {len(content_images)} content images as MediaGroup"
+                                f"[NOTIFIER] Sent {len(content_images_to_send)} content images as MediaGroup"
                             )
                 except Exception as e:
                     logger.error(f"[NOTIFIER] Telegram MediaGroup failed: {e}")
 
             # Send PDF previews as replies to main message (Grouped by PDF)
-            if main_msg_id:
+            if main_msg_id and pdf_previews_to_send:
                 # Group previews by filename (original attachment name)
-                from collections import defaultdict
-
-                grouped_previews = defaultdict(list)
-                for pdf in pdf_previews:
-                    # Extract original filename from preview filename
-                    # Format: preview_{att.name}_p{idx+1}.jpg
-                    # We can use the caption logic or just group by consecutive items if sorted
-                    # But simpler: we know they come in order from the list
-
-                    # Better approach: Iterate notice.attachments again to get groups directly
-                    pass
-
                 # Re-iterate attachments to get grouped images directly
                 if notice.attachments:
                     for att in notice.attachments:
@@ -643,11 +628,9 @@ class NotificationService:
 
         # Download attachments using the SHARED session (to handle hotlink protection/cookies)
         attachment_files = []
+        content_images = []
 
-        # === COMBINE ALL IMAGES: Content Images + PDF Previews ===
-        all_images = []  # Will hold all images to display
-
-        # 1. Handle Main Images (Multiple content images)
+        # === 1. Content Images (from Body) ===
         if notice.image_urls:
             for idx, image_url in enumerate(notice.image_urls):
                 try:
@@ -658,7 +641,7 @@ class NotificationService:
                     ) as img_resp:
                         if img_resp.status == 200:
                             image_data = await img_resp.read()
-                            all_images.append(
+                            content_images.append(
                                 {
                                     "data": image_data,
                                     "filename": f"image_{idx}.jpg",
@@ -673,36 +656,7 @@ class NotificationService:
                         f"[NOTIFIER] Failed to download image {idx} for Discord: {e}"
                     )
 
-        # 3. Organize attachments based on content image count
-        content_images = [img for img in all_images if img["type"] == "content"]
-        image_data = None
-        image_filename = "image.png"
-
-        if len(content_images) == 1:
-            # Single content image: include in embed
-            first_image = content_images[0]
-            image_data = first_image["data"]
-            image_filename = first_image["filename"]
-            embed["image"] = {"url": f"attachment://{image_filename}"}
-            logger.info(
-                f"[NOTIFIER] Using single content image in Discord embed: {image_filename}"
-            )
-        elif len(content_images) > 1:
-            # Multiple content images: send all as attachments first (before embed)
-            for img in content_images:
-                attachment_files.insert(0, img)  # Insert at beginning
-                logger.info(
-                    f"[NOTIFIER] Adding content image as attachment: {img['filename']}"
-                )
-            logger.info(
-                f"[NOTIFIER] {len(content_images)} content images will be sent before embed"
-            )
-
-        # PDF previews will be sent as separate messages (not attachments)
-        # Do NOT add to attachment_files
-
-        # 4. Handle Attachments (PDF files, etc.)
-
+        # === 2. Attachments (Files) ===
         if notice.attachments:
             for idx, att in enumerate(notice.attachments[:10], 1):
                 max_retries = 2
@@ -765,23 +719,40 @@ class NotificationService:
                         if attempt < max_retries:
                             await asyncio.sleep(1)
 
-        # Logic for Splitting Attachments
-        # Rule:
-        # - 1 Attachment: Send with Main Message
-        # - 2+ Attachments: Send via Reply (Thread/Message)
+        # === 3. Prepare Files for Thread Starter vs Replies ===
+        # Priority: Content Images > Embed > Previews > Attachments
 
-        files_to_send_now = []
-        files_to_send_later = []
+        files_for_thread_starter = []
+        files_for_attachments = attachment_files  # All attachments go to replies
 
-        if len(attachment_files) == 1:
-            files_to_send_now = attachment_files
-        elif len(attachment_files) >= 2:
-            files_to_send_later = attachment_files
+        embed_image_data = None
+        embed_image_filename = "image.png"
+
+        # Logic for Content Images
+        if len(content_images) == 1:
+            # Case 1: Single Content Image -> Embed it
+            first_image = content_images[0]
+            embed_image_data = first_image["data"]
+            embed_image_filename = first_image["filename"]
+            embed["image"] = {"url": f"attachment://{embed_image_filename}"}
+            logger.info(
+                f"[NOTIFIER] Using single content image in Discord embed: {embed_image_filename}"
+            )
+        elif len(content_images) > 1:
+            # Case 2: Multiple Content Images -> Send ALL as files with the Thread Starter
+            # (Discord allows up to 10 files per message)
+            files_for_thread_starter.extend(content_images)
+            logger.info(
+                f"[NOTIFIER] {len(content_images)} content images will be sent with Thread Starter"
+            )
+            # Do NOT set embed image, so they appear as a grid above/below the embed
+
+        # PDF previews will be sent as separate messages (not attachments)
+        # Do NOT add to attachment_files
 
         logger.info(
-            f"[NOTIFIER] Attachments: {len(attachment_files)} | Now: {len(files_to_send_now)} | Later: {len(files_to_send_later)}"
+            f"[NOTIFIER] Thread Starter Files: {len(files_for_thread_starter)} | Attachments: {len(files_for_attachments)}"
         )
-        logger.info(f"[NOTIFIER] Has Image: {bool(image_data)}")
 
         # Prepare Payload
         # We need to construct the payload differently for Thread vs Message
@@ -832,21 +803,23 @@ class NotificationService:
             payload = {"embeds": [update_embed]}
 
             # Determine if we need Multipart (Files) or JSON
-            has_files_now = bool(image_data or files_to_send_now)
+            # For updates, we usually don't send content images again unless requested,
+            # but here we just focus on the embed update.
+            # If we want to support sending files on update, we can use files_for_thread_starter logic,
+            # but typically updates just change text.
+            # However, if we have files_for_attachments, we might want to send them?
+            # The prompt implies priority for NEW posts mainly.
+            # Let's keep update logic simple for now, or just support embed image if single.
+
+            has_files_now = bool(embed_image_data)
 
             if has_files_now:
                 form = aiohttp.FormData()
                 form.add_field("payload_json", json.dumps(payload))
 
-                if image_data:
-                    filename = "image.jpg" if notice.image_urls else "preview.jpg"
-                    form.add_field("files[0]", image_data, filename=filename)
-
-                for idx, file_info in enumerate(files_to_send_now):
-                    field_name = f"files[{idx + 1}]" if image_data else f"files[{idx}]"
-                    form.add_field(
-                        field_name, file_info["data"], filename=file_info["filename"]
-                    )
+                if embed_image_data:
+                    filename = embed_image_filename
+                    form.add_field("files[0]", embed_image_data, filename=filename)
 
                 kwargs = {"data": form}
             else:
@@ -862,12 +835,12 @@ class NotificationService:
                     if resp.status in [200, 201]:
                         logger.info("[NOTIFIER] Discord update reply sent.")
 
-                        # Send remaining files if any
-                        if files_to_send_later:
+                        # Send remaining files if any (Attachments)
+                        if files_for_attachments:
                             await self._send_discord_reply(
                                 session,
                                 existing_thread_id,
-                                files_to_send_later,
+                                files_for_attachments,
                                 headers,
                                 is_thread=True,
                             )
@@ -915,22 +888,30 @@ class NotificationService:
                 payload["applied_tags"] = tag_ids
 
             # Determine if we need Multipart (Files) or JSON
-            has_files_now = bool(image_data or files_to_send_now)
+            # Files to send with Thread Starter:
+            # 1. Single Content Image (Embed Image) -> files[0]
+            # 2. Multiple Content Images -> files[0]...files[N]
+            # Note: If single content image, it's in embed_image_data AND NOT in files_for_thread_starter (based on logic above)
+            # If multiple, they are in files_for_thread_starter AND embed_image_data is None.
+
+            has_files_now = bool(embed_image_data or files_for_thread_starter)
 
             if has_files_now:
                 form = aiohttp.FormData()
                 form.add_field("payload_json", json.dumps(payload))
 
-                # Add Files (Main Image + Attachments)
-                if image_data:
-                    filename = "image.jpg" if notice.image_urls else "preview.jpg"
-                    form.add_field("files[0]", image_data, filename=filename)
+                file_idx = 0
+                # Add Embed Image (if any)
+                if embed_image_data:
+                    form.add_field(f"files[{file_idx}]", embed_image_data, filename=embed_image_filename)
+                    file_idx += 1
 
-                for idx, file_info in enumerate(files_to_send_now):
-                    field_name = f"files[{idx + 1}]" if image_data else f"files[{idx}]"
+                # Add Thread Starter Files (Multiple Content Images)
+                for file_info in files_for_thread_starter:
                     form.add_field(
-                        field_name, file_info["data"], filename=file_info["filename"]
+                        f"files[{file_idx}]", file_info["data"], filename=file_info["filename"]
                     )
+                    file_idx += 1
 
                 kwargs = {"data": form}
             else:
@@ -958,12 +939,12 @@ class NotificationService:
                                 session, created_thread_id, group, headers
                             )
 
-                    # If we have files to send later, send them to the thread
-                    if files_to_send_later and created_thread_id:
+                    # If we have attachments, send them to the thread (AFTER previews)
+                    if files_for_attachments and created_thread_id:
                         await self._send_discord_reply(
                             session,
                             created_thread_id,
-                            files_to_send_later,
+                            files_for_attachments,
                             headers,
                             is_thread=True,
                         )
@@ -988,21 +969,22 @@ class NotificationService:
         try:
             payload = {"embeds": [embed]}
 
-            has_files_now = bool(image_data or files_to_send_now)
+            has_files_now = bool(embed_image_data or files_for_thread_starter)
 
             if has_files_now:
                 form = aiohttp.FormData()
                 form.add_field("payload_json", json.dumps(payload))
 
-                if image_data:
-                    filename = "image.jpg" if notice.image_urls else "preview.jpg"
-                    form.add_field("files[0]", image_data, filename=filename)
+                file_idx = 0
+                if embed_image_data:
+                    form.add_field(f"files[{file_idx}]", embed_image_data, filename=embed_image_filename)
+                    file_idx += 1
 
-                for idx, file_info in enumerate(files_to_send_now):
-                    field_name = f"files[{idx + 1}]" if image_data else f"files[{idx}]"
+                for file_info in files_for_thread_starter:
                     form.add_field(
-                        field_name, file_info["data"], filename=file_info["filename"]
+                        f"files[{file_idx}]", file_info["data"], filename=file_info["filename"]
                     )
+                    file_idx += 1
 
                 kwargs = {"data": form}
             else:
@@ -1017,12 +999,12 @@ class NotificationService:
                         -2
                     ]  # Extract channel ID from URL
 
-                    # If we have files to send later, reply to the message
-                    if files_to_send_later and created_message_id:
+                    # If we have attachments, reply to the message
+                    if files_for_attachments and created_message_id:
                         await self._send_discord_reply(
                             session,
                             channel_id,
-                            files_to_send_later,
+                            files_for_attachments,
                             headers,
                             is_thread=False,
                             reply_to_id=created_message_id,
