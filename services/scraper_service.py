@@ -8,7 +8,10 @@ from core.exceptions import (
     NetworkException,
     ScraperException,
 )
+import json
+import os
 from models.notice import Notice
+from models.target import Target
 from repositories.notice_repo import NoticeRepository
 from services.ai_service import AIService
 from services.notification_service import NotificationService
@@ -38,45 +41,44 @@ class ScraperService:
         self.AI_CALL_DELAY = constants.AI_CALL_DELAY  # 7 seconds between AI calls
         self.NOTICE_PROCESS_DELAY = constants.NOTICE_PROCESS_DELAY  # 0.5 seconds between each notice
 
-        # Define Targets (Hardcoded for now, could be in config/DB)
-        self.targets = [
-            {
-                "key": "yu_news",
-                "url": "https://hcms.yu.ac.kr/main/intro/yu-news.do",
-                "base_url": "https://hcms.yu.ac.kr/main/intro/yu-news.do",
-                "parser": HTMLParser("table tbody tr", "a", "a", ".b-view-content"),
-            },
-            {
-                "key": "cse_notice",
-                "url": "https://www.yu.ac.kr/cse/community/notice.do",
-                "base_url": "https://www.yu.ac.kr/cse/community/notice.do",
-                "parser": HTMLParser("table tbody tr", "a", "a", ".b-view-content"),
-            },
-            {
-                "key": "bachelor_guide",
-                "url": "https://hcms.yu.ac.kr/main/bachelor/bachelor-guide.do?mode=list&articleLimit=30",
-                "base_url": "https://hcms.yu.ac.kr/main/bachelor/bachelor-guide.do",
-                "parser": HTMLParser("table tbody tr", "a", "a", ".b-view-content"),
-            },
-            {
-                "key": "calendar",
-                "url": "https://hcms.yu.ac.kr/main/bachelor/calendar.do",
-                "base_url": "https://hcms.yu.ac.kr/main/bachelor/calendar.do",
-                "parser": HTMLParser("table tbody tr", "a", "a", ".b-view-content"),
-            },
-            {
-                "key": "dormitory_notice",
-                "url": "https://www.yu.ac.kr/dormi/community/notice.do",
-                "base_url": "https://www.yu.ac.kr/dormi/community/notice.do",
-                "parser": HTMLParser("table tbody tr", "a", "a", ".b-view-content"),
-            },
-            {
-                "key": "dormitory_menu",
-                "url": "https://www.yu.ac.kr/dormi/community/menu.do",
-                "base_url": "https://www.yu.ac.kr/dormi/community/menu.do",
-                "parser": HTMLParser("table tbody tr", "a", "a", ".b-view-content"),
-            },
-        ]
+        # Load Targets from JSON
+        self.targets = self._load_targets()
+
+    def _load_targets(self) -> List[Dict]:
+        """
+        Loads targets from resources/targets.json and validates them.
+        """
+        targets_path = os.path.join(os.path.dirname(__file__), "../resources/targets.json")
+        if not os.path.exists(targets_path):
+            logger.error(f"[SCRAPER] Targets file not found at {targets_path}")
+            return []
+
+        try:
+            with open(targets_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            valid_targets = []
+            for item in data:
+                try:
+                    target = Target(**item)
+                    # Convert to dictionary format expected by ScraperService (with parser instance)
+                    target_dict = target.model_dump()
+                    target_dict["parser"] = HTMLParser(
+                        target.list_selector,
+                        target.title_selector,
+                        target.link_selector,
+                        target.content_selector
+                    )
+                    valid_targets.append(target_dict)
+                except Exception as e:
+                    logger.error(f"[SCRAPER] Invalid target configuration: {item.get('key', 'unknown')} - {e}")
+            
+            logger.info(f"[SCRAPER] Loaded {len(valid_targets)} targets from {targets_path}")
+            return valid_targets
+
+        except Exception as e:
+            logger.error(f"[SCRAPER] Failed to load targets: {e}")
+            return []
 
     def filter_targets(self, target_key: str):
         """
