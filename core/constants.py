@@ -38,6 +38,11 @@ FILE_EMOJI_MAP = {
 
 # Default Configuration Values
 DEFAULT_SCRAPE_INTERVAL = 600
+DEFAULT_LOG_LEVEL = "INFO"
+DEFAULT_LOG_FILE = "bot.log"
+DEFAULT_LOG_FORMAT = "text"  # text or json
+DEFAULT_LOG_MAX_BYTES = 10 * 1024 * 1024  # 10MB
+DEFAULT_LOG_BACKUP_COUNT = 5
 
 DEFAULT_AVAILABLE_TAGS = {
     "yu_news": ["긴급", "장학", "취업", "학사", "행사", "수상/성과", "일반"],

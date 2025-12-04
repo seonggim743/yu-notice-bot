@@ -48,8 +48,11 @@ class Settings(BaseSettings):
     )
 
     # --- Logging ---
-    LOG_LEVEL: str = Field("INFO", description="Logging level")
-    LOG_FILE: str = Field("bot.log", description="Log file path")
+    LOG_LEVEL: str = Field(constants.DEFAULT_LOG_LEVEL, description="Logging level")
+    LOG_FILE: str = Field(constants.DEFAULT_LOG_FILE, description="Log file path")
+    LOG_FORMAT: str = Field(constants.DEFAULT_LOG_FORMAT, description="Log format (text/json)")
+    LOG_MAX_BYTES: int = Field(constants.DEFAULT_LOG_MAX_BYTES, description="Max log file size")
+    LOG_BACKUP_COUNT: int = Field(constants.DEFAULT_LOG_BACKUP_COUNT, description="Log backup count")
 
     # --- Scraper ---
     SCRAPE_INTERVAL: int = Field(constants.DEFAULT_SCRAPE_INTERVAL, description="Scraping interval in seconds")
