@@ -15,6 +15,7 @@ from services.notification_service import NotificationService
 from services.file_service import FileService
 from parsers.html_parser import HTMLParser
 from core.performance import get_performance_monitor
+from core import constants
 
 logger = get_logger(__name__)
 
@@ -30,12 +31,12 @@ class ScraperService:
 
         # Safety Limits
         self.ai_summary_count = 0
-        self.MAX_AI_SUMMARIES = 30
+        self.MAX_AI_SUMMARIES = constants.MAX_AI_SUMMARIES
 
         # Rate Limiting (Gemini 2.5 Flash: 10 RPM = 6 seconds per request)
         # Using 7s for safety margin + each notice has multiple AI calls
-        self.AI_CALL_DELAY = 7.0  # 7 seconds between AI calls
-        self.NOTICE_PROCESS_DELAY = 0.5  # 0.5 seconds between each notice
+        self.AI_CALL_DELAY = constants.AI_CALL_DELAY  # 7 seconds between AI calls
+        self.NOTICE_PROCESS_DELAY = constants.NOTICE_PROCESS_DELAY  # 0.5 seconds between each notice
 
         # Define Targets (Hardcoded for now, could be in config/DB)
         self.targets = [
@@ -235,7 +236,7 @@ class ScraperService:
             if item.attachments:
                 extracted_texts = []
                 preview_count = 0
-                MAX_PREVIEWS = 10  # Increased limit
+                MAX_PREVIEWS = constants.MAX_PREVIEWS  # Increased limit
 
                 # Limit to first 10 attachments for processing
                 for att in item.attachments[:10]:
@@ -432,7 +433,7 @@ class ScraperService:
                         
                         logger.info(f"[SCRAPER] Content Len: {content_len}, Att Text Len: {att_text_len}")
 
-                        if content_len < 100 and att_text_len < 50:
+                        if content_len < constants.SHORT_NOTICE_CONTENT_LENGTH and att_text_len < constants.SHORT_NOTICE_ATTACHMENT_LENGTH:
                              item.summary = f"[단신] {item.content.strip()}"
                              logger.info(f"[SCRAPER] Treated as Short Article (단신)")
                         else:

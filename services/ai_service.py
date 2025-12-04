@@ -7,6 +7,7 @@ import re
 from core.config import settings
 from core.logger import get_logger
 from core.database import Database
+from core import constants
 
 logger = get_logger(__name__)
 
@@ -96,7 +97,7 @@ class AIService:
             "  'target_grades': list[int] ([1,2,3,4]),\\n"
             "  'target_dept': string or null (Department or Group e.g. '공과대학', '전체 학생'. Capture broad targets if specific dept is not mentioned)\\n"
             "}\\n\\n"
-            f"Content:\\n{text[:8000]}"  # Increased limit for attachment text
+            f"Content:\\n{text[: constants.AI_TEXT_TRUNCATE_LIMIT]}"  # Increased limit for attachment text
         )
 
         try:
