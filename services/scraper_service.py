@@ -1,7 +1,7 @@
 import asyncio
 import aiohttp
 import hashlib
-from typing import Dict
+from typing import Dict, List
 from core.config import settings
 from core.logger import get_logger
 from core.exceptions import (
