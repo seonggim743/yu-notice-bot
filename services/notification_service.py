@@ -424,32 +424,79 @@ class NotificationService:
                     diff_text = self.generate_clean_diff(old_content, new_content)
 
                     if diff_text:
-                        detail_msg = (
-                            f"🔍 <b>상세 변경 내용</b>\n"
-                            f"<pre>{html.escape(diff_text)}</pre>"
-                        )
+                        # Split if too long for Telegram (Limit ~4096)
+                        # We use 4000 to be safe with headers
+                        if len(diff_text) > 4000:
+                            chunks = [
+                                diff_text[i : i + 4000]
+                                for i in range(0, len(diff_text), 4000)
+                            ]
+                            for idx, chunk in enumerate(chunks):
+                                detail_msg = (
+                                    f"🔍 <b>상세 변경 내용 ({idx + 1}/{len(chunks)})</b>\n"
+                                    f"<pre>{html.escape(chunk)}</pre>"
+                                )
+                                reply_payload = {
+                                    "chat_id": self.chat_id,
+                                    "text": detail_msg,
+                                    "reply_to_message_id": main_msg_id,
+                                    "parse_mode": "HTML",
+                                }
+                                if topic_id:
+                                    reply_payload["message_thread_id"] = topic_id
+
+                                try:
+                                    async with session.post(
+                                        f"https://api.telegram.org/bot{self.telegram_token}/sendMessage",
+                                        json=reply_payload,
+                                    ) as resp:
+                                        await asyncio.sleep(0.2)  # Prevent rate limiting
+                                except Exception:
+                                    pass
+                        else:
+                            detail_msg = (
+                                f"🔍 <b>상세 변경 내용</b>\n"
+                                f"<pre>{html.escape(diff_text)}</pre>"
+                            )
+                            reply_payload = {
+                                "chat_id": self.chat_id,
+                                "text": detail_msg,
+                                "reply_to_message_id": main_msg_id,
+                                "parse_mode": "HTML",
+                            }
+                            if topic_id:
+                                reply_payload["message_thread_id"] = topic_id
+
+                            try:
+                                async with session.post(
+                                    f"https://api.telegram.org/bot{self.telegram_token}/sendMessage",
+                                    json=reply_payload,
+                                ) as resp:
+                                    pass
+                            except Exception:
+                                pass
                     else:
+                        # Diff generation failed but content changed
                         detail_msg = (
                             "⚠️ 내용이 변경되었으나 상세 비교를 생성할 수 없습니다."
                         )
-
-                reply_payload = {
-                    "chat_id": self.chat_id,
-                    "text": detail_msg,
-                    "reply_to_message_id": main_msg_id,
-                    "parse_mode": "HTML",
-                }
-                if topic_id:
-                    reply_payload["message_thread_id"] = topic_id
-
-                try:
-                    async with session.post(
-                        f"https://api.telegram.org/bot{self.telegram_token}/sendMessage",
-                        json=reply_payload,
-                    ) as resp:
-                        pass
-                except Exception:
-                    pass
+                        reply_payload = {
+                            "chat_id": self.chat_id,
+                            "text": detail_msg,
+                            "reply_to_message_id": main_msg_id,
+                            "parse_mode": "HTML",
+                        }
+                        if topic_id:
+                            reply_payload["message_thread_id"] = topic_id
+                        
+                        try:
+                            async with session.post(
+                                f"https://api.telegram.org/bot{self.telegram_token}/sendMessage",
+                                json=reply_payload,
+                            ) as resp:
+                                pass
+                        except Exception:
+                            pass
 
         return main_msg_id
 
@@ -587,13 +634,29 @@ class NotificationService:
                 diff_text = self.generate_clean_diff(old_content, new_content)
 
                 if diff_text:
-                    embed["fields"].append(
-                        {
-                            "name": "🔍 상세 변경 내용",
-                            "value": f"```diff\n{diff_text}\n```",
-                            "inline": False,
-                        }
-                    )
+                    # Split if too long (Discord Field Limit 1024)
+                    # Use 950 to allow for markdown wrapper
+                    if len(diff_text) > 950:
+                        chunks = [
+                            diff_text[i : i + 950]
+                            for i in range(0, len(diff_text), 950)
+                        ]
+                        for idx, chunk in enumerate(chunks):
+                            embed["fields"].append(
+                                {
+                                    "name": f"🔍 상세 변경 내용 ({idx + 1}/{len(chunks)})",
+                                    "value": f"```diff\n{chunk}\n```",
+                                    "inline": False,
+                                }
+                            )
+                    else:
+                        embed["fields"].append(
+                            {
+                                "name": "🔍 상세 변경 내용",
+                                "value": f"```diff\n{diff_text}\n```",
+                                "inline": False,
+                            }
+                        )
 
         # Add attachment links as the last field (before footer)
         if notice.attachments:
@@ -791,13 +854,29 @@ class NotificationService:
                     diff_text = self.generate_clean_diff(old_content, new_content)
 
                     if diff_text:
-                        update_embed["fields"].append(
-                            {
-                                "name": "🔍 상세 변경 내용",
-                                "value": f"```diff\n{diff_text}\n```",
-                                "inline": False,
-                            }
-                        )
+                        # Split if too long (Discord Field Limit 1024)
+                        # Use 950 to allow for markdown wrapper
+                        if len(diff_text) > 950:
+                            chunks = [
+                                diff_text[i : i + 950]
+                                for i in range(0, len(diff_text), 950)
+                            ]
+                            for idx, chunk in enumerate(chunks):
+                                update_embed["fields"].append(
+                                    {
+                                        "name": f"🔍 상세 변경 내용 ({idx + 1}/{len(chunks)})",
+                                        "value": f"```diff\n{chunk}\n```",
+                                        "inline": False,
+                                    }
+                                )
+                        else:
+                            update_embed["fields"].append(
+                                {
+                                    "name": "🔍 상세 변경 내용",
+                                    "value": f"```diff\n{diff_text}\n```",
+                                    "inline": False,
+                                }
+                            )
 
             # Prepare Payload
             payload = {"embeds": [update_embed]}

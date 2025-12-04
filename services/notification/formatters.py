@@ -105,10 +105,7 @@ def generate_clean_diff(old_text: str, new_text: str) -> str:
         elif line.startswith("? "):
             continue
 
-    # Limit length
-    result = "\n".join(changes)
-    if len(result) > 1500:
-        result = result[:1500] + "\n...(생략)..."
+    # Return full result without truncation
     return result
 
 
