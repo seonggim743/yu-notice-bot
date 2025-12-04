@@ -215,9 +215,29 @@ if __name__ == "__main__":
         type=str,
         help="Test notification for a specific URL (forces notification)",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        help="Run scraper for a specific target only (e.g., yu_news)",
+    )
     args = parser.parse_args()
 
+    # Random Jitter for Matrix Execution (Prevent API Rate Limits)
+    # Only apply if running in CI (GITHUB_ACTIONS env var) or if --target is specified
+    if os.getenv("GITHUB_ACTIONS") or args.target:
+        import random
+        
+        # 1~10 seconds random delay
+        delay = random.uniform(1.0, 10.0)
+        logger.info(f"🎲 Random Jitter: Sleeping for {delay:.2f}s before starting...")
+        import time
+        time.sleep(delay)
+
     bot = Bot(init_mode=args.init, no_ai_mode=args.no_ai)
+    
+    # Apply target filter if specified
+    if args.target:
+        bot.scraper.filter_targets(args.target)
     exit_code = 0
 
     if args.init:

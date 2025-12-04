@@ -77,6 +77,19 @@ class ScraperService:
             },
         ]
 
+    def filter_targets(self, target_key: str):
+        """
+        Filters the targets list to only include the specified key.
+        Useful for Matrix execution in GitHub Actions.
+        """
+        original_count = len(self.targets)
+        self.targets = [t for t in self.targets if t["key"] == target_key]
+        
+        if not self.targets:
+            logger.warning(f"[SCRAPER] Target '{target_key}' not found! Available keys: {[t['key'] for t in self.targets]}")
+        else:
+            logger.info(f"[SCRAPER] Filtered targets: {original_count} -> {len(self.targets)} (Target: {target_key})")
+
     def calculate_hash(self, notice: Notice) -> str:
         """Hash of Title + Content + Image + Attachments (name + URL + Size + ETag)"""
         # Include attachment name, url, size, etag to detect file replacements/updates
