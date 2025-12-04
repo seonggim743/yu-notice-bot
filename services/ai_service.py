@@ -1,4 +1,5 @@
 import google.generativeai as genai
+import os
 from typing import Dict, Any
 import json
 import asyncio
@@ -21,6 +22,20 @@ class AIService:
         else:
             logger.warning("[AI] Gemini API Key missing. AI features disabled.")
             self.model = None
+
+        self.system_prompt_template = self._load_system_prompt()
+
+    def _load_system_prompt(self) -> str:
+        """Loads the system prompt from resources/prompts/system_prompt.txt"""
+        try:
+            prompt_path = os.path.join(
+                os.path.dirname(__file__), "../resources/prompts/system_prompt.txt"
+            )
+            with open(prompt_path, "r", encoding="utf-8") as f:
+                return f.read()
+        except Exception as e:
+            logger.error(f"[AI] Failed to load system prompt: {e}")
+            return ""
 
     async def _save_token_usage(self, prompt_tokens: int, completion_tokens: int):
         if not self.db:
@@ -77,28 +92,20 @@ class AIService:
                 f"    For example, urgent scholarship notices should have '긴급' or '장학'.),\\n"
             )
 
-        prompt = (
-            "Role: You are a university administrative assistant.\\n"
-            "Task: Analyze the provided university notice (including text extracted from attachments).\\n"
-            "Handling Noise: The input text may contain broken characters (e.g., ^@#, \\\\x00) from PDF/HWP conversion. "
-            "STRICTLY IGNORE these encoding errors and focus only on coherent Korean sentences and dates.\\n\\n"
-            f"Title: {title}\\n"
-            f"Author/Dept: {author}\\n"
-            "Context Instruction: Use the Title and Author to infer the Category and Tags, especially if the Content is short or empty.\\n\\n"
-            "Output JSON format:\\n"
-            "{\\n"
-            "  'category': string (Choose one: '장학', '학사', '취업', '생활관', '일반'),\\n"
-            f"{tags_instruction}"
-            "  'summary': string (3-line Korean summary. MUST include: 1) What (Content), 2) When/Where (Event Date/Loc), 3) How (Application method). End with noun-endings ~함),\\n"
-            "  'deadline': string or null (YYYY-MM-DD. Application Deadline ONLY. If 'First-come' or 'Always open', return null),\\n"
-            "  'eligibility': list[string] (Specific requirements e.g. '3,4학년', '평점 3.0'. If 'All Students', include '전체 학생'),\\n"
-            "  'start_date': string or null (YYYY-MM-DD. Event/Activity Start Date),\\n"
-            "  'end_date': string or null (YYYY-MM-DD. Event/Activity End Date),\\n"
-            "  'target_grades': list[int] ([1,2,3,4]),\\n"
-            "  'target_dept': string or null (Department or Group e.g. '공과대학', '전체 학생'. Capture broad targets if specific dept is not mentioned)\\n"
-            "}\\n\\n"
-            f"Content:\\n{text[: constants.AI_TEXT_TRUNCATE_LIMIT]}"  # Increased limit for attachment text
-        )
+        if not self.system_prompt_template:
+            logger.error("[AI] System prompt template not loaded")
+            return {"summary": "System Error", "category": "일반", "tags": []}
+
+        try:
+            prompt = self.system_prompt_template.format(
+                title=title,
+                author=author,
+                tags_instruction=tags_instruction,
+                content=text[: constants.AI_TEXT_TRUNCATE_LIMIT],
+            )
+        except KeyError as e:
+            logger.error(f"[AI] Prompt formatting failed: {e}")
+            return {"summary": "Prompt Error", "category": "일반", "tags": []}
 
         try:
             loop = asyncio.get_running_loop()
