@@ -7,6 +7,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
 import pytz
+from core.config import settings
 
 # KST Timezone
 KST = pytz.timezone("Asia/Seoul")
@@ -142,18 +143,14 @@ def get_logger(
     name: str,
     log_level: Optional[str] = None,
     log_file: Optional[str] = None,
-    max_bytes: int = 10 * 1024 * 1024,  # 10MB
-    backup_count: int = 5,
 ) -> logging.Logger:
     """
     Get a configured logger instance with console and file handlers.
 
     Args:
         name: Logger name (usually __name__)
-        log_level: Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL). Defaults to INFO.
-        log_file: Path to log file. If None, uses 'bot.log' in current directory.
-        max_bytes: Max size of each log file before rotation
-        backup_count: Number of backup files to keep
+        log_level: Optional override for log level
+        log_file: Optional override for log file path
 
     Returns:
         Configured logger instance
@@ -165,11 +162,9 @@ def get_logger(
     if logger.handlers:
         return logger
 
-    # Set log level from environment or parameter
+    # Set log level
     if log_level is None:
-        import os
-
-        log_level = os.getenv("LOG_LEVEL", "INFO")
+        log_level = settings.LOG_LEVEL
 
     logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
 
@@ -179,11 +174,14 @@ def get_logger(
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    # File Formatter (More detailed with KST and performance tracking)
-    file_formatter = PerformanceFormatter(
-        "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    # File Formatter
+    if settings.LOG_FORMAT.lower() == "json":
+        file_formatter = JSONFormatter()
+    else:
+        file_formatter = PerformanceFormatter(
+            "%(asctime)s | %(levelname)-8s | %(name)s:%(lineno)d | %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
 
     # Console Handler
     console_handler = logging.StreamHandler(sys.stdout)
@@ -191,18 +189,19 @@ def get_logger(
     console_handler.setFormatter(console_formatter)
     console_handler.addFilter(SensitiveDataFilter())
 
-    # File Handler (with rotation) - only if log_file is specified
+    # File Handler (with rotation)
     if log_file is None:
-        import os
-
-        log_file = os.getenv("LOG_FILE", "bot.log")
+        log_file = settings.LOG_FILE
 
     if log_file:
         log_path = Path(log_file)
         log_path.parent.mkdir(parents=True, exist_ok=True)
 
         file_handler = RotatingFileHandler(
-            log_path, maxBytes=max_bytes, backupCount=backup_count, encoding="utf-8"
+            log_path,
+            maxBytes=settings.LOG_MAX_BYTES,
+            backupCount=settings.LOG_BACKUP_COUNT,
+            encoding="utf-8",
         )
         file_handler.setLevel(logging.DEBUG)  # File gets all levels
         file_handler.setFormatter(file_formatter)

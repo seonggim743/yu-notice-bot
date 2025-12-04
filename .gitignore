@@ -140,28 +140,15 @@ Thumbs.db
 logs/
 bot.log*
 
-# Debug scripts (development only)
-debug_*.py
-reproduce_issue.py
 
-# Root-level test scripts (proper tests are in tests/)
-/test_*.py
+# Debug directory
+scripts/debug/
 
-# Temporary debug files
-*.html
-!templates/*.html
-*.txt
-!requirements.txt
-!README.txt
+# Internal Documentation
+docs/
 
-# JavaScript debug files
-board*.js
-
-# Temporary/resolved artifacts
-*.resolved
-
-# Polaris / PDF Conversion Debugging
-debug_screenshots/
-verified_output.pdf
-test.pdf
-
+# Documentation (Work in Progress)
+README.md
+USAGE.md
+INSTALL.md
+DOCKER.md

@@ -2,6 +2,7 @@ from pydantic_settings import BaseSettings
 from typing import Dict, List, Optional
 from pydantic import Field, field_validator
 import json
+from core import constants
 
 
 class Settings(BaseSettings):
@@ -38,168 +39,23 @@ class Settings(BaseSettings):
     # --- Tag Matching Rules ---
     # Site Key -> Tag Name -> Keywords
     TAG_MATCHING_RULES: Dict[str, Dict[str, List[str]]] = Field(
-        default_factory=lambda: {
-            "yu_news": {
-                "긴급": ["긴급", "즉시", "필수", "중요", "마감임박", "시급"],
-                "장학": ["장학", "장학금", "학자금", "등록금 감면", "포상금", "장학생"],
-                "취업": [
-                    "취업",
-                    "채용",
-                    "인턴",
-                    "인턴쉽",
-                    "진로",
-                    "구인",
-                    "면접",
-                    "입사",
-                    "기업",
-                    "설명회",
-                    "속도전",
-                    "캐리어",
-                ],
-                "학사": [
-                    "학사",
-                    "수강신청",
-                    "수강",
-                    "학점",
-                    "학기",
-                    "학기말",
-                    "강의",
-                    "교과",
-                    "휴학",
-                    "복학",
-                    "재수강",
-                    "이수",
-                    "학부",
-                    "종강",
-                ],
-                "행사": [
-                    "행사",
-                    "축제",
-                    "세미나",
-                    "컨퍼런스",
-                    "특강",
-                    "워크샵",
-                    "설명회",
-                    "공연",
-                    "공모전",
-                    "대회",
-                ],
-                "수상/성과": [
-                    "수상",
-                    "선정",
-                    "우수",
-                    "1위",
-                    "2위",
-                    "3위",
-                    "대상",
-                    "금상",
-                    "은상",
-                    "동상",
-                    "최우수",
-                    "표창",
-                    "포상",
-                ],
-                # "일반 공지" is default fallback
-            },
-            "cse_notice": {
-                "긴급": [
-                    "긴급",
-                    "즉시",
-                    "필수",
-                    "중요",
-                    "마감임박",
-                    "시급",
-                    "오늘",
-                    "내일",
-                ],
-                "과제/시험": [
-                    "과제",
-                    "과제물",
-                    "시험",
-                    "중간고사",
-                    "기말고사",
-                    "평가",
-                    "퀴즈",
-                    "레포트",
-                    "보고서",
-                    "제출",
-                    "시험일정",
-                    "시험범위",
-                ],
-                "장학": ["장학", "장학금", "학자금", "장학생", "포상", "포상금"],
-                "취업/진로": [
-                    "취업",
-                    "채용",
-                    "인턴",
-                    "인턴쉽",
-                    "진로",
-                    "구인",
-                    "면접",
-                    "입사",
-                    "기업",
-                    "설명회",
-                    "속도전",
-                    "캐리어",
-                    "job",
-                    "career",
-                ],
-                "학사": [
-                    "학사",
-                    "수강신청",
-                    "수강",
-                    "학점",
-                    "학기",
-                    "강의",
-                    "교과",
-                    "휴학",
-                    "복학",
-                    "재수강",
-                    "이수",
-                    "졸업",
-                    "전공",
-                    "복수전공",
-                    "부전공",
-                ],
-                "행사": [
-                    "행사",
-                    "세미나",
-                    "특강",
-                    "워크샵",
-                    "설명회",
-                    "공연",
-                    "공모전",
-                    "대회",
-                    "콘테스트",
-                    "해커톤",
-                ],
-                # Default: 일반 공지 (학사)
-            },
-        }
+        default_factory=lambda: constants.DEFAULT_TAG_MATCHING_RULES
     )
 
     # --- Available Tags per Channel (for AI Prompt) ---
     AVAILABLE_TAGS: Dict[str, List[str]] = Field(
-        default_factory=lambda: {
-            "yu_news": ["긴급", "장학", "취업", "학사", "행사", "수상/성과", "일반"],
-            "cse_notice": ["긴급", "과제/시험", "장학", "취업/진로", "학사", "행사"],
-            "bachelor_guide": [
-                "시험/평가",
-                "수강신청",
-                "학적",
-                "등록금",
-                "졸업",
-                "기타",
-            ],
-            "dormitory_notice": ["입·퇴사", "시설", "일반", "긴급"],
-        }
+        default_factory=lambda: constants.DEFAULT_AVAILABLE_TAGS
     )
 
     # --- Logging ---
-    LOG_LEVEL: str = Field("INFO", description="Logging level")
-    LOG_FILE: str = Field("bot.log", description="Log file path")
+    LOG_LEVEL: str = Field(constants.DEFAULT_LOG_LEVEL, description="Logging level")
+    LOG_FILE: str = Field(constants.DEFAULT_LOG_FILE, description="Log file path")
+    LOG_FORMAT: str = Field(constants.DEFAULT_LOG_FORMAT, description="Log format (text/json)")
+    LOG_MAX_BYTES: int = Field(constants.DEFAULT_LOG_MAX_BYTES, description="Max log file size")
+    LOG_BACKUP_COUNT: int = Field(constants.DEFAULT_LOG_BACKUP_COUNT, description="Log backup count")
 
     # --- Scraper ---
-    SCRAPE_INTERVAL: int = Field(600, description="Scraping interval in seconds")
+    SCRAPE_INTERVAL: int = Field(constants.DEFAULT_SCRAPE_INTERVAL, description="Scraping interval in seconds")
     USER_AGENT: str = Field(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     )

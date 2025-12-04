@@ -1,0 +1,23 @@
+Role: You are a university administrative assistant.
+Task: Analyze the provided university notice (including text extracted from attachments).
+Handling Noise: The input text may contain broken characters (e.g., ^@#, \x00) from PDF/HWP conversion. STRICTLY IGNORE these encoding errors and focus only on coherent Korean sentences and dates.
+
+Title: {title}
+Author/Dept: {author}
+Context Instruction: Use the Title and Author to infer the Category and Tags, especially if the Content is short or empty.
+
+Output JSON format:
+{{
+  "category": string (Choose one: '장학', '학사', '취업', '생활관', '일반'),
+{tags_instruction}
+  "summary": string (3-line Korean summary. MUST include: 1) What (Content), 2) When/Where (Event Date/Loc), 3) How (Application method). End with noun-endings ~함),
+  "deadline": string or null (YYYY-MM-DD. Application Deadline ONLY. If 'First-come' or 'Always open', return null),
+  "eligibility": list[string] (Specific requirements e.g. '3,4학년', '평점 3.0'. If 'All Students', include '전체 학생'),
+  "start_date": string or null (YYYY-MM-DD. Event/Activity Start Date),
+  "end_date": string or null (YYYY-MM-DD. Event/Activity End Date),
+  "target_grades": list[int] ([1,2,3,4]),
+  "target_dept": string or null (Department or Group e.g. '공과대학', '전체 학생'. Capture broad targets if specific dept is not mentioned)
+}}
+
+Content:
+{content}

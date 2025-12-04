@@ -12,6 +12,7 @@ from services.notification.formatters import (
     create_telegram_message,
     generate_clean_diff,
 )
+from core import constants
 
 logger = get_logger(__name__)
 
@@ -54,24 +55,10 @@ class NotificationService:
             for att in notice.attachments:
                 fname = att.name
                 ext = fname.split(".")[-1].lower() if "." in fname else ""
-                emoji = {
-                    "pdf": "📕",
-                    "doc": "📘",
-                    "docx": "📘",
-                    "xls": "📗",
-                    "xlsx": "📗",
-                    "ppt": "📙",
-                    "pptx": "📙",
-                    "zip": "📦",
-                    "rar": "📦",
-                    "jpg": "🖼️",
-                    "jpeg": "🖼️",
-                    "png": "🖼️",
-                    "gif": "🖼️",
-                }.get(ext, "📄")
+                emoji = constants.FILE_EMOJI_MAP.get(ext, constants.FILE_EMOJI_MAP["default"])
 
-                if len(fname) > 20:
-                    fname = fname[:17] + "..."
+                if len(fname) > constants.FILENAME_TRUNCATE_LENGTH:
+                    fname = fname[: constants.FILENAME_TRUNCATE_LENGTH - 3] + "..."
                 buttons.append({"text": f"{emoji} {fname}", "url": att.url})
 
         main_msg_id = None
@@ -205,7 +192,7 @@ class NotificationService:
             img = content_images_to_send[0]
             form = aiohttp.FormData()
             form.add_field("photo", img["data"], filename=img["filename"])
-            form.add_field("caption", img["caption"][:1024])  # Caption limit
+            form.add_field("caption", img["caption"][: constants.DISCORD_MAX_EMBED_LENGTH])  # Caption limit
             form.add_field("parse_mode", "HTML")
             form.add_field("chat_id", str(self.chat_id))
             if topic_id:
@@ -243,7 +230,7 @@ class NotificationService:
 
                     media_item = {"type": "photo", "media": f"attach://{field_name}"}
                     if idx == 0 and img.get("caption"):
-                        media_item["caption"] = img["caption"][:1024]
+                        media_item["caption"] = img["caption"][: constants.DISCORD_MAX_EMBED_LENGTH]
                         media_item["parse_mode"] = "HTML"
 
                     media.append(media_item)
@@ -361,7 +348,7 @@ class NotificationService:
                             if file_resp.status == 200:
                                 file_data = await file_resp.read()
                                 file_size = len(file_data)
-                                if file_size > 50 * 1024 * 1024:
+                                if file_size > constants.TELEGRAM_FILE_SIZE_LIMIT:
                                     logger.warning(
                                         f"[NOTIFIER] File {att.name} too large ({file_size} bytes), skipping"
                                     )
@@ -443,10 +430,10 @@ class NotificationService:
                     if diff_text:
                         # Split if too long for Telegram (Limit ~4096)
                         # We use 4000 to be safe with headers
-                        if len(diff_text) > 4000:
+                        if len(diff_text) > constants.TELEGRAM_MAX_MESSAGE_LENGTH - 96:
                             chunks = [
-                                diff_text[i : i + 4000]
-                                for i in range(0, len(diff_text), 4000)
+                                diff_text[i : i + (constants.TELEGRAM_MAX_MESSAGE_LENGTH - 96)]
+                                for i in range(0, len(diff_text), (constants.TELEGRAM_MAX_MESSAGE_LENGTH - 96))
                             ]
                             for idx, chunk in enumerate(chunks):
                                 detail_msg = (
@@ -653,10 +640,10 @@ class NotificationService:
                 if diff_text:
                     # Split if too long (Discord Field Limit 1024)
                     # Use 950 to allow for markdown wrapper
-                    if len(diff_text) > 950:
+                    if len(diff_text) > constants.DISCORD_MAX_EMBED_LENGTH - 74:
                         chunks = [
-                            diff_text[i : i + 950]
-                            for i in range(0, len(diff_text), 950)
+                            diff_text[i : i + (constants.DISCORD_MAX_EMBED_LENGTH - 74)]
+                            for i in range(0, len(diff_text), (constants.DISCORD_MAX_EMBED_LENGTH - 74))
                         ]
                         for idx, chunk in enumerate(chunks):
                             embed["fields"].append(
@@ -681,21 +668,7 @@ class NotificationService:
             for att in notice.attachments:
                 fname = att.name
                 ext = fname.split(".")[-1].lower() if "." in fname else ""
-                emoji = {
-                    "pdf": "📕",
-                    "doc": "📘",
-                    "docx": "📘",
-                    "xls": "📗",
-                    "xlsx": "📗",
-                    "ppt": "📙",
-                    "pptx": "📙",
-                    "zip": "📦",
-                    "rar": "📦",
-                    "jpg": "🖼️",
-                    "jpeg": "🖼️",
-                    "png": "🖼️",
-                    "gif": "🖼️",
-                }.get(ext, "📄")
+                emoji = constants.FILE_EMOJI_MAP.get(ext, constants.FILE_EMOJI_MAP["default"])
                 attachment_links += f"{emoji} [{fname}]({att.url})\n"
 
             embed["fields"].append(
@@ -757,7 +730,7 @@ class NotificationService:
                             if file_resp.status == 200:
                                 file_data = await file_resp.read()
                                 file_size = len(file_data)
-                                if file_size > 25 * 1024 * 1024:
+                                if file_size > constants.DISCORD_FILE_SIZE_LIMIT:
                                     break  # Skip > 25MB
 
                                 actual_filename = att.name

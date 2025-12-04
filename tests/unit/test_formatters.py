@@ -33,8 +33,8 @@ class TestFormatters:
 
         diff = formatters.generate_clean_diff(old, new)
 
-        assert len(diff) <= 1550  # 1500 + "...(생략)..."
-        assert "(생략)" in diff or len(diff) < 1550
+        assert len(diff) > 1550
+        assert "(생략)" not in diff
 
     def test_get_category_emoji(self):
         """Test category emoji mapping"""

@@ -1,20 +1,24 @@
 import asyncio
 import aiohttp
 import hashlib
-from typing import Dict
+from typing import Dict, List
 from core.config import settings
 from core.logger import get_logger
 from core.exceptions import (
     NetworkException,
     ScraperException,
 )
+import json
+import os
 from models.notice import Notice
+from models.target import Target
 from repositories.notice_repo import NoticeRepository
 from services.ai_service import AIService
 from services.notification_service import NotificationService
 from services.file_service import FileService
 from parsers.html_parser import HTMLParser
 from core.performance import get_performance_monitor
+from core import constants
 
 logger = get_logger(__name__)
 
@@ -30,52 +34,51 @@ class ScraperService:
 
         # Safety Limits
         self.ai_summary_count = 0
-        self.MAX_AI_SUMMARIES = 30
+        self.MAX_AI_SUMMARIES = constants.MAX_AI_SUMMARIES
 
         # Rate Limiting (Gemini 2.5 Flash: 10 RPM = 6 seconds per request)
         # Using 7s for safety margin + each notice has multiple AI calls
-        self.AI_CALL_DELAY = 7.0  # 7 seconds between AI calls
-        self.NOTICE_PROCESS_DELAY = 0.5  # 0.5 seconds between each notice
+        self.AI_CALL_DELAY = constants.AI_CALL_DELAY  # 7 seconds between AI calls
+        self.NOTICE_PROCESS_DELAY = constants.NOTICE_PROCESS_DELAY  # 0.5 seconds between each notice
 
-        # Define Targets (Hardcoded for now, could be in config/DB)
-        self.targets = [
-            {
-                "key": "yu_news",
-                "url": "https://hcms.yu.ac.kr/main/intro/yu-news.do",
-                "base_url": "https://hcms.yu.ac.kr/main/intro/yu-news.do",
-                "parser": HTMLParser("table tbody tr", "a", "a", ".b-view-content"),
-            },
-            {
-                "key": "cse_notice",
-                "url": "https://www.yu.ac.kr/cse/community/notice.do",
-                "base_url": "https://www.yu.ac.kr/cse/community/notice.do",
-                "parser": HTMLParser("table tbody tr", "a", "a", ".b-view-content"),
-            },
-            {
-                "key": "bachelor_guide",
-                "url": "https://hcms.yu.ac.kr/main/bachelor/bachelor-guide.do?mode=list&articleLimit=30",
-                "base_url": "https://hcms.yu.ac.kr/main/bachelor/bachelor-guide.do",
-                "parser": HTMLParser("table tbody tr", "a", "a", ".b-view-content"),
-            },
-            {
-                "key": "calendar",
-                "url": "https://hcms.yu.ac.kr/main/bachelor/calendar.do",
-                "base_url": "https://hcms.yu.ac.kr/main/bachelor/calendar.do",
-                "parser": HTMLParser("table tbody tr", "a", "a", ".b-view-content"),
-            },
-            {
-                "key": "dormitory_notice",
-                "url": "https://www.yu.ac.kr/dormi/community/notice.do",
-                "base_url": "https://www.yu.ac.kr/dormi/community/notice.do",
-                "parser": HTMLParser("table tbody tr", "a", "a", ".b-view-content"),
-            },
-            {
-                "key": "dormitory_menu",
-                "url": "https://www.yu.ac.kr/dormi/community/menu.do",
-                "base_url": "https://www.yu.ac.kr/dormi/community/menu.do",
-                "parser": HTMLParser("table tbody tr", "a", "a", ".b-view-content"),
-            },
-        ]
+        # Load Targets from JSON
+        self.targets = self._load_targets()
+
+    def _load_targets(self) -> List[Dict]:
+        """
+        Loads targets from resources/targets.json and validates them.
+        """
+        targets_path = os.path.join(os.path.dirname(__file__), "../resources/targets.json")
+        if not os.path.exists(targets_path):
+            logger.error(f"[SCRAPER] Targets file not found at {targets_path}")
+            return []
+
+        try:
+            with open(targets_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            
+            valid_targets = []
+            for item in data:
+                try:
+                    target = Target(**item)
+                    # Convert to dictionary format expected by ScraperService (with parser instance)
+                    target_dict = target.model_dump()
+                    target_dict["parser"] = HTMLParser(
+                        target.list_selector,
+                        target.title_selector,
+                        target.link_selector,
+                        target.content_selector
+                    )
+                    valid_targets.append(target_dict)
+                except Exception as e:
+                    logger.error(f"[SCRAPER] Invalid target configuration: {item.get('key', 'unknown')} - {e}")
+            
+            logger.info(f"[SCRAPER] Loaded {len(valid_targets)} targets from {targets_path}")
+            return valid_targets
+
+        except Exception as e:
+            logger.error(f"[SCRAPER] Failed to load targets: {e}")
+            return []
 
     def filter_targets(self, target_key: str):
         """
@@ -235,7 +238,7 @@ class ScraperService:
             if item.attachments:
                 extracted_texts = []
                 preview_count = 0
-                MAX_PREVIEWS = 10  # Increased limit
+                MAX_PREVIEWS = constants.MAX_PREVIEWS  # Increased limit
 
                 # Limit to first 10 attachments for processing
                 for att in item.attachments[:10]:
@@ -432,7 +435,7 @@ class ScraperService:
                         
                         logger.info(f"[SCRAPER] Content Len: {content_len}, Att Text Len: {att_text_len}")
 
-                        if content_len < 100 and att_text_len < 50:
+                        if content_len < constants.SHORT_NOTICE_CONTENT_LENGTH and att_text_len < constants.SHORT_NOTICE_ATTACHMENT_LENGTH:
                              item.summary = f"[단신] {item.content.strip()}"
                              logger.info(f"[SCRAPER] Treated as Short Article (단신)")
                         else:
