@@ -106,7 +106,7 @@ def generate_clean_diff(old_text: str, new_text: str) -> str:
             continue
 
     # Return full result without truncation
-    return result
+    return "\n".join(changes)
 
 
 def get_category_emoji(category: str) -> str:
