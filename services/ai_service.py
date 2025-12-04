@@ -88,13 +88,13 @@ class AIService:
             "{\\n"
             "  'category': string (Choose one: '장학', '학사', '취업', '생활관', '일반'),\\n"
             f"{tags_instruction}"
-            "  'summary': string (Concise 3-line summary in Korean. End with noun-endings ~함),\\n"
-            "  'deadline': string or null (Application end date in YYYY-MM-DD format. If none/ongoing, null),\\n"
-            "  'eligibility': list[string] (List of specific requirements e.g. '3,4학년', '평점 3.0 이상'. If all students, empty list),\\n"
-            "  'start_date': string or null (YYYY-MM-DD),\\n"
-            "  'end_date': string or null (YYYY-MM-DD),\\n"
+            "  'summary': string (3-line Korean summary. MUST include: 1) What (Content), 2) When/Where (Event Date/Loc), 3) How (Application method). End with noun-endings ~함),\\n"
+            "  'deadline': string or null (YYYY-MM-DD. Application Deadline ONLY. If 'First-come' or 'Always open', return null),\\n"
+            "  'eligibility': list[string] (Specific requirements e.g. '3,4학년', '평점 3.0'. If 'All Students', include '전체 학생'),\\n"
+            "  'start_date': string or null (YYYY-MM-DD. Event/Activity Start Date),\\n"
+            "  'end_date': string or null (YYYY-MM-DD. Event/Activity End Date),\\n"
             "  'target_grades': list[int] ([1,2,3,4]),\\n"
-            "  'target_dept': string or null\\n"
+            "  'target_dept': string or null (Department or Group e.g. '공과대학', '전체 학생'. Capture broad targets if specific dept is not mentioned)\\n"
             "}\\n\\n"
             f"Content:\\n{text[:8000]}"  # Increased limit for attachment text
         )
@@ -176,7 +176,11 @@ class AIService:
             except Exception:
                 pass
 
-            return json.loads(response.text)
+            response_text = response.text
+            # Log raw response for debugging (DEBUG level)
+            logger.debug(f"[AI] Raw Response for {title}: {response_text}")
+
+            return json.loads(response_text)
         except Exception as e:
             logger.error(f"[AI] Analysis failed: {e}")
             return {"summary": "AI Analysis Failed", "category": "일반", "tags": []}

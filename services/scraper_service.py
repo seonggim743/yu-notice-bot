@@ -401,7 +401,16 @@ class ScraperService:
                         item.tags = analysis.get(
                             "tags", []
                         )  # NEW: Store AI-selected tags
-                        logger.info(f"[SCRAPER] AI Tags for {item.title}: {item.tags}")
+                        
+                        # Enhanced Logging for Debugging
+                        logger.info(
+                            f"[SCRAPER] AI Analysis Result for '{item.title}':\n"
+                            f"  - Category: {item.category}\n"
+                            f"  - Tags: {item.tags}\n"
+                            f"  - Deadline: {analysis.get('deadline')}\n"
+                            f"  - Target Dept: {analysis.get('target_dept')}\n"
+                            f"  - Eligibility: {analysis.get('eligibility')}"
+                        )
                         
                         # Handle Short Content Summary (Short Article / 단신)
                         # If content is short (< 100 chars) and no meaningful attachment text
