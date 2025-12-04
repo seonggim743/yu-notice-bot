@@ -504,8 +504,12 @@ class ScraperService:
 
             if notice_id:
                 # Notify
+                existing_message_id = None
+                if is_modified and "old_notice" in locals() and old_notice:
+                    existing_message_id = old_notice.message_ids.get("telegram")
+
                 msg_id = await self.notifier.send_telegram(
-                    session, item, is_new, modified_reason
+                    session, item, is_new, modified_reason, existing_message_id=existing_message_id
                 )
                 if msg_id:
                     self.repo.update_message_ids(notice_id, "telegram", msg_id)

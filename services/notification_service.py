@@ -34,6 +34,7 @@ class NotificationService:
         notice: Notice,
         is_new: bool,
         modified_reason: str = "",
+        existing_message_id: Optional[int] = None,
     ) -> Optional[int]:
         """
         Sends a notice to Telegram with enhanced formatting. Returns the Message ID.
@@ -151,6 +152,10 @@ class NotificationService:
                     {"inline_keyboard": inline_keyboard}
                 )
 
+            # If updating, reply to existing message
+            if not is_new and existing_message_id:
+                payload["reply_to_message_id"] = existing_message_id
+
             try:
                 async with session.post(
                     f"https://api.telegram.org/bot{self.telegram_token}/sendMessage",
@@ -180,6 +185,10 @@ class NotificationService:
                     {"inline_keyboard": inline_keyboard}
                 )
 
+            # If updating, reply to existing message
+            if not is_new and existing_message_id:
+                payload["reply_to_message_id"] = existing_message_id
+
             try:
                 async with session.post(
                     f"https://api.telegram.org/bot{self.telegram_token}/sendMessage",
@@ -205,6 +214,10 @@ class NotificationService:
                 form.add_field(
                     "reply_markup", json.dumps({"inline_keyboard": inline_keyboard})
                 )
+
+            # If updating, reply to existing message
+            if not is_new and existing_message_id:
+                form.add_field("reply_to_message_id", str(existing_message_id))
 
             try:
                 async with session.post(
@@ -239,6 +252,10 @@ class NotificationService:
                 form.add_field("media", json.dumps(media))
                 if topic_id:
                     form.add_field("message_thread_id", str(topic_id))
+
+                # If updating, reply to existing message
+                if not is_new and existing_message_id:
+                    form.add_field("reply_to_message_id", str(existing_message_id))
 
                 try:
                     async with session.post(

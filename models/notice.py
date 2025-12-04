@@ -56,3 +56,6 @@ class Notice(BaseModel):
 
     # Discord Thread Tracking
     discord_thread_id: Optional[str] = None
+    
+    # Message IDs for other platforms (e.g. Telegram)
+    message_ids: Dict[str, Any] = Field(default_factory=dict)

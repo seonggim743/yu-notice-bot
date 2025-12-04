@@ -66,6 +66,13 @@ class NoticeRepository:
                 except:
                     data["embedding"] = []
 
+            # Fix: Parse message_ids if it's a string
+            if isinstance(data.get("message_ids"), str):
+                try:
+                    data["message_ids"] = json.loads(data["message_ids"])
+                except:
+                    data["message_ids"] = {}
+
             # Fetch attachments
             att_resp = (
                 self.db.table("attachments")
