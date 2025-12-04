@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     TELEGRAM_CHAT_ID: Optional[str] = Field(
         None, description="Target Chat ID", validation_alias="CHAT_ID"
     )
+    TELEGRAM_ERROR_TOPIC_ID: Optional[int] = Field(
+        2142, description="Topic ID for error notifications (default: 2142)"
+    )
 
     # Topic Map: Site Key -> Topic ID
     # Can be JSON string or dict
@@ -32,9 +35,8 @@ class Settings(BaseSettings):
     # Forum Tags: Site Key -> Tag Name -> Tag ID
     DISCORD_TAG_MAP: Dict[str, Dict[str, str]] = Field(default_factory=dict)
 
-    # Webhook (legacy, for backward compatibility)
-    DISCORD_WEBHOOK_MAP: Dict[str, str] = Field(default_factory=dict)
-    DISCORD_WEBHOOK_URL: Optional[str] = None
+    # Error Channel (Optional, defaults to 'dev' in CHANNEL_MAP)
+    DISCORD_ERROR_CHANNEL_ID: Optional[str] = None
 
     # --- Tag Matching Rules ---
     # Site Key -> Tag Name -> Keywords
@@ -74,17 +76,7 @@ class Settings(BaseSettings):
                 raise ValueError(f"TELEGRAM_TOPIC_MAP must be valid JSON: {e}")
         return v
 
-    @field_validator("DISCORD_WEBHOOK_MAP", mode="before")
-    @classmethod
-    def parse_discord_webhook_map(cls, v):
-        if isinstance(v, str):
-            if not v or v.strip() == "":
-                return {}
-            try:
-                return json.loads(v)
-            except json.JSONDecodeError as e:
-                raise ValueError(f"DISCORD_WEBHOOK_MAP must be valid JSON: {e}")
-        return v
+
 
     @field_validator("DISCORD_CHANNEL_MAP", mode="before")
     @classmethod
@@ -123,10 +115,8 @@ class Settings(BaseSettings):
         return v
 
     def model_post_init(self, __context):
-        # Backward Compatibility: If DISCORD_CHANNEL_MAP is empty but WEBHOOK_MAP exists,
-        # assume user is using WEBHOOK_MAP env var for Channel IDs (as per migration plan).
-        if not self.DISCORD_CHANNEL_MAP and self.DISCORD_WEBHOOK_MAP:
-            self.DISCORD_CHANNEL_MAP = self.DISCORD_WEBHOOK_MAP.copy()
+        pass
+
 
     class Config:
         env_file = ".env"
@@ -155,13 +145,9 @@ class Settings(BaseSettings):
         if not self.GEMINI_API_KEY:
             errors.append("⚠️ GEMINI_API_KEY is missing - AI features will be disabled")
 
-        if (
-            not self.DISCORD_BOT_TOKEN
-            and not self.DISCORD_WEBHOOK_MAP
-            and not self.DISCORD_WEBHOOK_URL
-        ):
+        if not self.DISCORD_BOT_TOKEN:
             errors.append(
-                "⚠️ No Discord configuration found - Discord notifications will be disabled"
+                "⚠️ DISCORD_BOT_TOKEN is missing - Discord notifications will be disabled"
             )
 
         # URL Validation (Basic)

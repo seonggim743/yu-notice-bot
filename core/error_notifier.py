@@ -107,7 +107,7 @@ class ErrorNotifier:
         async with aiohttp.ClientSession() as session:
             tasks = []
 
-            if settings.DISCORD_WEBHOOK_URL:
+            if settings.DISCORD_BOT_TOKEN:
                 tasks.append(self._send_discord_error(session, error_details))
 
             if settings.TELEGRAM_TOKEN:
@@ -130,74 +130,122 @@ class ErrorNotifier:
     async def _send_discord_error(
         self, session: aiohttp.ClientSession, error_details: Dict
     ) -> bool:
-        """Send error notification to Discord"""
+        """Send error notification to Discord via Bot API (Threaded)"""
         try:
-            severity_colors = {
-                "🔴 CRITICAL": 0xFF0000,  # Red
-                "🟠 HIGH": 0xFF8C00,  # Orange
-                "🟡 MEDIUM": 0xFFD700,  # Gold
-                "🟢 LOW": 0x00FF00,  # Green
-            }
+            if not settings.DISCORD_BOT_TOKEN:
+                return False
 
+            # Determine Channel ID
+            channel_id = settings.DISCORD_ERROR_CHANNEL_ID
+            if not channel_id:
+                channel_id = settings.DISCORD_CHANNEL_MAP.get("dev")
+            
+            if not channel_id:
+                logger.warning("No Discord Error Channel ID configured")
+                return False
+
+            severity_colors = {
+                "🔴 CRITICAL": 0xFF0000,
+                "🟠 HIGH": 0xFF8C00,
+                "🟡 MEDIUM": 0xFFD700,
+                "🟢 LOW": 0x00FF00,
+            }
             color = severity_colors.get(error_details["severity"], 0xFF0000)
+
+            # 1. Prepare Initial Embed (Summary)
+            # Truncate description to avoid limit
+            description = error_details["message"]
+            if len(description) > 2000:
+                description = description[:2000] + "\n... (truncated)"
 
             embed = {
                 "title": f"{error_details['severity']} System Error",
-                "description": error_details["message"],
+                "description": description,
                 "color": color,
                 "timestamp": error_details["timestamp"],
                 "fields": [],
             }
 
-            # Add context if present
             if error_details["context"]:
-                context_str = "\n".join(
-                    f"**{k}**: {v}" for k, v in error_details["context"].items()
-                )
-                embed["fields"].append(
-                    {"name": "📋 Context", "value": context_str, "inline": False}
-                )
+                context_str = "\n".join(f"**{k}**: {v}" for k, v in error_details["context"].items())
+                embed["fields"].append({"name": "📋 Context", "value": context_str, "inline": False})
 
-            # Add exception details
             if "exception_type" in error_details:
-                embed["fields"].append(
-                    {
-                        "name": "⚠️ Exception",
-                        "value": f"`{error_details['exception_type']}: {error_details['exception_message']}`",
-                        "inline": False,
-                    }
-                )
+                embed["fields"].append({
+                    "name": "⚠️ Exception", 
+                    "value": f"`{error_details['exception_type']}: {error_details['exception_message']}`", 
+                    "inline": False
+                })
 
-            # Add truncated traceback
+            # 2. Prepare Traceback Chunks
+            traceback_chunks = []
             if "traceback" in error_details:
-                traceback_preview = error_details["traceback"][:500]
-                if len(error_details["traceback"]) > 500:
-                    traceback_preview += "\n... (truncated)"
+                tb_content = error_details["traceback"]
+                # Split into chunks of 1900 to allow for code blocks and pagination info
+                chunk_size = 1900
+                traceback_chunks = [tb_content[i:i+chunk_size] for i in range(0, len(tb_content), chunk_size)]
 
-                embed["fields"].append(
-                    {
-                        "name": "🔍 Traceback",
-                        "value": f"```python\n{traceback_preview}\n```",
-                        "inline": False,
-                    }
-                )
+            # 3. Create Thread (or Message + Thread)
+            # Try creating a Forum Thread first (requires 'message' field)
+            thread_name = f"[{error_details['severity']}] {error_details['message'][:50]}"
+            
+            url = f"https://discord.com/api/v10/channels/{channel_id}/threads"
+            headers = {
+                "Authorization": f"Bot {settings.DISCORD_BOT_TOKEN}",
+                "Content-Type": "application/json",
+            }
+            
+            # Payload for Forum Thread
+            payload = {
+                "name": thread_name,
+                "auto_archive_duration": 1440,
+                "message": {"embeds": [embed]}
+            }
 
-            payload = {"embeds": [embed]}
-
-            async with session.post(
-                settings.DISCORD_WEBHOOK_URL,
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                if resp.status in [200, 204]:
-                    logger.info("Error notification sent to Discord")
-                    return True
+            thread_id = None
+            
+            async with session.post(url, headers=headers, json=payload) as resp:
+                if resp.status in [200, 201]:
+                    data = await resp.json()
+                    thread_id = data.get("id")
+                    logger.info(f"Created Discord thread: {thread_id}")
+                elif resp.status == 400:
+                    # Likely not a Forum Channel. Try sending a message to Text Channel then create thread.
+                    # Fallback: Send Message to Channel
+                    msg_url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+                    async with session.post(msg_url, headers=headers, json={"embeds": [embed]}) as msg_resp:
+                        if msg_resp.status in [200, 201]:
+                            msg_data = await msg_resp.json()
+                            msg_id = msg_data.get("id")
+                            
+                            # Create Thread on that message
+                            thread_url = f"https://discord.com/api/v10/channels/{channel_id}/messages/{msg_id}/threads"
+                            async with session.post(thread_url, headers=headers, json={"name": thread_name, "auto_archive_duration": 1440}) as th_resp:
+                                if th_resp.status in [200, 201]:
+                                    th_data = await th_resp.json()
+                                    thread_id = th_data.get("id")
+                        else:
+                            logger.error(f"Discord fallback message failed: {await msg_resp.text()}")
+                            return False
                 else:
-                    error_text = await resp.text()
-                    logger.error(
-                        f"Discord error notification failed: {resp.status} - {error_text}"
-                    )
+                    logger.error(f"Discord thread creation failed: {await resp.text()}")
                     return False
+
+            # 4. Send Traceback Chunks to Thread
+            if thread_id and traceback_chunks:
+                thread_msg_url = f"https://discord.com/api/v10/channels/{thread_id}/messages"
+                total_chunks = len(traceback_chunks)
+                
+                for i, chunk in enumerate(traceback_chunks):
+                    pagination = f"**Traceback ({i+1}/{total_chunks})**"
+                    content = f"{pagination}\n```python\n{chunk}\n```"
+                    
+                    async with session.post(thread_msg_url, headers=headers, json={"content": content}) as resp:
+                        if resp.status not in [200, 201]:
+                            logger.error(f"Failed to send Discord traceback chunk {i+1}: {await resp.text()}")
+                        await asyncio.sleep(0.5)
+
+            return True
 
         except Exception as e:
             logger.error(f"Failed to send Discord error notification: {e}")
@@ -206,64 +254,91 @@ class ErrorNotifier:
     async def _send_telegram_error(
         self, session: aiohttp.ClientSession, error_details: Dict
     ) -> bool:
-        """Send error notification to Telegram"""
+        """Send error notification to Telegram with threading and pagination"""
         try:
-            # Build message
-            msg_parts = [
-                f"<b>{error_details['severity']} System Error</b>",
-                "",
-                f"📝 <b>Message:</b>",
-                error_details["message"],
-            ]
-
-            # Add context
+            # 1. Build Base Message (Header + Context + Message + Exception)
+            header = f"<b>{error_details['severity']} System Error</b>\n"
+            
+            context_part = ""
             if error_details["context"]:
-                msg_parts.append("")
-                msg_parts.append("📋 <b>Context:</b>")
+                context_part += "\n📋 <b>Context:</b>\n"
                 for k, v in error_details["context"].items():
-                    msg_parts.append(f"  • <b>{k}:</b> {v}")
+                    context_part += f"  • <b>{k}:</b> {v}\n"
 
-            # Add exception
+            message_part = f"\n📝 <b>Message:</b>\n{error_details['message']}\n"
+
+            exception_part = ""
             if "exception_type" in error_details:
-                msg_parts.append("")
-                msg_parts.append("⚠️ <b>Exception:</b>")
-                msg_parts.append(
-                    f"<code>{error_details['exception_type']}: {error_details['exception_message']}</code>"
-                )
+                exception_part += "\n⚠️ <b>Exception:</b>\n"
+                exception_part += f"<code>{error_details['exception_type']}: {error_details['exception_message']}</code>\n"
 
-            # Add truncated traceback
+            base_message = header + context_part + message_part + exception_part
+            
+            # 2. Prepare Traceback Chunks
+            traceback_chunks = []
             if "traceback" in error_details:
-                msg_parts.append("")
-                msg_parts.append("🔍 <b>Traceback:</b>")
-                traceback_preview = error_details["traceback"][:300]
-                if len(error_details["traceback"]) > 300:
-                    traceback_preview += "\n... (truncated)"
-                msg_parts.append(f"<pre>{traceback_preview}</pre>")
+                tb_content = error_details["traceback"]
+                # Telegram limit 4096. Base message takes some space.
+                # Strategy: Send Base Message first. Then Traceback chunks.
+                
+                # Chunk size for traceback: 4000 (safe margin)
+                chunk_size = 4000
+                traceback_chunks = [tb_content[i:i+chunk_size] for i in range(0, len(tb_content), chunk_size)]
 
-            msg_parts.append("")
-            msg_parts.append(f"🕐 {error_details['timestamp']}")
-
-            message = "\n".join(msg_parts)
-
-            payload = {
+            # 3. Send Messages
+            url = f"https://api.telegram.org/bot{settings.TELEGRAM_TOKEN}/sendMessage"
+            topic_id = settings.TELEGRAM_ERROR_TOPIC_ID
+            
+            # Send First Message (Base)
+            # Add (1/N) if there are traceback chunks
+            total_pages = 1 + len(traceback_chunks)
+            pagination_header = f"(1/{total_pages}) " if total_pages > 1 else ""
+            
+            first_payload = {
                 "chat_id": settings.TELEGRAM_CHAT_ID,
-                "text": message,
+                "text": pagination_header + base_message,
                 "parse_mode": "HTML",
                 "disable_web_page_preview": True,
             }
+            if topic_id:
+                first_payload["message_thread_id"] = topic_id
 
-            url = f"https://api.telegram.org/bot{settings.TELEGRAM_TOKEN}/sendMessage"
-
-            async with session.post(url, json=payload) as resp:
+            first_msg_id = None
+            async with session.post(url, json=first_payload) as resp:
                 if resp.status == 200:
-                    logger.info("Error notification sent to Telegram")
-                    return True
+                    data = await resp.json()
+                    first_msg_id = data.get("result", {}).get("message_id")
                 else:
-                    error_text = await resp.text()
-                    logger.error(
-                        f"Telegram error notification failed: {resp.status} - {error_text}"
-                    )
+                    logger.error(f"Telegram base message failed: {await resp.text()}")
                     return False
+
+            # Send Traceback Chunks (Reply to First Message)
+            if first_msg_id and traceback_chunks:
+                for i, chunk in enumerate(traceback_chunks):
+                    page_num = i + 2
+                    pagination = f"({page_num}/{total_pages}) 🔍 <b>Traceback:</b>\n"
+                    msg_content = f"{pagination}<pre>{chunk}</pre>"
+                    
+                    # If it's the last chunk, add timestamp footer
+                    if i == len(traceback_chunks) - 1:
+                        msg_content += f"\n🕐 {error_details['timestamp']}"
+
+                    payload = {
+                        "chat_id": settings.TELEGRAM_CHAT_ID,
+                        "text": msg_content,
+                        "parse_mode": "HTML",
+                        "reply_to_message_id": first_msg_id, # Threading!
+                    }
+                    if topic_id:
+                        payload["message_thread_id"] = topic_id
+
+                    async with session.post(url, json=payload) as resp:
+                        if resp.status != 200:
+                            logger.error(f"Telegram chunk {page_num} failed: {await resp.text()}")
+                        await asyncio.sleep(0.2)
+
+            logger.info("Error notification sent to Telegram")
+            return True
 
         except Exception as e:
             logger.error(f"Failed to send Telegram error notification: {e}")
