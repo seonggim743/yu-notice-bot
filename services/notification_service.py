@@ -219,46 +219,82 @@ class NotificationService:
 
         else:
             # Multiple Photos or Mix of Content + Previews
-            # Send content images as MediaGroup (if any)
+            # Send content images (if any)
             if content_images_to_send:
-                media = []
-                form = aiohttp.FormData()
+                # Case A: Single Content Image -> Use sendPhoto (MediaGroup requires 2+)
+                if len(content_images_to_send) == 1:
+                    img = content_images_to_send[0]
+                    form = aiohttp.FormData()
+                    form.add_field("photo", img["data"], filename=img["filename"])
+                    if img.get("caption"):
+                        form.add_field("caption", img["caption"][: constants.DISCORD_MAX_EMBED_LENGTH])
+                        form.add_field("parse_mode", "HTML")
+                    form.add_field("chat_id", str(self.chat_id))
+                    if topic_id:
+                        form.add_field("message_thread_id", str(topic_id))
+                    
+                    # If updating, reply to existing message
+                    if not is_new and existing_message_id:
+                        form.add_field("reply_to_message_id", str(existing_message_id))
 
-                for idx, img in enumerate(content_images_to_send):
-                    field_name = f"file{idx}"
-                    form.add_field(field_name, img["data"], filename=img["filename"])
+                    try:
+                        async with session.post(
+                            f"https://api.telegram.org/bot{self.telegram_token}/sendPhoto",
+                            data=form,
+                        ) as resp:
+                            if resp.status == 200:
+                                result = await resp.json()
+                                main_msg_id = result.get("result", {}).get("message_id")
+                                logger.info("[NOTIFIER] Sent single content image via sendPhoto (Mixed Mode)")
+                            else:
+                                logger.error(f"[NOTIFIER] Failed to send single content image: {await resp.text()}")
+                    except Exception as e:
+                        logger.error(f"[NOTIFIER] Telegram single photo send failed: {e}")
 
-                    media_item = {"type": "photo", "media": f"attach://{field_name}"}
-                    if idx == 0 and img.get("caption"):
-                        media_item["caption"] = img["caption"][: constants.DISCORD_MAX_EMBED_LENGTH]
-                        media_item["parse_mode"] = "HTML"
+                # Case B: Multiple Content Images -> Use sendMediaGroup
+                else:
+                    media = []
+                    form = aiohttp.FormData()
 
-                    media.append(media_item)
+                    for idx, img in enumerate(content_images_to_send):
+                        field_name = f"file{idx}"
+                        form.add_field(field_name, img["data"], filename=img["filename"])
 
-                form.add_field("chat_id", str(self.chat_id))
-                form.add_field("media", json.dumps(media))
-                if topic_id:
-                    form.add_field("message_thread_id", str(topic_id))
+                        media_item = {"type": "photo", "media": f"attach://{field_name}"}
+                        if idx == 0 and img.get("caption"):
+                            media_item["caption"] = img["caption"][: constants.DISCORD_MAX_EMBED_LENGTH]
+                            media_item["parse_mode"] = "HTML"
 
-                # If updating, reply to existing message
-                if not is_new and existing_message_id:
-                    form.add_field("reply_to_message_id", str(existing_message_id))
+                        media.append(media_item)
 
-                try:
-                    async with session.post(
-                        f"https://api.telegram.org/bot{self.telegram_token}/sendMediaGroup",
-                        data=form,
-                    ) as resp:
-                        if resp.status == 200:
-                            result = await resp.json()
-                            main_msg_id = result.get("result", [{}])[0].get(
-                                "message_id"
-                            )
-                            logger.info(
-                                f"[NOTIFIER] Sent {len(content_images_to_send)} content images as MediaGroup"
-                            )
-                except Exception as e:
-                    logger.error(f"[NOTIFIER] Telegram MediaGroup failed: {e}")
+                    form.add_field("chat_id", str(self.chat_id))
+                    form.add_field("media", json.dumps(media))
+                    if topic_id:
+                        form.add_field("message_thread_id", str(topic_id))
+
+                    # If updating, reply to existing message
+                    if not is_new and existing_message_id:
+                        form.add_field("reply_to_message_id", str(existing_message_id))
+
+                    try:
+                        async with session.post(
+                            f"https://api.telegram.org/bot{self.telegram_token}/sendMediaGroup",
+                            data=form,
+                        ) as resp:
+                            if resp.status == 200:
+                                result = await resp.json()
+                                main_msg_id = result.get("result", [{}])[0].get(
+                                    "message_id"
+                                )
+                                logger.info(
+                                    f"[NOTIFIER] Sent {len(content_images_to_send)} content images as MediaGroup"
+                                )
+                            else:
+                                logger.error(
+                                    f"[NOTIFIER] Failed to send MediaGroup: {await resp.text()}"
+                                )
+                    except Exception as e:
+                        logger.error(f"[NOTIFIER] Telegram MediaGroup failed: {e}")
 
             # Send PDF previews as replies to main message (Grouped by PDF)
             if main_msg_id and pdf_previews_to_send:
