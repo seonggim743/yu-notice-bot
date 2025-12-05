@@ -37,18 +37,47 @@ class NoticeFetcher:
 
     async def fetch_url(self, session: aiohttp.ClientSession, url: str) -> str:
         """
-        Fetches URL content with error handling.
+        Fetches URL content with error handling and retry logic.
         """
-        try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                resp.raise_for_status()
-                return await resp.text()
-        except asyncio.TimeoutError:
-            raise NetworkException(f"Timeout fetching {url}", {"url": url})
-        except aiohttp.ClientError as e:
-            raise NetworkException(f"HTTP error fetching {url}", {"url": url, "error": str(e)})
-        except Exception as e:
-            raise ScraperException(f"Unexpected error fetching {url}", {"url": url, "error": str(e)})
+        max_retries = 3
+        attempt = 0
+        
+        while attempt < max_retries:
+            try:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                    resp.raise_for_status()
+                    return await resp.text()
+            except (asyncio.TimeoutError, aiohttp.ServerDisconnectedError, aiohttp.ClientConnectionError) as e:
+                # Transient network errors
+                attempt += 1
+                if attempt >= max_retries:
+                    raise NetworkException(f"Timeout/Connection error fetching {url} after {max_retries} retries", {"url": url})
+                
+                wait_time = 2 ** (attempt - 1)
+                logger.warning(f"[FETCHER] Network error fetching {url} (Attempt {attempt}/{max_retries}). Retrying in {wait_time}s... Error: {e}")
+                await asyncio.sleep(wait_time)
+                
+            except aiohttp.ClientResponseError as e:
+                # HTTP Status errors
+                # Fail Fast on 404/403
+                if e.status in [403, 404]:
+                    raise NetworkException(f"HTTP {e.status} error fetching {url}", {"url": url, "error": str(e)})
+                
+                # Retry on 5xx or 429
+                if 500 <= e.status < 600 or e.status == 429:
+                    attempt += 1
+                    if attempt >= max_retries:
+                        raise NetworkException(f"HTTP {e.status} error fetching {url} after {max_retries} retries", {"url": url, "error": str(e)})
+                    
+                    wait_time = 2 ** (attempt - 1)
+                    logger.warning(f"[FETCHER] HTTP {e.status} error fetching {url} (Attempt {attempt}/{max_retries}). Retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    # Other 4xx errors - Fail Fast
+                    raise NetworkException(f"HTTP {e.status} error fetching {url}", {"url": url, "error": str(e)})
+                    
+            except Exception as e:
+                raise ScraperException(f"Unexpected error fetching {url}", {"url": url, "error": str(e)})
 
     async def fetch_file_head(self, session: aiohttp.ClientSession, url: str, referer: str) -> Dict[str, Any]:
         """
@@ -71,16 +100,53 @@ class NoticeFetcher:
 
     async def download_file(self, session: aiohttp.ClientSession, url: str, referer: str) -> Optional[bytes]:
         """
-        Downloads a file fully.
+        Downloads a file fully with retry logic.
         """
         headers = {
             "Referer": referer,
             "User-Agent": settings.USER_AGENT,
         }
-        try:
-            async with session.get(url, headers=headers) as resp:
-                resp.raise_for_status()
-                return await resp.read()
-        except Exception as e:
-            logger.warning(f"Download failed for {url}: {e}")
-            return None
+        
+        max_retries = 3
+        attempt = 0
+        
+        while attempt < max_retries:
+            try:
+                async with session.get(url, headers=headers) as resp:
+                    resp.raise_for_status()
+                    return await resp.read()
+            except (asyncio.TimeoutError, aiohttp.ServerDisconnectedError, aiohttp.ClientConnectionError) as e:
+                attempt += 1
+                if attempt >= max_retries:
+                    logger.warning(f"Download failed for {url} after {max_retries} retries: {e}")
+                    return None
+                
+                wait_time = 2 ** (attempt - 1)
+                logger.warning(f"[FETCHER] Download error for {url} (Attempt {attempt}/{max_retries}). Retrying in {wait_time}s... Error: {e}")
+                await asyncio.sleep(wait_time)
+                
+            except aiohttp.ClientResponseError as e:
+                # Fail Fast on 404/403
+                if e.status in [403, 404]:
+                    logger.warning(f"Download failed for {url}: HTTP {e.status}")
+                    return None
+                
+                # Retry on 5xx or 429
+                if 500 <= e.status < 600 or e.status == 429:
+                    attempt += 1
+                    if attempt >= max_retries:
+                        logger.warning(f"Download failed for {url} after {max_retries} retries: HTTP {e.status}")
+                        return None
+                    
+                    wait_time = 2 ** (attempt - 1)
+                    logger.warning(f"[FETCHER] Download HTTP {e.status} for {url} (Attempt {attempt}/{max_retries}). Retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.warning(f"Download failed for {url}: HTTP {e.status}")
+                    return None
+                    
+            except Exception as e:
+                logger.warning(f"Download failed for {url}: {e}")
+                return None
+        
+        return None

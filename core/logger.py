@@ -139,21 +139,102 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(log_record, ensure_ascii=False)
 
 
+import requests
+import hashlib
+import time
+from concurrent.futures import ThreadPoolExecutor
+
+class DiscordLogHandler(logging.Handler):
+    """
+    Custom handler to send WARNING/ERROR logs to Discord.
+    Uses ThreadPoolExecutor to avoid blocking the main thread.
+    Implements throttling to prevent spam.
+    """
+    def __init__(self):
+        super().__init__()
+        self.executor = ThreadPoolExecutor(max_workers=1)
+        self.last_errors = {}  # {hash_key: last_time}
+        self.webhook_url = settings.DISCORD_ERROR_CHANNEL_ID # Using Channel ID as Webhook URL for simplicity or need to adapt if it's just ID.
+        # Wait, config says DISCORD_ERROR_CHANNEL_ID is a channel ID, not webhook.
+        # If we use bot token, we need to post to channel.
+        self.bot_token = settings.DISCORD_BOT_TOKEN
+        self.channel_id = settings.DISCORD_ERROR_CHANNEL_ID
+
+    def _send_to_discord(self, record: logging.LogRecord):
+        try:
+            if not self.bot_token or not self.channel_id:
+                return
+
+            # Format message
+            color = 0xFF0000 if record.levelno >= logging.ERROR else 0xFFA500 # Red or Orange
+            
+            # Create Embed
+            embed = {
+                "title": f"[{record.levelname}] {record.name}",
+                "description": record.getMessage(),
+                "color": color,
+                "timestamp": datetime.utcnow().isoformat(),
+                "footer": {"text": f"Module: {record.module}:{record.lineno}"}
+            }
+            
+            # Add traceback if available
+            if record.exc_info:
+                exc_text = self.formatException(record.exc_info)
+                # Truncate if too long (Discord limit 1024)
+                if len(exc_text) > 1000:
+                    exc_text = exc_text[:1000] + "..."
+                embed["fields"] = [{"name": "Traceback", "value": f"```python\n{exc_text}\n```"}]
+
+            payload = {
+                "embeds": [embed]
+            }
+
+            # Send request (Synchronous inside ThreadPool)
+            headers = {
+                "Authorization": f"Bot {self.bot_token}",
+                "Content-Type": "application/json"
+            }
+            url = f"https://discord.com/api/v10/channels/{self.channel_id}/messages"
+            
+            requests.post(url, headers=headers, json=payload, timeout=2.0)
+            
+        except Exception as e:
+            # Fallback to stderr if Discord fails
+            sys.stderr.write(f"Failed to send log to Discord: {e}\n")
+
+    def emit(self, record: logging.LogRecord):
+        try:
+            # 1. Throttling Check
+            # Create hash key from static parts (pathname, lineno, msg template)
+            # We use record.msg (template) instead of record.getMessage() (formatted) to group similar errors
+            msg_key = hashlib.md5(f"{record.pathname}:{record.lineno}:{str(record.msg)}".encode()).hexdigest()
+            current_time = time.time()
+            
+            if msg_key in self.last_errors:
+                if current_time - self.last_errors[msg_key] < 60:
+                    return # Ignore duplicate within 60s
+            
+            self.last_errors[msg_key] = current_time
+
+            # 2. Async Dispatch
+            self.executor.submit(self._send_to_discord, record)
+            
+        except Exception:
+            self.handleError(record)
+
+    def close(self):
+        """Graceful shutdown"""
+        self.executor.shutdown(wait=False)
+        super().close()
+
+
 def get_logger(
     name: str,
     log_level: Optional[str] = None,
     log_file: Optional[str] = None,
 ) -> logging.Logger:
     """
-    Get a configured logger instance with console and file handlers.
-
-    Args:
-        name: Logger name (usually __name__)
-        log_level: Optional override for log level
-        log_file: Optional override for log file path
-
-    Returns:
-        Configured logger instance
+    Get a configured logger instance with console, file, and Discord handlers.
     """
     # Get or create logger
     logger = logging.getLogger(name)
@@ -208,6 +289,13 @@ def get_logger(
         file_handler.addFilter(SensitiveDataFilter())
 
         logger.addHandler(file_handler)
+
+    # Discord Handler (WARNING+)
+    if settings.DISCORD_BOT_TOKEN and settings.DISCORD_ERROR_CHANNEL_ID:
+        discord_handler = DiscordLogHandler()
+        discord_handler.setLevel(logging.WARNING)
+        discord_handler.addFilter(SensitiveDataFilter())
+        logger.addHandler(discord_handler)
 
     # Add console handler
     logger.addHandler(console_handler)
