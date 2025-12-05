@@ -491,8 +491,8 @@ class NotificationService:
                                         json=reply_payload,
                                     ) as resp:
                                         await asyncio.sleep(0.2)  # Prevent rate limiting
-                                except Exception:
-                                    pass
+                                except Exception as e:
+                                    logger.error(f"[NOTIFIER] Failed to send diff chunk for '{notice.title}': {e}")
                         else:
                             detail_msg = (
                                 f"🔍 <b>상세 변경 내용</b>\n"
@@ -513,8 +513,22 @@ class NotificationService:
                                     json=reply_payload,
                                 ) as resp:
                                     pass
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.error(f"[NOTIFIER] Failed to send diff for '{notice.title}': {e}")
+                                # Fallback message
+                                fallback_msg = (
+                                    "⚠️ 상세 변경 내용을 불러올 수 없습니다. <b>원본 공지 링크</b>를 확인해주세요."
+                                )
+                                try:
+                                    reply_payload["text"] = fallback_msg
+                                    async with session.post(
+                                        f"https://api.telegram.org/bot{self.telegram_token}/sendMessage",
+                                        json=reply_payload,
+                                    ) as fallback_resp:
+                                        pass
+                                except Exception:
+                                    pass # Give up if fallback fails
+
                     else:
                         # Diff generation failed but content changed
                         detail_msg = (
@@ -535,8 +549,8 @@ class NotificationService:
                                 json=reply_payload,
                             ) as resp:
                                 pass
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.error(f"[NOTIFIER] Failed to send diff error msg for '{notice.title}': {e}")
 
         return main_msg_id
 

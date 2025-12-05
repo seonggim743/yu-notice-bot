@@ -402,26 +402,7 @@ class ScraperService:
 
         return changes
 
-    async def process_menu_notice(self, session: aiohttp.ClientSession, notice: Notice):
-        """
-        Special handling for Dormitory Menu notices.
-        """
-        if not notice.image_urls:
-            logger.warning(f"[MENU] Notice {notice.title} has no image, skipping menu extraction.")
-            return
 
-        logger.info(f"[MENU] Extracting menu from image: {notice.title}")
-
-        # 1. AI Extraction (use first image)
-        menu_data = await self.analyzer.extract_menu(notice.image_urls[0])
-        if not menu_data or "raw_text" not in menu_data:
-            logger.error("[MENU] Failed to extract menu text")
-            return
-
-        logger.info(f"[MENU] Extracted: {menu_data['start_date']} ~ {menu_data['end_date']}")
-
-        # 2. Send & Pin to Telegram
-        await self.notifier.send_menu_notification(session, notice, menu_data)
 
     async def run_test(self, test_url: str):
         """
