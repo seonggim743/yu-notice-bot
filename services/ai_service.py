@@ -228,9 +228,9 @@ class AIService:
             logger.error(f"AI Diff failed: {e}")
             return "내용 변경 (AI 분석 실패)"
 
-    async def extract_menu_from_image(self, image_url: str) -> Dict[str, Any]:
+    async def extract_menu_from_image(self, image_url: str, image_data: bytes = None) -> Dict[str, Any]:
         """
-        Extracts menu text from an image URL using Gemini Vision.
+        Extracts menu text from an image URL or provided bytes using Gemini Vision.
         Returns JSON with 'raw_text', 'start_date', 'end_date'.
         """
         if not self.model:
@@ -239,15 +239,16 @@ class AIService:
         import aiohttp
 
         try:
-            # 1. Download Image
-            async with aiohttp.ClientSession() as session:
-                async with session.get(image_url) as resp:
-                    if resp.status != 200:
-                        logger.error(
-                            f"[AI] Failed to download menu image: {resp.status}"
-                        )
-                        return {}
-                    image_data = await resp.read()
+            # 1. Download Image (if not provided)
+            if not image_data:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(image_url) as resp:
+                        if resp.status != 200:
+                            logger.error(
+                                f"[AI] Failed to download menu image: {resp.status}"
+                            )
+                            return {}
+                        image_data = await resp.read()
 
             # 2. Prepare Prompt
             prompt = (

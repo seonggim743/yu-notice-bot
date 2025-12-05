@@ -196,9 +196,22 @@ class ScraperService:
                 continue
 
             # AI Analysis
-            item = await self.analyzer.analyze_notice(item)
+            if key == "dormitory_menu":
+                # Skip AI for menu, force tags
+                item.category = "식단"
+                item.tags = ["기숙사"]
+                item.summary = "기숙사 식단표입니다."
+
+            else:
+                item = await self.analyzer.analyze_notice(item)
+                
+                # Force dormitory tag for dormitory_notice
+                if key == "dormitory_notice":
+                    if "기숙사" not in item.tags:
+                        item.tags.insert(0, "기숙사")
 
             # Diff for Modified
+            changes = None
             if is_modified:
                 old_notice = self.repo.get_notice(key, item.article_id)
                 changes = {}
@@ -230,7 +243,7 @@ class ScraperService:
                     existing_message_id = old_notice.message_ids.get("telegram")
 
                 msg_id = await self.notifier.send_telegram(
-                    session, item, is_new, modified_reason, existing_message_id=existing_message_id
+                    session, item, is_new, modified_reason, existing_message_id=existing_message_id, changes=changes
                 )
                 if msg_id:
                     self.repo.update_message_ids(notice_id, "telegram", msg_id)
@@ -241,7 +254,7 @@ class ScraperService:
                     existing_thread_id = old_notice.discord_thread_id
 
                 discord_thread_id = await self.notifier.send_discord(
-                    session, item, is_new, modified_reason, existing_thread_id=existing_thread_id
+                    session, item, is_new, modified_reason, existing_thread_id=existing_thread_id, changes=changes
                 )
                 if discord_thread_id:
                     self.repo.update_discord_thread_id(notice_id, discord_thread_id)
@@ -394,11 +407,48 @@ class ScraperService:
         if old_imgs != new_imgs:
             changes["image"] = "이미지 변경됨"
 
-        # Attachment changes
-        old_atts = {a.name for a in old_notice.attachments}
-        new_atts = {a.name for a in item.attachments}
-        if old_atts != new_atts:
-            changes["attachments"] = "첨부파일 목록 변경됨"
+        # Attachment changes (Granular)
+        # Key: Name + Size (to detect content change even if name is same)
+        # Note: ETag is not reliable/available as per analysis
+        old_atts_map = {f"{a.name}_{a.file_size or 0}" : a.name for a in old_notice.attachments}
+        new_atts_map = {f"{a.name}_{a.file_size or 0}" : a.name for a in item.attachments}
+        
+        old_keys = set(old_atts_map.keys())
+        new_keys = set(new_atts_map.keys())
+        
+        added_keys = new_keys - old_keys
+        removed_keys = old_keys - new_keys
+        
+        # Check for modifications (Same name, different size)
+        # If name is in both added_keys (new size) and removed_keys (old size), it's a modification
+        added_names = {new_atts_map[k] for k in added_keys}
+        removed_names = {old_atts_map[k] for k in removed_keys}
+        
+        modified_names = added_names.intersection(removed_names)
+        real_added = added_names - modified_names
+        real_removed = removed_names - modified_names
+        
+        if modified_names:
+            # We don't have a specific field for modified attachments in formatters yet,
+            # but we can list them as Removed/Added or just add a note.
+            # Plan said "Added/Removed". 
+            # But "Modified" is better UX. 
+            # Let's map them to "attachments_modified" if supported, or just list as Added/Removed.
+            # Formatters support "attachments_added" and "attachments_removed".
+            # Let's add "attachments_modified" to formatters later if needed, 
+            # OR just put them in "attachments" generic field.
+            # Actually, let's just treat them as Added/Removed for now to match Plan strictly,
+            # OR better: Add them to "attachments_added" and "attachments_removed" so they show up.
+            # Wait, if I put it in both, user sees "Added A, Removed A". That's explicit.
+            pass
+
+        if real_added or modified_names:
+            changes["attachments_added"] = list(real_added | modified_names)
+        if real_removed or modified_names:
+            changes["attachments_removed"] = list(real_removed | modified_names)
+            
+        if added_keys or removed_keys:
+             changes["attachments"] = "목록 변경됨" # Legacy flag
 
         return changes
 
@@ -450,6 +500,7 @@ class ScraperService:
                 
                 # Send Notification
                 await self.notifier.send_telegram(session, item, is_new=True, modified_reason="[TEST RUN]")
+                await self.notifier.send_discord(session, item, is_new=True, modified_reason="[TEST RUN]")
                 
             except Exception as e:
                 logger.error(f"[TEST] Failed: {e}")

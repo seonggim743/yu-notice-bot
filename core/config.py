@@ -1,5 +1,5 @@
 from pydantic_settings import BaseSettings
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 from pydantic import Field, field_validator
 import json
 from core import constants
@@ -25,22 +25,22 @@ class Settings(BaseSettings):
 
     # Topic Map: Site Key -> Topic ID
     # Can be JSON string or dict
-    TELEGRAM_TOPIC_MAP: Dict[str, int] = Field(default_factory=dict)
+    TELEGRAM_TOPIC_MAP: Union[Dict[str, int], str] = Field(default_factory=dict)
 
     # --- Discord ---
     # Bot API (recommended)
     DISCORD_BOT_TOKEN: Optional[str] = None
-    DISCORD_CHANNEL_MAP: Dict[str, str] = Field(default_factory=dict)
+    DISCORD_CHANNEL_MAP: Union[Dict[str, str], str] = Field(default_factory=dict)
 
     # Forum Tags: Site Key -> Tag Name -> Tag ID
-    DISCORD_TAG_MAP: Dict[str, Dict[str, str]] = Field(default_factory=dict)
+    DISCORD_TAG_MAP: Union[Dict[str, Dict[str, str]], str] = Field(default_factory=dict)
 
     # Error Channel (Optional, defaults to 'dev' in CHANNEL_MAP)
     DISCORD_ERROR_CHANNEL_ID: Optional[str] = None
 
     # --- Tag Matching Rules ---
     # Site Key -> Tag Name -> Keywords
-    TAG_MATCHING_RULES: Dict[str, Dict[str, List[str]]] = Field(
+    TAG_MATCHING_RULES: Union[Dict[str, Dict[str, List[str]]], str] = Field(
         default_factory=lambda: constants.DEFAULT_TAG_MATCHING_RULES
     )
 
@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     @classmethod
     def parse_telegram_topic_map(cls, v):
         if isinstance(v, str):
+            v = v.strip()
+            # Handle accidental copy-paste of "KEY=VALUE"
+            if v.startswith("TELEGRAM_TOPIC_MAP="):
+                v = v.split("=", 1)[1]
+            # Handle surrounding quotes
+            v = v.strip("'").strip('"')
+            
             if not v or v.strip() == "":
                 return {}
             try:
@@ -73,6 +80,10 @@ class Settings(BaseSettings):
                 # Convert values to int
                 return {k: int(val) for k, val in parsed.items()}
             except (json.JSONDecodeError, ValueError) as e:
+                # If it's just a string but not JSON, maybe return empty or raise?
+                # But we allow Union[Dict, str] now, so if it fails JSON, we might leave it as str?
+                # No, the type hint says Union, but we want to PARSE it if possible.
+                # If it fails, we raise error because we expect JSON structure.
                 raise ValueError(f"TELEGRAM_TOPIC_MAP must be valid JSON: {e}")
         return v
 
@@ -82,6 +93,11 @@ class Settings(BaseSettings):
     @classmethod
     def parse_discord_channel_map(cls, v):
         if isinstance(v, str):
+            v = v.strip()
+            if v.startswith("DISCORD_CHANNEL_MAP="):
+                v = v.split("=", 1)[1]
+            v = v.strip("'").strip('"')
+
             if not v or v.strip() == "":
                 return {}
             try:
@@ -94,6 +110,11 @@ class Settings(BaseSettings):
     @classmethod
     def parse_discord_tag_map(cls, v):
         if isinstance(v, str):
+            v = v.strip()
+            if v.startswith("DISCORD_TAG_MAP="):
+                v = v.split("=", 1)[1]
+            v = v.strip("'").strip('"')
+
             if not v or v.strip() == "":
                 return {}
             try:
@@ -106,6 +127,11 @@ class Settings(BaseSettings):
     @classmethod
     def parse_tag_matching_rules(cls, v):
         if isinstance(v, str):
+            v = v.strip()
+            if v.startswith("TAG_MATCHING_RULES="):
+                v = v.split("=", 1)[1]
+            v = v.strip("'").strip('"')
+
             if not v or v.strip() == "":
                 return cls.model_fields["TAG_MATCHING_RULES"].default_factory()
             try:

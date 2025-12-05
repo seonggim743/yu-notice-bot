@@ -36,6 +36,7 @@ class NotificationService:
         is_new: bool,
         modified_reason: str = "",
         existing_message_id: Optional[int] = None,
+        changes: Optional[Dict] = None,
     ) -> Optional[int]:
         """
         Sends a notice to Telegram with enhanced formatting. Returns the Message ID.
@@ -47,7 +48,7 @@ class NotificationService:
         topic_id = settings.TELEGRAM_TOPIC_MAP.get(notice.site_key)
 
         # Create message using formatter
-        msg = create_telegram_message(notice, is_new, modified_reason)
+        msg = create_telegram_message(notice, is_new, modified_reason, changes)
 
         # Buttons (Download Links)
         buttons = []
@@ -561,6 +562,7 @@ class NotificationService:
         is_new: bool,
         modified_reason: str = "",
         existing_thread_id: str = None,
+        changes: Optional[Dict] = None,
     ) -> Optional[str]:
         """
         Sends a notice to Discord (Forum Channel preferred).
@@ -632,6 +634,7 @@ class NotificationService:
                 headers,
                 pdf_previews=pdf_previews,
                 existing_thread_id=existing_thread_id,
+                changes=changes,
             )
         else:
             logger.warning(
@@ -651,6 +654,7 @@ class NotificationService:
         pdf_previews: List[Dict] = [],
         max_retries: int = 3,
         existing_thread_id: str = None,
+        changes: Optional[Dict] = None,
     ) -> Optional[str]:
         """
         Common method to send Discord notifications.
@@ -677,7 +681,7 @@ class NotificationService:
         # Use formatters module to create embed with category colors and icons
         from services.notification.formatters import create_discord_embed
 
-        embed = create_discord_embed(notice, is_new, modified_reason)
+        embed = create_discord_embed(notice, is_new, modified_reason, changes)
 
         # Add detailed change content (if available for modified notices)
         if modified_reason and notice.change_details:

@@ -106,7 +106,7 @@ class ContentAnalyzer:
             logger.error(f"[ANALYZER] Diff summary failed: {e}")
             return "내용 변경됨 (AI 오류)"
 
-    async def extract_menu(self, image_url: str) -> Optional[Dict]:
+    async def extract_menu(self, image_url: str, image_data: bytes = None) -> Optional[Dict]:
         """
         Extracts menu data from an image URL with exponential backoff retry.
         """
@@ -115,7 +115,7 @@ class ContentAnalyzer:
         
         while attempt < max_retries:
             try:
-                return await self.ai.extract_menu_from_image(image_url)
+                return await self.ai.extract_menu_from_image(image_url, image_data)
             except Exception as e:
                 attempt += 1
                 error_msg = str(e)
