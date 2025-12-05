@@ -89,43 +89,24 @@ class NoticeRepository:
 
     def upsert_notice(self, notice: Notice) -> Optional[str]:
         """
-        Upserts a notice and its attachments.
+        Upserts a notice and its attachments using RPC for atomicity.
         Returns the UUID of the inserted/updated record.
         """
         try:
-            # 1. Upsert Notice
-            data = notice.model_dump(exclude={"attachments"})
-            # Convert datetime to ISO format if needed (Pydantic usually handles this)
-            if data.get("published_at"):
-                data["published_at"] = data["published_at"].isoformat()
+            # 1. Prepare Notice Data
+            # Exclude attachments as they are passed separately
+            # Exclude change_details as it's not in DB schema
+            notice_data = notice.model_dump(exclude={"attachments", "change_details"})
 
-            # Remove None values to let DB defaults work (though we set most fields)
-            # data = {k: v for k, v in data.items() if v is not None}
-            # UPDATE: We WANT to update fields to None (e.g. image_url) if they are cleared.
-            # But we should remove keys that are NOT in the model fields or should be handled by DB defaults if missing?
-            # Pydantic model_dump already handles this. We just need to ensure we don't send 'id' if it's auto-generated (Notice model doesn't have id field).
-            pass
+            # Convert datetime to ISO format
+            if notice_data.get("published_at"):
+                notice_data["published_at"] = notice_data["published_at"].isoformat()
 
-            response = (
-                self.db.table("notices")
-                .upsert(data, on_conflict="site_key, article_id")
-                .execute()
-            )
-
-            if not response.data:
-                logger.error(f"Upsert returned no data for {notice.title}")
-                return None
-
-            notice_id = response.data[0]["id"]
-
-            # 2. Handle Attachments (Delete old, Insert new)
-            # Efficient way: Delete all for this notice_id and re-insert.
-            self.db.table("attachments").delete().eq("notice_id", notice_id).execute()
-
+            # 2. Prepare Attachments Data
+            attachments_data = []
             if notice.attachments:
-                att_data = [
+                attachments_data = [
                     {
-                        "notice_id": notice_id,
                         "name": a.name,
                         "url": a.url,
                         "file_size": a.file_size,
@@ -133,9 +114,22 @@ class NoticeRepository:
                     }
                     for a in notice.attachments
                 ]
-                self.db.table("attachments").insert(att_data).execute()
 
-            return notice_id
+            # 3. Call RPC
+            response = (
+                self.db.rpc(
+                    "upsert_notice_with_attachments",
+                    {"p_notice": notice_data, "p_attachments": attachments_data},
+                )
+                .execute()
+            )
+
+            if not response.data:
+                # RPC returns UUID directly, so response.data should be the UUID string
+                logger.error(f"RPC returned no data for {notice.title}")
+                return None
+
+            return response.data
 
         except Exception as e:
             logger.error(f"Failed to upsert notice {notice.title}: {e}")

@@ -40,7 +40,7 @@ def mock_supabase_client():
     table_mock.execute.return_value = Mock(data=[])
 
     client.table.return_value = table_mock
-    client.rpc.return_value = Mock(execute=Mock(return_value=Mock(data=[])))
+    client.rpc.return_value = Mock(execute=Mock(return_value=Mock(data="test-uuid-1234")))
 
     return client
 
