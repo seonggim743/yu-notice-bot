@@ -256,44 +256,77 @@ class ScraperService:
         preview_count = 0
         MAX_PREVIEWS = constants.MAX_PREVIEWS
 
-        for att in item.attachments[:10]:
-            ext = att.name.split(".")[-1].lower() if "." in att.name else ""
-            needs_processing = ext in ["hwp", "hwpx", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx"]
-            
-            file_data = None
-            try:
-                if needs_processing:
-                    logger.info(f"[SCRAPER] Downloading attachment for processing: {att.name}")
-                    file_data = await self.fetcher.download_file(session, att.url, item.url)
+        # Prepare tasks for parallel processing
+        # Limit concurrency to 2 to prevent CPU spike (Playwright is heavy)
+        semaphore = asyncio.Semaphore(2)
+        
+        async def _process_att(att, item_url, session):
+            async with semaphore:
+                try:
+                    ext = att.name.split(".")[-1].lower() if "." in att.name else ""
+                    needs_processing = ext in ["hwp", "hwpx", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx"]
+                    
+                    file_data = None
+                    if needs_processing:
+                        logger.info(f"[SCRAPER] Downloading attachment for processing: {att.name}")
+                        file_data = await self.fetcher.download_file(session, att.url, item_url)
+                        if file_data:
+                            att.file_size = len(file_data)
+                    else:
+                        # Just metadata
+                        meta = await self.fetcher.fetch_file_head(session, att.url, item_url)
+                        att.file_size = meta["content_length"]
+                        att.etag = meta["etag"]
+
                     if file_data:
-                        att.file_size = len(file_data)
-                        # Note: ETag is lost here unless we fetch headers separately or update fetcher.
-                        # For now, we prioritize content processing.
-                else:
-                    # Just metadata
-                    meta = await self.fetcher.fetch_file_head(session, att.url, item.url)
-                    att.file_size = meta["content_length"]
-                    att.etag = meta["etag"]
+                        # Text Extraction
+                        text_result = None
+                        if ext in ["hwp", "hwpx", "pdf"]:
+                            text = self.file_service.extract_text(file_data, att.name)
+                            if text and len(text.strip()) > 100:
+                                text_result = f"--- 첨부파일: {att.name} ---\n{text.strip()[:3000]}..."
 
-            except Exception as e:
-                logger.warning(f"[SCRAPER] Failed to process attachment {att.name}: {e}")
-                continue
+                        # Preview Generation
+                        preview_result = None
+                        # Check remaining preview slots (not strictly thread-safe but close enough for this)
+                        # We gather results and check count later ideally, but let's just generate all and limit usage content-side?
+                        # Or better: generate usually only first few matter.
+                        # Let's just generate for all processed files and cap it at assignment time.
+                        preview_images = self.file_service.generate_preview_images(file_data, att.name, max_pages=20)
+                        if preview_images:
+                            preview_result = preview_images
+                            
+                        return text_result, preview_result
+                        
+                except Exception as e:
+                    logger.warning(f"[SCRAPER] Failed to process attachment {att.name}: {e}")
+                return None, None
 
-            if file_data:
-                # Text Extraction
-                if ext in ["hwp", "hwpx", "pdf"]:
-                    text = self.file_service.extract_text(file_data, att.name)
-                    if text and len(text.strip()) > 100:
-                        extracted_texts.append(f"--- 첨부파일: {att.name} ---\n{text.strip()[:3000]}...")
+        # Create tasks
+        tasks = [_process_att(att, item.url, session) for att in item.attachments[:10]]
+        results = await asyncio.gather(*tasks)
 
-                # Preview Generation
+        # Apply results
+        preview_count = 0
+        MAX_PREVIEWS = constants.MAX_PREVIEWS
+        
+        for i, (text_res, preview_res) in enumerate(results):
+            if text_res:
+                extracted_texts.append(text_res)
+            
+            att = item.attachments[i]
+            if preview_res:
+                # Assign previews if under limit
                 if preview_count < MAX_PREVIEWS:
-                    preview_images = self.file_service.generate_preview_images(file_data, att.name, max_pages=20)
-                    if preview_images:
-                        att.preview_images = preview_images
-                        preview_count += 1
+                    att.preview_images = preview_res
+                    preview_count += 1
+                else:
+                    # Optional: Store but don't display? Or just discard to save memory.
+                    # Current logic was: generate IF under limit. 
+                    # Parallel logic: Generate ALL, then pick. 
+                    # This uses more CPU/Memory but is faster wall-clock.
+                    pass
 
-            await asyncio.sleep(0.5)
 
         if extracted_texts:
             item.attachment_text = "\n\n".join(extracted_texts)

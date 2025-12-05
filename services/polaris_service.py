@@ -216,7 +216,7 @@ if __name__ == "__main__":
                 [sys.executable, script_path],
                 capture_output=True,
                 text=True,
-                timeout=120 # 2 minutes timeout
+                timeout=45 # 45 seconds timeout (reduced from 120s)
             )
             
             # Log output
