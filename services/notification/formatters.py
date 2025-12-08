@@ -208,6 +208,9 @@ def format_change_summary(changes: Dict[str, Any]) -> str:
     if "image" in changes:
         lines.append("🖼️ **이미지 변경됨**")
         
+    if "attachment_text" in changes:
+        lines.append(f"📎 **첨부파일 내용 변경**: (상세 내용 확인 필요)")
+        
     return "\n".join(lines)
 
 

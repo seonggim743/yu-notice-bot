@@ -76,7 +76,10 @@ class NotificationService:
         pdf_previews_to_send = []
 
         # A. Content Images (Multiple images support)
-        if notice.image_urls:
+        # Fix: Only send content images if it's a new post OR images actually changed.
+        should_send_content_images = is_new or (changes and "image" in changes)
+        
+        if notice.image_urls and should_send_content_images:
             for idx, image_url in enumerate(notice.image_urls):
                 try:
                     headers = {"Referer": notice.url, "User-Agent": settings.USER_AGENT}
@@ -738,7 +741,10 @@ class NotificationService:
         content_images = []
 
         # === 1. Content Images (from Body) ===
-        if notice.image_urls:
+        # Fix: Only send content images if it's a new post OR images actually changed.
+        should_send_content_images = is_new or (changes and "image" in changes)
+
+        if notice.image_urls and should_send_content_images:
             for idx, image_url in enumerate(notice.image_urls):
                 try:
                     async with session.get(
@@ -957,6 +963,27 @@ class NotificationService:
                 async with session.post(reply_url, headers=headers, **kwargs) as resp:
                     if resp.status in [200, 201]:
                         logger.info("[NOTIFIER] Discord update reply sent.")
+
+                        # Send PDF previews if available AND relevant changes occurred
+                        # Condition: New post OR Attachments changed OR Attachment Text changed
+                        should_send_previews = is_new or (
+                            changes
+                            and any(
+                                k in changes
+                                for k in [
+                                    "attachments",
+                                    "attachments_added",
+                                    "attachments_removed",
+                                    "attachment_text",
+                                ]
+                            )
+                        )
+
+                        if pdf_previews and should_send_previews:
+                            for group in pdf_previews:
+                                await self._send_discord_pdf_preview_group(
+                                    session, existing_thread_id, group, headers
+                                )
 
                         # Send remaining files if any (Attachments)
                         if files_for_attachments:
