@@ -10,8 +10,11 @@ from models.notice import Notice
 from services.tag_matcher import TagMatcher
 from services.notification.formatters import (
     create_telegram_message,
+    create_telegram_message,
     generate_clean_diff,
 )
+import urllib.parse
+from aiohttp import MultipartWriter
 from core import constants
 
 logger = get_logger(__name__)
@@ -21,6 +24,42 @@ class NotificationService:
     def __init__(self):
         self.telegram_token = settings.TELEGRAM_TOKEN
         self.chat_id = settings.TELEGRAM_CHAT_ID
+
+    def _add_text_part(self, writer: MultipartWriter, name: str, value: Any) -> None:
+        """Adds a text field to MultipartWriter."""
+        part = writer.append(str(value))
+        part.set_content_disposition("form-data", name=name)
+
+    def _add_file_part(
+        self,
+        writer: MultipartWriter,
+        field_name: str,
+        file_data: bytes,
+        filename: str,
+        content_type: str = "application/octet-stream",
+    ) -> None:
+        """
+        Adds a file to MultipartWriter with manual Content-Disposition header.
+        Supports both raw UTF-8 (Discord/Legacy) and RFC 5987 (Telegram/Standard).
+        """
+        # 1. Append payload
+        part = writer.append(file_data, {"Content-Type": content_type})
+
+        # 2. Prepare filenames
+        # RFC 5987: Percent-encoded
+        filename_star = urllib.parse.quote(filename)
+        # Legacy: Raw UTF-8 (escape quotes)
+        filename_legacy = filename.replace('"', '\\"')
+
+        # 3. Construct new header value
+        new_header_value = (
+            f'form-data; name="{field_name}"; '
+            f'filename="{filename_legacy}"; '
+            f"filename*=UTF-8''{filename_star}"
+        )
+
+        # 4. Set Header
+        part.headers["Content-Disposition"] = new_header_value
 
     async def _send_telegram_api(
         self,
@@ -37,7 +76,7 @@ class NotificationService:
         
         for attempt in range(retries):
             try:
-                # Use data for FormData (multipart), json for simple payloads
+                # Use data for FormData/MultipartWriter, json for simple payloads
                 if data:
                     async with session.post(url, data=data) as resp:
                         if resp.status == 200:
@@ -238,21 +277,23 @@ class NotificationService:
         elif len(content_images_to_send) == 1 and not pdf_previews_to_send:
             # Single Photo (Content only)
             img = content_images_to_send[0]
-            form = aiohttp.FormData()
-            form.add_field("photo", img["data"], filename=img["filename"])
-            form.add_field("caption", img["caption"][: constants.DISCORD_MAX_EMBED_LENGTH])  # Caption limit
-            form.add_field("parse_mode", "HTML")
-            form.add_field("chat_id", str(self.chat_id))
+            form = MultipartWriter("form-data")
+            self._add_file_part(form, "photo", img["data"], img["filename"])
+            self._add_text_part(
+                form, "caption", img["caption"][: constants.DISCORD_MAX_EMBED_LENGTH]
+            )  # Caption limit
+            self._add_text_part(form, "parse_mode", "HTML")
+            self._add_text_part(form, "chat_id", str(self.chat_id))
             if topic_id:
-                form.add_field("message_thread_id", str(topic_id))
+                self._add_text_part(form, "message_thread_id", str(topic_id))
             if buttons:
-                form.add_field(
-                    "reply_markup", json.dumps({"inline_keyboard": inline_keyboard})
+                self._add_text_part(
+                    form, "reply_markup", json.dumps({"inline_keyboard": inline_keyboard})
                 )
 
             # If updating, reply to existing message
             if not is_new and existing_message_id:
-                form.add_field("reply_to_message_id", str(existing_message_id))
+                self._add_text_part(form, "reply_to_message_id", str(existing_message_id))
 
             result = await self._send_telegram_api(session, "sendPhoto", data=form)
             if result:
@@ -266,7 +307,7 @@ class NotificationService:
                 if len(content_images_to_send) == 1:
                     img = content_images_to_send[0]
                     form = aiohttp.FormData()
-                    form.add_field("photo", img["data"], filename=img["filename"])
+                    self._add_file_to_form(form, "photo", img["data"], img["filename"])
                     if img.get("caption"):
                         form.add_field("caption", img["caption"][: constants.DISCORD_MAX_EMBED_LENGTH])
                         form.add_field("parse_mode", "HTML")
@@ -286,11 +327,11 @@ class NotificationService:
                 # Case B: Multiple Content Images -> Use sendMediaGroup
                 else:
                     media = []
-                    form = aiohttp.FormData()
+                    form = MultipartWriter("form-data")
 
                     for idx, img in enumerate(content_images_to_send):
                         field_name = f"file{idx}"
-                        form.add_field(field_name, img["data"], filename=img["filename"])
+                        self._add_file_part(form, field_name, img["data"], img["filename"])
 
                         media_item = {"type": "photo", "media": f"attach://{field_name}"}
                         if idx == 0 and img.get("caption"):
@@ -299,14 +340,14 @@ class NotificationService:
 
                         media.append(media_item)
 
-                    form.add_field("chat_id", str(self.chat_id))
-                    form.add_field("media", json.dumps(media))
+                    self._add_text_part(form, "chat_id", str(self.chat_id))
+                    self._add_text_part(form, "media", json.dumps(media))
                     if topic_id:
-                        form.add_field("message_thread_id", str(topic_id))
+                        self._add_text_part(form, "message_thread_id", str(topic_id))
 
                     # If updating, reply to existing message
                     if not is_new and existing_message_id:
-                        form.add_field("reply_to_message_id", str(existing_message_id))
+                        self._add_text_part(form, "reply_to_message_id", str(existing_message_id))
 
                     result = await self._send_telegram_api(session, "sendMediaGroup", data=form)
                     if result:
@@ -332,16 +373,17 @@ class NotificationService:
 
                             for chunk_idx, chunk in enumerate(preview_chunks):
                                 media = []
-                                form = aiohttp.FormData()
+                                form = MultipartWriter("form-data")
 
                                 for idx, img_data in enumerate(chunk):
                                     # Global index for filename
                                     global_idx = (chunk_idx * 10) + idx
                                     field_name = f"pdf_{chunk_idx}_{idx}"
-                                    form.add_field(
+                                    self._add_file_part(
+                                        form,
                                         field_name,
                                         img_data,
-                                        filename=f"preview_{att.name}_p{global_idx + 1}.jpg",
+                                        f"preview_{att.name}_p{global_idx + 1}.jpg",
                                     )
 
                                     media_item = {
@@ -355,11 +397,11 @@ class NotificationService:
                                     media.append(media_item)
 
                                 if media:
-                                    form.add_field("chat_id", str(self.chat_id))
-                                    form.add_field("media", json.dumps(media))
-                                    form.add_field("reply_to_message_id", str(main_msg_id))
+                                    self._add_text_part(form, "chat_id", str(self.chat_id))
+                                    self._add_text_part(form, "media", json.dumps(media))
+                                    self._add_text_part(form, "reply_to_message_id", str(main_msg_id))
                                     if topic_id:
-                                        form.add_field("message_thread_id", str(topic_id))
+                                        self._add_text_part(form, "message_thread_id", str(topic_id))
 
                                     result = await self._send_telegram_api(session, "sendMediaGroup", data=form)
                                     if result:
@@ -432,20 +474,20 @@ class NotificationService:
             # Send all files as MediaGroup
             if collected_files:
                 media = []
-                form = aiohttp.FormData()
+                form = MultipartWriter("form-data")
 
                 for idx, (filename, filedata) in enumerate(collected_files):
                     field_name = f"doc{idx}"
-                    form.add_field(field_name, filedata, filename=filename)
+                    self._add_file_part(form, field_name, filedata, filename)
                     media.append(
                         {"type": "document", "media": f"attach://{field_name}"}
                     )
 
-                form.add_field("media", json.dumps(media))
-                form.add_field("chat_id", str(self.chat_id))
+                self._add_text_part(form, "media", json.dumps(media))
+                self._add_text_part(form, "chat_id", str(self.chat_id))
                 if topic_id:
-                    form.add_field("message_thread_id", str(topic_id))
-                form.add_field("reply_to_message_id", str(main_msg_id))
+                    self._add_text_part(form, "message_thread_id", str(topic_id))
+                self._add_text_part(form, "reply_to_message_id", str(main_msg_id))
 
                 result = await self._send_telegram_api(session, "sendMediaGroup", data=form)
                 if result:
@@ -913,12 +955,12 @@ class NotificationService:
             has_files_now = bool(embed_image_data)
 
             if has_files_now:
-                form = aiohttp.FormData()
-                form.add_field("payload_json", json.dumps(payload))
+                form = MultipartWriter("form-data")
+                self._add_text_part(form, "payload_json", json.dumps(payload))
 
                 if embed_image_data:
                     filename = embed_image_filename
-                    form.add_field("files[0]", embed_image_data, filename=filename)
+                    self._add_file_part(form, "files[0]", embed_image_data, filename)
 
                 kwargs = {"data": form}
             else:
@@ -1017,19 +1059,19 @@ class NotificationService:
             has_files_now = bool(embed_image_data or files_for_thread_starter)
 
             if has_files_now:
-                form = aiohttp.FormData()
-                form.add_field("payload_json", json.dumps(payload))
+                form = MultipartWriter("form-data")
+                self._add_text_part(form, "payload_json", json.dumps(payload))
 
                 file_idx = 0
                 # Add Embed Image (if any)
                 if embed_image_data:
-                    form.add_field(f"files[{file_idx}]", embed_image_data, filename=embed_image_filename)
+                    self._add_file_part(form, f"files[{file_idx}]", embed_image_data, embed_image_filename)
                     file_idx += 1
 
                 # Add Thread Starter Files (Multiple Content Images)
                 for file_info in files_for_thread_starter:
-                    form.add_field(
-                        f"files[{file_idx}]", file_info["data"], filename=file_info["filename"]
+                    self._add_file_part(
+                        form, f"files[{file_idx}]", file_info["data"], file_info["filename"]
                     )
                     file_idx += 1
 
@@ -1092,17 +1134,17 @@ class NotificationService:
             has_files_now = bool(embed_image_data or files_for_thread_starter)
 
             if has_files_now:
-                form = aiohttp.FormData()
-                form.add_field("payload_json", json.dumps(payload))
+                form = MultipartWriter("form-data")
+                self._add_text_part(form, "payload_json", json.dumps(payload))
 
                 file_idx = 0
                 if embed_image_data:
-                    form.add_field(f"files[{file_idx}]", embed_image_data, filename=embed_image_filename)
+                    self._add_file_part(form, f"files[{file_idx}]", embed_image_data, embed_image_filename)
                     file_idx += 1
 
                 for file_info in files_for_thread_starter:
-                    form.add_field(
-                        f"files[{file_idx}]", file_info["data"], filename=file_info["filename"]
+                    self._add_file_part(
+                        form, f"files[{file_idx}]", file_info["data"], file_info["filename"]
                     )
                     file_idx += 1
 
@@ -1158,17 +1200,17 @@ class NotificationService:
         for batch_idx in range(0, len(files), 10):
             batch = files[batch_idx : batch_idx + 10]
 
-            form = aiohttp.FormData()
+            form = MultipartWriter("form-data")
             payload = {}
             if reply_to_id and not is_thread:
                 payload["message_reference"] = {"message_id": reply_to_id}
 
-            form.add_field("payload_json", json.dumps(payload))
+            self._add_text_part(form, "payload_json", json.dumps(payload))
 
             for idx, file_info in enumerate(batch):
                 field_name = f"files[{idx}]"
-                form.add_field(
-                    field_name, file_info["data"], filename=file_info["filename"]
+                self._add_file_part(
+                    form, field_name, file_info["data"], file_info["filename"]
                 )
 
             try:
@@ -1191,12 +1233,12 @@ class NotificationService:
             original_filename = group.get("filename", "Preview.pdf")
             caption = f"📑 [미리보기] {original_filename}"
 
-            form = aiohttp.FormData()
-            form.add_field("payload_json", json.dumps({"content": caption}))
+            form = MultipartWriter("form-data")
+            self._add_text_part(form, "payload_json", json.dumps({"content": caption}))
 
             # Add all images in the group
             for idx, img in enumerate(group["images"]):
-                form.add_field(f"files[{idx}]", img["data"], filename=img["filename"])
+                self._add_file_part(form, f"files[{idx}]", img["data"], img["filename"])
 
             async with session.post(message_url, headers=headers, data=form) as resp:
                 if resp.status in [200, 201]:
