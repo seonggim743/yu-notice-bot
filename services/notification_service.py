@@ -22,6 +22,64 @@ class NotificationService:
         self.telegram_token = settings.TELEGRAM_TOKEN
         self.chat_id = settings.TELEGRAM_CHAT_ID
 
+    async def _send_telegram_api(
+        self,
+        session: aiohttp.ClientSession,
+        method: str,
+        payload: dict = None,
+        data: Any = None,
+        retries: int = 3,
+    ) -> Optional[Dict]:
+        """
+        Helper to send Telegram API requests with rate limit handling (429).
+        """
+        url = f"https://api.telegram.org/bot{self.telegram_token}/{method}"
+        
+        for attempt in range(retries):
+            try:
+                # Use data for FormData (multipart), json for simple payloads
+                if data:
+                    async with session.post(url, data=data) as resp:
+                        if resp.status == 200:
+                            return await resp.json()
+                        elif resp.status == 429:
+                            resp_json = await resp.json()
+                            retry_after = resp_json.get("parameters", {}).get("retry_after", 5)
+                            logger.warning(
+                                f"[NOTIFIER] Telegram 429 (Too Many Requests). Waiting {retry_after}s..."
+                            )
+                            await asyncio.sleep(retry_after + 1)
+                            continue
+                        else:
+                            logger.error(
+                                f"[NOTIFIER] Telegram API {method} failed (Status {resp.status}): {await resp.text()}"
+                            )
+                            return None
+                else:
+                    async with session.post(url, json=payload) as resp:
+                        if resp.status == 200:
+                            return await resp.json()
+                        elif resp.status == 429:
+                            resp_json = await resp.json()
+                            retry_after = resp_json.get("parameters", {}).get("retry_after", 5)
+                            logger.warning(
+                                f"[NOTIFIER] Telegram 429 (Too Many Requests). Waiting {retry_after}s..."
+                            )
+                            await asyncio.sleep(retry_after + 1)
+                            continue
+                        else:
+                            logger.error(
+                                f"[NOTIFIER] Telegram API {method} failed (Status {resp.status}): {await resp.text()}"
+                            )
+                            return None
+            except Exception as e:
+                logger.error(f"[NOTIFIER] Telegram API request error: {e}")
+                if attempt < retries - 1:
+                    await asyncio.sleep(2)
+                else:
+                    return None
+        return None
+
     def generate_clean_diff(self, old_text: str, new_text: str) -> str:
         """
         Generates a clean, line-by-line diff showing only changes.
@@ -147,19 +205,12 @@ class NotificationService:
             if not is_new and existing_message_id:
                 payload["reply_to_message_id"] = existing_message_id
 
-            try:
-                async with session.post(
-                    f"https://api.telegram.org/bot{self.telegram_token}/sendMessage",
-                    json=payload,
-                ) as resp:
-                    if resp.status == 200:
-                        result = await resp.json()
-                        main_msg_id = result.get("result", {}).get("message_id")
-                        logger.info(
-                            "[NOTIFIER] Sent text message first for PDF-only notice"
-                        )
-            except Exception as e:
-                logger.error(f"[NOTIFIER] Telegram text send failed: {e}")
+            result = await self._send_telegram_api(session, "sendMessage", payload=payload)
+            if result:
+                main_msg_id = result.get("result", {}).get("message_id")
+                logger.info(
+                    "[NOTIFIER] Sent text message first for PDF-only notice"
+                )
 
         if not content_images_to_send and not pdf_previews_to_send:
             # Text Only
@@ -180,16 +231,9 @@ class NotificationService:
             if not is_new and existing_message_id:
                 payload["reply_to_message_id"] = existing_message_id
 
-            try:
-                async with session.post(
-                    f"https://api.telegram.org/bot{self.telegram_token}/sendMessage",
-                    json=payload,
-                ) as resp:
-                    if resp.status == 200:
-                        result = await resp.json()
-                        main_msg_id = result.get("result", {}).get("message_id")
-            except Exception as e:
-                logger.error(f"[NOTIFIER] Telegram text send failed: {e}")
+            result = await self._send_telegram_api(session, "sendMessage", payload=payload)
+            if result:
+                main_msg_id = result.get("result", {}).get("message_id")
 
         elif len(content_images_to_send) == 1 and not pdf_previews_to_send:
             # Single Photo (Content only)
@@ -210,16 +254,9 @@ class NotificationService:
             if not is_new and existing_message_id:
                 form.add_field("reply_to_message_id", str(existing_message_id))
 
-            try:
-                async with session.post(
-                    f"https://api.telegram.org/bot{self.telegram_token}/sendPhoto",
-                    data=form,
-                ) as resp:
-                    if resp.status == 200:
-                        result = await resp.json()
-                        main_msg_id = result.get("result", {}).get("message_id")
-            except Exception as e:
-                logger.error(f"[NOTIFIER] Telegram photo send failed: {e}")
+            result = await self._send_telegram_api(session, "sendPhoto", data=form)
+            if result:
+                main_msg_id = result.get("result", {}).get("message_id")
 
         else:
             # Multiple Photos or Mix of Content + Previews
@@ -241,19 +278,10 @@ class NotificationService:
                     if not is_new and existing_message_id:
                         form.add_field("reply_to_message_id", str(existing_message_id))
 
-                    try:
-                        async with session.post(
-                            f"https://api.telegram.org/bot{self.telegram_token}/sendPhoto",
-                            data=form,
-                        ) as resp:
-                            if resp.status == 200:
-                                result = await resp.json()
-                                main_msg_id = result.get("result", {}).get("message_id")
-                                logger.info("[NOTIFIER] Sent single content image via sendPhoto (Mixed Mode)")
-                            else:
-                                logger.error(f"[NOTIFIER] Failed to send single content image: {await resp.text()}")
-                    except Exception as e:
-                        logger.error(f"[NOTIFIER] Telegram single photo send failed: {e}")
+                    result = await self._send_telegram_api(session, "sendPhoto", data=form)
+                    if result:
+                        main_msg_id = result.get("result", {}).get("message_id")
+                        logger.info("[NOTIFIER] Sent single content image via sendPhoto (Mixed Mode)")
 
                 # Case B: Multiple Content Images -> Use sendMediaGroup
                 else:
@@ -280,25 +308,14 @@ class NotificationService:
                     if not is_new and existing_message_id:
                         form.add_field("reply_to_message_id", str(existing_message_id))
 
-                    try:
-                        async with session.post(
-                            f"https://api.telegram.org/bot{self.telegram_token}/sendMediaGroup",
-                            data=form,
-                        ) as resp:
-                            if resp.status == 200:
-                                result = await resp.json()
-                                main_msg_id = result.get("result", [{}])[0].get(
-                                    "message_id"
-                                )
-                                logger.info(
-                                    f"[NOTIFIER] Sent {len(content_images_to_send)} content images as MediaGroup"
-                                )
-                            else:
-                                logger.error(
-                                    f"[NOTIFIER] Failed to send MediaGroup: {await resp.text()}"
-                                )
-                    except Exception as e:
-                        logger.error(f"[NOTIFIER] Telegram MediaGroup failed: {e}")
+                    result = await self._send_telegram_api(session, "sendMediaGroup", data=form)
+                    if result:
+                        main_msg_id = result.get("result", [{}])[0].get(
+                            "message_id"
+                        )
+                        logger.info(
+                            f"[NOTIFIER] Sent {len(content_images_to_send)} content images as MediaGroup"
+                        )
 
             # Send PDF previews as replies to main message (Grouped by PDF)
             if main_msg_id and pdf_previews_to_send:
@@ -344,26 +361,14 @@ class NotificationService:
                                     if topic_id:
                                         form.add_field("message_thread_id", str(topic_id))
 
-                                    try:
-                                        async with session.post(
-                                            f"https://api.telegram.org/bot{self.telegram_token}/sendMediaGroup",
-                                            data=form,
-                                        ) as resp:
-                                            if resp.status == 200:
-                                                logger.info(
-                                                    f"[NOTIFIER] Sent PDF preview chunk {chunk_idx + 1} for {att.name}"
-                                                )
-                                            else:
-                                                logger.error(
-                                                    f"[NOTIFIER] Failed to send PDF preview chunk: {await resp.text()}"
-                                                )
-                                    except Exception as e:
-                                        logger.error(
-                                            f"[NOTIFIER] PDF preview chunk error: {e}"
+                                    result = await self._send_telegram_api(session, "sendMediaGroup", data=form)
+                                    if result:
+                                        logger.info(
+                                            f"[NOTIFIER] Sent PDF preview chunk {chunk_idx + 1} for {att.name}"
                                         )
                                     
-                                    # Small delay between chunks to prevent rate limiting
-                                    await asyncio.sleep(0.5)
+                                    # Small delay between chunks to prevent rate limiting (even with retries)
+                                    await asyncio.sleep(1.0)
 
         # 2.2 Send Attachments as MediaGroup (All Together)
         if main_msg_id and notice.attachments:
@@ -442,21 +447,11 @@ class NotificationService:
                     form.add_field("message_thread_id", str(topic_id))
                 form.add_field("reply_to_message_id", str(main_msg_id))
 
-                try:
-                    async with session.post(
-                        f"https://api.telegram.org/bot{self.telegram_token}/sendMediaGroup",
-                        data=form,
-                    ) as resp:
-                        if resp.status == 200:
-                            logger.info(
-                                f"[NOTIFIER] Sent {len(collected_files)} files as MediaGroup"
-                            )
-                        else:
-                            logger.error(
-                                f"[NOTIFIER] Failed to send MediaGroup: {await resp.text()}"
-                            )
-                except Exception as e:
-                    logger.error(f"[NOTIFIER] MediaGroup send error: {e}")
+                result = await self._send_telegram_api(session, "sendMediaGroup", data=form)
+                if result:
+                    logger.info(
+                        f"[NOTIFIER] Sent {len(collected_files)} files as MediaGroup"
+                    )
 
         # 2.3 Send Detailed Change Content (if modified)
         if main_msg_id and modified_reason and notice.change_details:
@@ -489,14 +484,9 @@ class NotificationService:
                                 if topic_id:
                                     reply_payload["message_thread_id"] = topic_id
 
-                                try:
-                                    async with session.post(
-                                        f"https://api.telegram.org/bot{self.telegram_token}/sendMessage",
-                                        json=reply_payload,
-                                    ) as resp:
-                                        await asyncio.sleep(0.2)  # Prevent rate limiting
-                                except Exception as e:
-                                    logger.error(f"[NOTIFIER] Failed to send diff chunk for '{notice.title}': {e}")
+                                result = await self._send_telegram_api(session, "sendMessage", payload=reply_payload)
+                                if result:
+                                    await asyncio.sleep(0.2)
                         else:
                             detail_msg = (
                                 f"🔍 <b>상세 변경 내용</b>\n"
@@ -511,27 +501,14 @@ class NotificationService:
                             if topic_id:
                                 reply_payload["message_thread_id"] = topic_id
 
-                            try:
-                                async with session.post(
-                                    f"https://api.telegram.org/bot{self.telegram_token}/sendMessage",
-                                    json=reply_payload,
-                                ) as resp:
-                                    pass
-                            except Exception as e:
-                                logger.error(f"[NOTIFIER] Failed to send diff for '{notice.title}': {e}")
+                            result = await self._send_telegram_api(session, "sendMessage", payload=reply_payload)
+                            if not result:
                                 # Fallback message
                                 fallback_msg = (
                                     "⚠️ 상세 변경 내용을 불러올 수 없습니다. <b>원본 공지 링크</b>를 확인해주세요."
                                 )
-                                try:
-                                    reply_payload["text"] = fallback_msg
-                                    async with session.post(
-                                        f"https://api.telegram.org/bot{self.telegram_token}/sendMessage",
-                                        json=reply_payload,
-                                    ) as fallback_resp:
-                                        pass
-                                except Exception:
-                                    pass # Give up if fallback fails
+                                reply_payload["text"] = fallback_msg
+                                await self._send_telegram_api(session, "sendMessage", payload=reply_payload)
 
                     else:
                         # Diff generation failed but content changed
@@ -547,14 +524,7 @@ class NotificationService:
                         if topic_id:
                             reply_payload["message_thread_id"] = topic_id
                         
-                        try:
-                            async with session.post(
-                                f"https://api.telegram.org/bot{self.telegram_token}/sendMessage",
-                                json=reply_payload,
-                            ) as resp:
-                                pass
-                        except Exception as e:
-                            logger.error(f"[NOTIFIER] Failed to send diff error msg for '{notice.title}': {e}")
+                        await self._send_telegram_api(session, "sendMessage", payload=reply_payload)
 
         return main_msg_id
 
