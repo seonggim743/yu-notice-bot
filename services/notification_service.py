@@ -898,6 +898,20 @@ class NotificationService:
             }
             update_embed["fields"] = []
 
+            # Add Change Summary Field (Unified Style)
+            from services.notification.formatters import format_change_summary
+            change_summary = ""
+            if changes:
+                 change_summary = format_change_summary(changes)
+            
+            if change_summary:
+                update_embed["fields"].append(
+                    {"name": "🔄 변경 요약", "value": change_summary, "inline": False}
+                )
+            elif modified_reason:
+                # Description already contains generic modified_reason, so we skip adding a redundant field.
+                pass
+
             if notice.summary:
                 update_embed["fields"].append(
                     {

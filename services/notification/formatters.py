@@ -255,12 +255,9 @@ def create_discord_embed(notice, is_new: bool, modified_reason: str = "", change
     description_text = ""
     
     # [NEW] Change Summary Header for Modified Notices
-    if not is_new and changes:
-        change_summary = format_change_summary(changes)
-        if change_summary:
-            description_text += f"**[변경 요약]**\n{change_summary}\n\n"
-    elif not is_new and modified_reason:
-         description_text += f"⚠️ **수정 사항**: {modified_reason}\n\n"
+    # We now add this as a dedicated Field, so we don't append to description here.
+    # However, if we don't have detailed changes but have a reason, we can mention it here or in fields.
+    # Logic moved to Field generation.
 
     if summary_text:
         formatted_summary = format_summary_lines(summary_text)
@@ -287,6 +284,22 @@ def create_discord_embed(notice, is_new: bool, modified_reason: str = "", change
     # Add fields - Skip for dormitory_menu
     is_menu = notice.site_key == "dormitory_menu"
 
+    # [NEW] Add Change Summary as the FIRST Field
+    if not is_new:
+        change_summary = ""
+        if changes:
+             change_summary = format_change_summary(changes)
+        
+        if change_summary:
+            embed["fields"].append(
+                {"name": "🔄 변경 요약", "value": change_summary, "inline": False}
+            )
+        elif modified_reason:
+             # Fallback if no specific changes dict or empty summary
+             embed["fields"].append(
+                {"name": "⚠️ 수정 사항", "value": truncate_text(modified_reason, 1000), "inline": False}
+            )
+
     if notice.deadline:
         embed["fields"].append(
             {"name": "📅 마감일", "value": notice.deadline, "inline": True}
@@ -311,12 +324,7 @@ def create_discord_embed(notice, is_new: bool, modified_reason: str = "", change
         tags_text = " ".join([f"`{tag}`" for tag in notice.tags[:5]])
         embed["fields"].append({"name": "🏷️ 태그", "value": tags_text, "inline": False})
 
-    # Removed generic modified_reason field in favor of header, 
-    # but keep it if no changes dict was provided and it's not empty
-    if modified_reason and not changes:
-        embed["fields"].append(
-            {"name": "⚠️ 수정 사항", "value": truncate_text(modified_reason, 1000), "inline": False}
-        )
+
 
     return embed
 
