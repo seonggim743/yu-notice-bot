@@ -16,13 +16,9 @@ except Exception as e:
     logger.critical(f"Failed to load configuration: {e}", exc_info=True)
     sys.exit(1)
 
-# Debug: Verify Config Loading
-print(f"DEBUG: CWD = {os.getcwd()}")
-# Debug: Check if tokens are loaded
-discord_token = settings.DISCORD_BOT_TOKEN or ""
-print(
-    f"DEBUG: Loaded Discord Token = {discord_token[:5]}...{discord_token[-5:] if len(discord_token) > 10 else 'TooShort'}"
-)
+# Debug: Verify Config Loading (safe logging)
+logger.debug(f"CWD = {os.getcwd()}")
+logger.debug(f"Discord Token configured: {'Yes' if settings.DISCORD_BOT_TOKEN else 'No'}")
 
 from core.database import Database
 from core.error_notifier import get_error_notifier, ErrorSeverity

@@ -10,7 +10,6 @@ from models.notice import Notice
 from services.tag_matcher import TagMatcher
 from services.notification.formatters import (
     create_telegram_message,
-    create_telegram_message,
     generate_clean_diff,
 )
 import urllib.parse

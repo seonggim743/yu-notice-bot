@@ -10,7 +10,6 @@ import os
 import shutil
 import tempfile
 import zipfile
-import zipfile
 from pypdf import PdfReader
 from services.polaris_service import PolarisService
 
