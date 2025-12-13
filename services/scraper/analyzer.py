@@ -3,17 +3,26 @@ from typing import Optional, Dict
 from models.notice import Notice
 from services.ai_service import AIService
 from core.logger import get_logger
+from core.interfaces import IAIService
 from core import constants
 
 logger = get_logger(__name__)
+
 
 class ContentAnalyzer:
     """
     Handles AI analysis and Diff generation.
     Manages rate limiting and error handling for AI calls.
+    Supports dependency injection for testing.
     """
-    def __init__(self, no_ai_mode: bool = False):
-        self.ai = AIService()
+
+    def __init__(
+        self,
+        no_ai_mode: bool = False,
+        ai_service: Optional[IAIService] = None,
+    ):
+        # Inject or create default instance
+        self.ai = ai_service or AIService()
         self.no_ai_mode = no_ai_mode
         self.ai_summary_count = 0
         self.MAX_AI_SUMMARIES = constants.MAX_AI_SUMMARIES

@@ -1,6 +1,7 @@
 """
 File service - delegates to specialized file handlers.
 This file maintains backward compatibility with existing code that imports FileService.
+Supports dependency injection for easier testing.
 """
 import aiohttp
 import io
@@ -28,14 +29,24 @@ class FileService(BaseFileHandler):
     """
     Unified file service that delegates to specialized handlers.
     Maintains the same interface as the original FileService for backward compatibility.
+    Supports dependency injection for testing.
     """
 
-    def __init__(self):
-        self.polaris_service = PolarisService()
-        self.pdf_handler = PDFHandler()
-        self.hwp_handler = HWPHandler()
-        self.office_handler = OfficeHandler()
-        self.image_handler = ImageHandler()
+    def __init__(
+        self,
+        # Dependency Injection - Optional, defaults to real implementations
+        polaris_service: Optional[PolarisService] = None,
+        pdf_handler: Optional[PDFHandler] = None,
+        hwp_handler: Optional[HWPHandler] = None,
+        office_handler: Optional[OfficeHandler] = None,
+        image_handler: Optional[ImageHandler] = None,
+    ):
+        # Inject or create default instances
+        self.polaris_service = polaris_service or PolarisService()
+        self.pdf_handler = pdf_handler or PDFHandler()
+        self.hwp_handler = hwp_handler or HWPHandler()
+        self.office_handler = office_handler or OfficeHandler()
+        self.image_handler = image_handler or ImageHandler()
 
     def extract_text(self, file_data: bytes, filename: str) -> str:
         """Extracts text from PDF or HWP files."""
