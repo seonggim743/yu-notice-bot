@@ -15,15 +15,22 @@ async def test_discord_embed():
     print("Discord Embed Verification")
     print("=" * 60)
 
-    # Mock settings
-    with patch("services.notification_service.settings") as mock_settings:
-        mock_settings.DISCORD_BOT_TOKEN = "test_token"
-        mock_settings.DISCORD_CHANNEL_MAP = {"test_site": "123456789"}
-        mock_settings.USER_AGENT = "test_agent"
+    # Mock settings for both telegram and discord modules
+    with patch("services.notification.discord.settings") as mock_discord_settings, \
+         patch("services.notification.telegram.settings") as mock_telegram_settings:
+        # Configure discord settings
+        mock_discord_settings.DISCORD_BOT_TOKEN = "test_token"
+        mock_discord_settings.DISCORD_CHANNEL_MAP = {"test_site": "123456789"}
+        mock_discord_settings.USER_AGENT = "test_agent"
+        
+        # Configure telegram settings (for NotificationService init)
+        mock_telegram_settings.TELEGRAM_TOKEN = None
+        mock_telegram_settings.TELEGRAM_CHAT_ID = None
 
         from services.notification_service import NotificationService
 
         service = NotificationService()
+
 
         # Create dummy notice with attachments
         notice = Notice(
