@@ -13,6 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      max-parallel: 1
       matrix:
         site: [yu_news, cse_notice, bachelor_guide, dormitory_notice, eoullim_career, eoullim_external, eoullim_study, calendar, dormitory_menu]
 
