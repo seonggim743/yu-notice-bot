@@ -1,8 +1,8 @@
-name: YU Crawler Bot (Slow Cycle)
+name: YU Crawler Bot (Fast Cycle)
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # Every 6 hours
+    - cron: '*/30 * * * *' # Every 30 minutes
   workflow_dispatch:
 
 permissions:
@@ -14,7 +14,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        site: [calendar, dormitory_menu]
+        site: [yu_news, cse_notice, bachelor_guide, dormitory_notice, eoullim_career, eoullim_external, eoullim_study, calendar, dormitory_menu]
 
     steps:
       - name: Checkout

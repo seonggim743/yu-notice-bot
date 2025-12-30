@@ -1,5 +1,5 @@
 # Scraper Settings
-MAX_AI_SUMMARIES = 30
+MAX_AI_SUMMARIES = 50
 AI_CALL_DELAY = 7.0  # Seconds between AI calls
 NOTICE_PROCESS_DELAY = 0.5  # Seconds between processing notices
 MAX_PREVIEWS = 10  # Maximum number of previews to generate per run

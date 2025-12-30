@@ -35,6 +35,12 @@ class NoticeFetcher:
             headers=self.headers
         )
 
+    def set_cookies(self, session: aiohttp.ClientSession, cookies: Dict[str, str]):
+        """Injects authentication cookies into the session."""
+        session.cookie_jar.update_cookies(cookies)
+        logger.info(f"[FETCHER] Injected {len(cookies)} cookies into session.")
+
+
     async def fetch_url(self, session: aiohttp.ClientSession, url: str) -> str:
         """
         Fetches URL content with error handling and retry logic.

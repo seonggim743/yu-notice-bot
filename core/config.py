@@ -2,6 +2,7 @@ from pydantic_settings import BaseSettings
 from typing import Dict, List, Optional, Union
 from pydantic import Field, field_validator
 import json
+import os
 from core import constants
 
 
@@ -28,6 +29,9 @@ class Settings(BaseSettings):
     TELEGRAM_TOPIC_MAP: Union[Dict[str, int], str] = Field(default_factory=dict)
 
     # --- Discord ---
+    # Dev/Admin Notification
+    DEV_PLATFORM: str = os.getenv("DEV_PLATFORM", "telegram") # telegram or discord
+    DEV_CHANNEL_ID: str = os.getenv("DEV_CHANNEL_ID", "")
     # Bot API (recommended)
     DISCORD_BOT_TOKEN: Optional[str] = None
     DISCORD_CHANNEL_MAP: Union[Dict[str, str], str] = Field(default_factory=dict)
@@ -61,6 +65,10 @@ class Settings(BaseSettings):
     USER_AGENT: str = Field(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     )
+
+    # --- Eoullim Login ---
+    YU_EOULLIM_ID: Optional[str] = Field(None, description="Eoullim ID")
+    YU_EOULLIM_PW: Optional[str] = Field(None, description="Eoullim Password")
 
     @field_validator("TELEGRAM_TOPIC_MAP", mode="before")
     @classmethod

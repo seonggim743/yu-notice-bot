@@ -52,5 +52,32 @@
     "title_selector": "a",
     "link_selector": "a",
     "content_selector": ".b-view-content"
+  },
+  {
+    "key": "eoullim_career",
+    "url": "https://join.yu.ac.kr/front_new/index.php?g_page=program&m_page=program01",
+    "base_url": "https://join.yu.ac.kr/front_new/",
+    "list_selector": "div.program_list div.program_con",
+    "title_selector": "p.pro_title",
+    "link_selector": "div.con > a",
+    "content_selector": "div.program_view"
+  },
+  {
+    "key": "eoullim_external",
+    "url": "https://join.yu.ac.kr/front_new/index.php?g_page=program&m_page=program04",
+    "base_url": "https://join.yu.ac.kr/front_new/",
+    "list_selector": "table.responsive tbody tr",
+    "title_selector": "td.subject a",
+    "link_selector": "td.subject a",
+    "content_selector": "div.contents"
+  },
+  {
+    "key": "eoullim_study",
+    "url": "https://join.yu.ac.kr/front_new/index.php?g_page=program&m_page=program06",
+    "base_url": "https://join.yu.ac.kr/front_new/",
+    "list_selector": "table.responsive tbody tr",
+    "title_selector": "td.subject a",
+    "link_selector": "td.subject a",
+    "content_selector": "div.contents"
   }
 ]

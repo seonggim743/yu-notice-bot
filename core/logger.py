@@ -20,11 +20,13 @@ class SensitiveDataFilter(logging.Filter):
         (r"(TELEGRAM_TOKEN=|bot)[0-9]{8,}:[A-Za-z0-9_-]{35}", r"\1***MASKED***"),
         (r"(GEMINI_API_KEY=|AIza)[A-Za-z0-9_-]{35,}", r"\1***MASKED***"),
         (r"(SUPABASE_KEY=|eyJ)[A-Za-z0-9_.-]{100,}", r"\1***MASKED***"),
+        (r"(OPENAI_API_KEY=|sk-)[A-Za-z0-9]{40,}", r"\1***MASKED***"),
         (
-            r"(DISCORD_WEBHOOK_URL=)https://discord\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+",
+            r"(DISCORD_WEBHOOK_URL=|https://discord\.com/api/webhooks/)[0-9]+/[A-Za-z0-9_-]+",
             r"\1***MASKED***",
         ),
         (r"(CANVAS_TOKEN=)[A-Za-z0-9]{50,}", r"\1***MASKED***"),
+        (r"https://[a-z0-9-]+\.supabase\.co", r"***SUPABASE_URL***"),
     ]
 
     def filter(self, record: logging.LogRecord) -> bool:

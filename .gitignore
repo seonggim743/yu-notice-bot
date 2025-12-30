@@ -143,6 +143,7 @@ bot.log*
 
 # Debug directory
 scripts/debug/
+debug_*.py
 
 # Internal Documentation
 docs/

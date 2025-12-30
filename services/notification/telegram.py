@@ -15,6 +15,9 @@ from core import constants
 from models.notice import Notice
 from services.notification.base import BaseNotifier
 from services.notification.formatters import create_telegram_message
+from services.file.image import ImageHandler
+
+from services.notification.dev_notifier import DevNotifier
 
 logger = get_logger(__name__)
 
@@ -25,6 +28,8 @@ class TelegramNotifier(BaseNotifier):
     def __init__(self):
         self.telegram_token = settings.TELEGRAM_TOKEN
         self.chat_id = settings.TELEGRAM_CHAT_ID
+        self.image_handler = ImageHandler()
+        self.dev_notifier = DevNotifier()
 
     async def _send_telegram_api(
         self,
@@ -140,14 +145,19 @@ class TelegramNotifier(BaseNotifier):
                     headers = {"Referer": notice.url, "User-Agent": settings.USER_AGENT}
                     async with session.get(image_url, headers=headers) as resp:
                         if resp.status == 200:
-                            data = await resp.read()
+                            original_data = await resp.read()
+                            
+                            # Optimize for Telegram (Resize if too big)
+                            optimized_data = self.image_handler.optimize_for_telegram(original_data)
+                            
                             # Only first image gets the main caption
                             caption = msg if idx == 0 else None
                             content_images_to_send.append(
                                 {
                                     "type": "content",
-                                    "data": data,
-                                    "filename": f"image_{idx}.jpg",
+                                    "data": optimized_data,
+                                    "original_data": original_data,
+                                    "filename": f"image_{idx}.jpg", # Force jpg extension
                                     "caption": caption,
                                 }
                             )
@@ -235,11 +245,13 @@ class TelegramNotifier(BaseNotifier):
         elif len(content_images_to_send) == 1 and not pdf_previews_to_send:
             # Single Photo (Content only)
             img = content_images_to_send[0]
+            
+            # 1. Send Preview (Resized) via sendPhoto
             form = MultipartWriter("form-data")
-            self._add_file_part(form, "photo", img["data"], img["filename"])
+            self._add_file_part(form, "photo", img["data"], img["filename"]) # Already optimized in loop
             self._add_text_part(
                 form, "caption", img["caption"][: constants.DISCORD_MAX_EMBED_LENGTH]
-            )  # Caption limit
+            )
             self._add_text_part(form, "parse_mode", "HTML")
             self._add_text_part(form, "chat_id", str(self.chat_id))
             if topic_id:
@@ -248,14 +260,51 @@ class TelegramNotifier(BaseNotifier):
                 self._add_text_part(
                     form, "reply_markup", json.dumps({"inline_keyboard": inline_keyboard})
                 )
-
-            # If updating, reply to existing message
             if not is_new and existing_message_id:
                 self._add_text_part(form, "reply_to_message_id", str(existing_message_id))
 
             result = await self._send_telegram_api(session, "sendPhoto", data=form)
+            
+            # Fallback & Dev Alert
+            if not result:
+                error_msg = f"Telegram sendPhoto failed for {notice.site_key} - {notice.title}"
+                logger.warning(f"[TELEGRAM] {error_msg}. Falling back to sendMessage.")
+                await self.dev_notifier.send_alert(error_msg + "\n(Falling back to Text)")
+
+                fallback_text = f"{msg}"
+                if buttons:
+                     fallback_text += "\n\n(이미지 전송 실패로 텍스트로 대체됨)"
+                
+                payload = {
+                    "chat_id": str(self.chat_id),
+                    "text": fallback_text,
+                    "parse_mode": "HTML",
+                    "disable_web_page_preview": False
+                }
+                if topic_id:
+                    payload["message_thread_id"] = str(topic_id)
+                if buttons:
+                    payload["reply_markup"] = json.dumps({"inline_keyboard": inline_keyboard})
+                
+                result = await self._send_telegram_api(session, "sendMessage", payload=payload)
             if result:
                 main_msg_id = result.get("result", {}).get("message_id")
+                
+                # 2. Dual Send: Send Original as Document
+                if img.get("original_data"):
+                    # Only send if original is different or if explicitly requested (User wants both)
+                    # Let's send it always as requested.
+                    doc_form = MultipartWriter("form-data")
+                    self._add_file_part(doc_form, "document", img["original_data"], "original_" + img["filename"])
+                    self._add_text_part(doc_form, "caption", "📂 원본 이미지 파일")
+                    self._add_text_part(doc_form, "chat_id", str(self.chat_id))
+                    if topic_id:
+                        self._add_text_part(doc_form, "message_thread_id", str(topic_id))
+                    if main_msg_id:
+                         self._add_text_part(doc_form, "reply_to_message_id", str(main_msg_id))
+
+                    await self._send_telegram_api(session, "sendDocument", data=doc_form)
+                    logger.info("[TELEGRAM] Sent original image as document (Dual Send)")
 
         else:
             # Multiple Photos or Mix of Content + Previews
@@ -264,20 +313,38 @@ class TelegramNotifier(BaseNotifier):
                 # Case A: Single Content Image -> Use sendPhoto (MediaGroup requires 2+)
                 if len(content_images_to_send) == 1:
                     img = content_images_to_send[0]
-                    form = aiohttp.FormData()
-                    self._add_file_to_form(form, "photo", img["data"], img["filename"])
+                    form = MultipartWriter("form-data")
+                    self._add_file_part(form, "photo", img["data"], img["filename"])
                     if img.get("caption"):
-                        form.add_field("caption", img["caption"][: constants.DISCORD_MAX_EMBED_LENGTH])
-                        form.add_field("parse_mode", "HTML")
-                    form.add_field("chat_id", str(self.chat_id))
+                        self._add_text_part(form, "caption", img["caption"][: constants.DISCORD_MAX_EMBED_LENGTH])
+                        self._add_text_part(form, "parse_mode", "HTML")
+                    self._add_text_part(form, "chat_id", str(self.chat_id))
                     if topic_id:
-                        form.add_field("message_thread_id", str(topic_id))
+                        self._add_text_part(form, "message_thread_id", str(topic_id))
                     
                     # If updating, reply to existing message
                     if not is_new and existing_message_id:
-                        form.add_field("reply_to_message_id", str(existing_message_id))
+                        self._add_text_part(form, "reply_to_message_id", str(existing_message_id))
 
                     result = await self._send_telegram_api(session, "sendPhoto", data=form)
+                    
+                    # Fallback: If photo invalid (e.g. Dimensions), send as text
+                    if not result:
+                        logger.warning("[TELEGRAM] sendPhoto failed. Falling back to sendMessage.")
+                        fallback_text = f"{text_content}"
+                        if link_url:
+                             fallback_text += f"\n\n<a href='{link_url}'>원본 공지 보러가기</a>"
+                        
+                        payload = {
+                            "chat_id": str(self.chat_id),
+                            "text": fallback_text,
+                            "parse_mode": "HTML",
+                            "disable_web_page_preview": False
+                        }
+                        if topic_id:
+                            payload["message_thread_id"] = str(topic_id)
+                        
+                        result = await self._send_telegram_api(session, "sendMessage", payload=payload)
                     if result:
                         main_msg_id = result.get("result", {}).get("message_id")
                         logger.info("[NOTIFIER] Sent single content image via sendPhoto (Mixed Mode)")

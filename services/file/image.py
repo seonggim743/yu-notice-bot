@@ -76,54 +76,44 @@ class ImageHandler:
     def add_watermark(self, image_bytes: bytes, text: str = "PREVIEW") -> bytes:
         """
         Adds a semi-transparent watermark to the center of the image.
+        DISABLED: Now simply returns the original image.
         """
+        return image_bytes
+
+    def optimize_for_telegram(self, image_bytes: bytes) -> bytes:
+        """
+        Optimizes image for Telegram:
+        1. Ensures width + height <= 10000 pixels.
+        2. Converts to RGB/JPEG format for compatibility.
+        """
+        from PIL import Image
         try:
-            from PIL import Image, ImageDraw, ImageFont
-
-            with Image.open(io.BytesIO(image_bytes)) as base:
-                # Make the image editable
-                txt = Image.new("RGBA", base.size, (255, 255, 255, 0))
-                draw = ImageDraw.Draw(txt)
-
-                # Calculate font size based on image width (e.g., 15% of width)
-                fontsize = int(base.width / 6)
-                try:
-                    font = ImageFont.truetype("arial.ttf", fontsize)
-                except:
-                    font = ImageFont.load_default()
-
-                # Calculate text size and position
-                try:
-                    bbox = draw.textbbox((0, 0), text, font=font)
-                    text_width = bbox[2] - bbox[0]
-                    text_height = bbox[3] - bbox[1]
-                except AttributeError:
-                    text_width, text_height = draw.textsize(text, font=font)
-
-                x = (base.width - text_width) / 2
-                y = (base.height - text_height) / 2
-
-                # Draw text with transparency (RGBA)
-                draw.text((x, y), text, font=font, fill=(255, 255, 255, 128))
-
-                # Outline for better visibility
-                stroke_width = 2
-                draw.text((x - stroke_width, y), text, font=font, fill=(0, 0, 0, 128))
-                draw.text((x + stroke_width, y), text, font=font, fill=(0, 0, 0, 128))
-                draw.text((x, y - stroke_width), text, font=font, fill=(0, 0, 0, 128))
-                draw.text((x, y + stroke_width), text, font=font, fill=(0, 0, 0, 128))
-
-                # Composite
-                out = Image.alpha_composite(base.convert("RGBA"), txt)
-
-                # Save back to bytes
-                out_buffer = io.BytesIO()
-                out.convert("RGB").save(out_buffer, format="JPEG", quality=85)
-                return out_buffer.getvalue()
-
-        except ImportError:
-            logger.warning("[FILE] Pillow not installed. Skipping watermark.")
-            return image_bytes
+            with Image.open(io.BytesIO(image_bytes)) as img:
+                # 1. Check content type/mode
+                if img.mode != "RGB":
+                    img = img.convert("RGB")
+                    
+                width, height = img.size
+                
+                # Telegram Limit: width + height <= 10000
+                if width + height > 10000:
+                    # Calculate new size
+                    # Conservative factor to be safe
+                    target_sum = 9000
+                    ratio = target_sum / float(width + height)
+                    
+                    new_width = int(width * ratio)
+                    new_height = int(height * ratio)
+                    
+                    img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+                    logger.info(f"[IMAGE] Resized for Telegram: {width}x{height} -> {new_width}x{new_height}")
+                
+                output = io.BytesIO()
+                img.save(output, format="JPEG", quality=85)
+                output.seek(0)
+                return output.getvalue()
+                
         except Exception as e:
-            logger.error(f"[FILE] Watermark failed: {e}")
+            logger.error(f"[IMAGE] Optimization failed: {e}")
             return image_bytes
+

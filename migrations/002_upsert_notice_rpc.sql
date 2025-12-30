@@ -31,17 +31,29 @@ BEGIN
         p_notice->>'content_hash',
         p_notice->>'summary',
         (p_notice->>'embedding')::VECTOR,
-        (p_notice->>'image_urls')::TEXT[],
+        CASE 
+            WHEN p_notice->'image_urls' IS NULL OR jsonb_typeof(p_notice->'image_urls') = 'null' THEN ARRAY[]::TEXT[]
+            ELSE ARRAY(SELECT jsonb_array_elements_text(p_notice->'image_urls'))
+        END,
         p_notice->>'attachment_text',
         COALESCE((p_notice->>'message_ids')::JSONB, '{}'::JSONB),
         p_notice->>'discord_thread_id',
         (p_notice->>'deadline')::DATE,
-        (p_notice->>'eligibility')::TEXT[],
+        CASE 
+            WHEN p_notice->'eligibility' IS NULL OR jsonb_typeof(p_notice->'eligibility') = 'null' THEN ARRAY[]::TEXT[]
+            ELSE ARRAY(SELECT jsonb_array_elements_text(p_notice->'eligibility'))
+        END,
         (p_notice->>'start_date')::DATE,
         (p_notice->>'end_date')::DATE,
         p_notice->>'target_dept',
-        (p_notice->>'target_grades')::INTEGER[],
-        (p_notice->>'tags')::TEXT[],
+        CASE 
+            WHEN p_notice->'target_grades' IS NULL OR jsonb_typeof(p_notice->'target_grades') = 'null' THEN ARRAY[]::INTEGER[]
+            ELSE ARRAY(SELECT jsonb_array_elements_text(p_notice->'target_grades')::INTEGER)
+        END,
+        CASE 
+            WHEN p_notice->'tags' IS NULL OR jsonb_typeof(p_notice->'tags') = 'null' THEN ARRAY[]::TEXT[]
+            ELSE ARRAY(SELECT jsonb_array_elements_text(p_notice->'tags'))
+        END,
         NOW()
     )
     ON CONFLICT (site_key, article_id) DO UPDATE SET

@@ -13,7 +13,10 @@ from models.target import Target
 from repositories.notice_repo import NoticeRepository
 from services.notification_service import NotificationService
 from services.file_service import FileService
+from services.file_service import FileService
 from parsers.html_parser import HTMLParser
+from parsers.eoullim_parser import EoullimParser
+from services.auth_service import AuthService
 from core.performance import get_performance_monitor
 from core import constants
 
@@ -50,8 +53,18 @@ class ScraperService:
         
         # New Components
         self.fetcher = fetcher or NoticeFetcher()
-        self.parser = parser or NoticeParser()
+        self.fetcher = fetcher or NoticeFetcher()
+        self.parser = parser or NoticeParser() # Note: This seems to be a service/manager, not the actual parser instance. 
+        # Wait, self.parser is assigned NoticeParser() in line 53.
+        # But _load_targets creates HTMLParser() instances and puts them in target dict.
+        # The code uses self.parser.parse_list (line 152) which calls HTMLParser methods?
+        # No, line 22 imports `NoticeParser` from `services.scraper.parser`.
+        # That `NoticeParser` service likely delegates to the parser instance in target dict.
+        # Let's check `services/scraper/parser.py` content to match calling convention.
+        # Assuming `target['parser']` is the actual parser instance (HTMLParser or EoullimParser).
+        
         self.analyzer = analyzer or ContentAnalyzer(no_ai_mode=no_ai_mode)
+        self.auth_service = AuthService()
         
         self.init_mode = init_mode
         self.no_ai_mode = no_ai_mode
@@ -80,12 +93,20 @@ class ScraperService:
                     target = Target(**item)
                     target_dict = target.model_dump()
                     # Keep HTMLParser instance for Strategy Pattern
-                    target_dict["parser"] = HTMLParser(
-                        target.list_selector,
-                        target.title_selector,
-                        target.link_selector,
-                        target.content_selector
-                    )
+                    if target.key.startswith("eoullim_"):
+                        target_dict["parser"] = EoullimParser(
+                            target.list_selector,
+                            target.title_selector,
+                            target.link_selector,
+                            target.content_selector
+                        )
+                    else:
+                        target_dict["parser"] = HTMLParser(
+                            target.list_selector,
+                            target.title_selector,
+                            target.link_selector,
+                            target.content_selector
+                        )
                     valid_targets.append(target_dict)
                 except Exception as e:
                     logger.error(f"[SCRAPER] Invalid target configuration: {item.get('key', 'unknown')} - {e}")
@@ -121,7 +142,15 @@ class ScraperService:
         return hashlib.sha256(raw.encode()).hexdigest()
 
     async def run(self):
+        # Authenticate if needed
+        if any(t["key"].startswith("eoullim_") for t in self.targets):
+            cookies = await self.auth_service.get_eoullim_cookies()
+        
         session = await self.fetcher.create_session()
+        
+        if "cookies" in locals() and cookies:
+            self.fetcher.set_cookies(session, cookies)
+            
         async with session:
             monitor = get_performance_monitor()
             with monitor.measure("full_scrape_run"):
@@ -490,6 +519,14 @@ class ScraperService:
             target = self.targets[0]
 
         session = await self.fetcher.create_session()
+        
+        # Authenticate if needed for test URL
+        if target and target["key"].startswith("eoullim_"):
+            logger.info(f"[TEST] Eoullim target detected. Performing login...")
+            cookies = await self.auth_service.get_eoullim_cookies()
+            if cookies:
+                self.fetcher.set_cookies(session, cookies)
+                
         async with session:
             try:
                 html = await self.fetcher.fetch_url(session, test_url)

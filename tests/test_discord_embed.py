@@ -15,7 +15,8 @@ async def test_discord_embed():
     print("Discord Embed Verification")
     print("=" * 60)
 
-    # Mock settings for both telegram and discord modules
+    # Mock settings for the actual modules that use them
+    # Note: notification_service.py uses delegation pattern and doesn't import settings directly
     with patch("services.notification.discord.settings") as mock_discord_settings, \
          patch("services.notification.telegram.settings") as mock_telegram_settings:
         # Configure discord settings
@@ -23,9 +24,9 @@ async def test_discord_embed():
         mock_discord_settings.DISCORD_CHANNEL_MAP = {"test_site": "123456789"}
         mock_discord_settings.USER_AGENT = "test_agent"
         
-        # Configure telegram settings (for NotificationService init)
-        mock_telegram_settings.TELEGRAM_TOKEN = None
-        mock_telegram_settings.TELEGRAM_CHAT_ID = None
+        # Configure telegram settings (for TelegramNotifier init)
+        mock_telegram_settings.TELEGRAM_TOKEN = "test_token"
+        mock_telegram_settings.TELEGRAM_CHAT_ID = "test_chat"
 
         from services.notification_service import NotificationService
 

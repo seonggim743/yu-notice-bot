@@ -225,7 +225,7 @@ if __name__ == "__main__":
         
         # 1~10 seconds random delay
         delay = random.uniform(1.0, 10.0)
-        logger.info(f"🎲 Random Jitter: Sleeping for {delay:.2f}s before starting...")
+        logger.info(f"[JITTER] Random Jitter: Sleeping for {delay:.2f}s before starting...")
         import time
         time.sleep(delay)
 

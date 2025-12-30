@@ -295,6 +295,15 @@ class HTMLParser(BaseParser):
         if not content_div:
             body = soup.body
             snippet = body.decode_contents()[:500] if body else "No Body"
+            
+            # DEBUG: Save failed HTML
+            try:
+                with open("debug_failed_content.html", "w", encoding="utf-8") as f:
+                    f.write(html)
+                logger.info("[PARSER] Saved failed HTML to debug_failed_content.html")
+            except Exception as e:
+                logger.error(f"[PARSER] Failed to save debug HTML: {e}")
+
             logger.warning(
                 f"[PARSER] Content not found for {notice.url}\n"
                 f"Tried selectors: {', '.join(self.content_selectors)}\n"

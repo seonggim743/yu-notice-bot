@@ -39,4 +39,3 @@ RUN playwright install-deps chromium
 # NOTE: We do NOT copy source code here.
 # This image is intended to be a "runtime environment" for GitHub Actions.
 # The source code will be mounted or checked out at runtime.
-
