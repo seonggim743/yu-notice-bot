@@ -151,7 +151,7 @@ class HTMLParser(BaseParser):
         self._extract_attachments(soup, notice)
 
         # 3. Extract Content
-        self._extract_content(soup, notice)
+        self._extract_content(soup, notice, html)
 
         # 4. Extract Images
         self._extract_images(soup, notice)
@@ -255,7 +255,7 @@ class HTMLParser(BaseParser):
                 notice.attachments.append(Attachment(name=name, url=url))
                 logger.info(f"[PARSER] Added attachment: {name} -> {url}")
 
-    def _extract_content(self, soup: BeautifulSoup, notice: Notice):
+    def _extract_content(self, soup: BeautifulSoup, notice: Notice, html: str = ""):
         """Extract main content text"""
         content_div = None
 
@@ -383,7 +383,7 @@ class HTMLParser(BaseParser):
         notice = Notice(
             site_key="test", article_id="test", title="test", url="http://test.com"
         )
-        self._extract_content(soup, notice)
+        self._extract_content(soup, notice, str(soup))
         return notice.content
 
     def extract_attachments(

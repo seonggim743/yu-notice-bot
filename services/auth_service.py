@@ -66,22 +66,25 @@ class AuthService:
                     await page.press("#userPwd", "Enter")
                     
                     # 4. Wait for redirection
-                    logger.info("[AUTH] Submitted. Waiting for redirect...")
+                    logger.info("[AUTH] Submitted. Waiting for redirect to join.yu.ac.kr...")
                     
-                    # Wait for navigation to complete (networkidle or domcontentloaded)
                     try:
-                        # Wait for URL change OR load state
-                        await page.wait_for_load_state("networkidle", timeout=30000)
+                        # Explicitly wait for the URL to change to the target domain
+                        await page.wait_for_url(lambda url: "join.yu.ac.kr" in url, timeout=20000)
+                        logger.info("[AUTH] Redirection verified: Reached join.yu.ac.kr")
+                        
+                        # Wait a bit more for session cookies to be set thoroughly
+                        await page.wait_for_load_state("networkidle", timeout=10000)
+                        
                     except Exception as e:
-                        logger.warning(f"[AUTH] Network idle timeout, proceeding check: {e}")
-                    
-                    # Verify we are somewhat near the target
-                    curr_url = page.url
-                    if "join.yu.ac.kr" in curr_url or "sso" not in curr_url:
-                        logger.info(f"[AUTH] Redirection seems successful. Current URL: {curr_url}")
-                    else:
-                        logger.warning(f"[AUTH] May still be on login page. URL: {curr_url}")
-                    
+                        logger.warning(f"[AUTH] Redirection wait failed or timed out: {e}")
+                        # Fallback: check where we are
+                        if "join.yu.ac.kr" in page.url:
+                             logger.info("[AUTH] URL check OK despite timeout.")
+                        else:
+                             # If still on SSO, try to force go to target? No, that might break session.
+                             logger.error(f"[AUTH] Failed to reach target domain. Current: {page.url}")
+
                     # 5. Extract Cookies
                     cookies = await context.cookies()
                     cookie_dict = {c['name']: c['value'] for c in cookies}

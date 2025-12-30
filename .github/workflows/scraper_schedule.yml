@@ -41,6 +41,8 @@ jobs:
           DISCORD_TAG_MAP: ${{ secrets.DISCORD_TAG_MAP || '{}' }}
           CANVAS_TOKEN: ${{ secrets.CANVAS_TOKEN }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
+          YU_EOULLIM_ID: ${{ secrets.YU_EOULLIM_ID }}
+          YU_EOULLIM_PW: ${{ secrets.YU_EOULLIM_PW }}
           IMAGE_NAME: ${{ env.IMAGE_NAME_LOWER }}
         run: |
           docker run --rm \
@@ -48,6 +50,8 @@ jobs:
           -e SUPABASE_KEY="$SUPABASE_KEY" \
           -e GEMINI_API_KEY="$GEMINI_API_KEY" \
           -e DISCORD_BOT_TOKEN="$DISCORD_BOT_TOKEN" \
+          -e YU_EOULLIM_ID="$YU_EOULLIM_ID" \
+          -e YU_EOULLIM_PW="$YU_EOULLIM_PW" \
           -e TELEGRAM_TOKEN="$TELEGRAM_TOKEN" \
           -e CHAT_ID="$CHAT_ID" \
           -e TELEGRAM_TOPIC_MAP="$TELEGRAM_TOPIC_MAP" \
