@@ -375,7 +375,13 @@ class HTMLParser(BaseParser):
                 continue
 
             notice.image_urls.append(full_url)
-            logger.info(f"[PARSER] Added image: {full_url}")
+            
+            # Log truncation for Base64
+            display_url = full_url
+            if len(full_url) > 200 and full_url.startswith("data:image"):
+                display_url = f"{full_url[:50]}...[Base64 Truncated, Total Len: {len(full_url)}]"
+            
+            logger.info(f"[PARSER] Added image: {display_url}")
 
     # Public helper methods for testing (proxies to private methods or implementation)
     def extract_text(self, soup: BeautifulSoup) -> str:
