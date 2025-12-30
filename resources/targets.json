@@ -27,15 +27,6 @@
     "content_selector": ".b-view-content"
   },
   {
-    "key": "calendar",
-    "url": "https://hcms.yu.ac.kr/main/bachelor/calendar.do",
-    "base_url": "https://hcms.yu.ac.kr/main/bachelor/calendar.do",
-    "list_selector": "table tbody tr",
-    "title_selector": "a",
-    "link_selector": "a",
-    "content_selector": ".b-view-content"
-  },
-  {
     "key": "dormitory_notice",
     "url": "https://www.yu.ac.kr/dormi/community/notice.do",
     "base_url": "https://www.yu.ac.kr/dormi/community/notice.do",
