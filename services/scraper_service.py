@@ -141,7 +141,11 @@ class ScraperService:
         raw = f"{notice.title}{notice.content}{img_str}{att_str}{att_text}"
         return hashlib.sha256(raw.encode()).hexdigest()
 
-    async def run(self):
+    async def run(self) -> bool:
+        """
+        Runs the scraper for all loaded targets.
+        Returns: True if all targets succeeded, False if any failed.
+        """
         # Authenticate if needed
         if any(t["key"].startswith("eoullim_") for t in self.targets):
             cookies = await self.auth_service.get_eoullim_cookies()
@@ -151,6 +155,8 @@ class ScraperService:
         if "cookies" in locals() and cookies:
             self.fetcher.set_cookies(session, cookies)
             
+        success = True
+        
         async with session:
             monitor = get_performance_monitor()
             with monitor.measure("full_scrape_run"):
@@ -160,9 +166,19 @@ class ScraperService:
                         await self.process_target(session, target)
                     except Exception as e:
                         logger.error(f"[SCRAPER] Target {target['key']} failed: {e}")
+                        success = False
+                        # Send Immediate Dev Alert
+                        from core.error_notifier import get_error_notifier, ErrorSeverity
+                        await get_error_notifier().send_critical_error(
+                            f"Target '{target['key']}' failed during scraping loop",
+                            exception=e,
+                            context={"key": target["key"]},
+                            severity=ErrorSeverity.ERROR
+                        )
             
-            logger.info(f"[SCRAPER] Complete.")
+            logger.info(f"[SCRAPER] Complete. Success: {success}")
             monitor.log_summary()
+            return success
 
     async def process_target(self, session: aiohttp.ClientSession, target: Dict):
         key = target["key"]
