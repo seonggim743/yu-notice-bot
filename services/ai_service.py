@@ -96,10 +96,15 @@ class AIService:
             logger.error("[AI] System prompt template not loaded")
             return {"summary": "System Error", "category": "일반", "tags": []}
 
+        # Get categories for this site
+        categories = settings.CATEGORY_MAP.get(site_key) or settings.CATEGORY_MAP.get("default")
+        categories_str = ", ".join([f"'{c}'" for c in categories])
+
         try:
             prompt = self.system_prompt_template.format(
                 title=title,
                 author=author,
+                classification_categories=categories_str,
                 tags_instruction=tags_instruction,
                 content=text[: constants.AI_TEXT_TRUNCATE_LIMIT],
             )

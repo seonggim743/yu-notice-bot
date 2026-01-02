@@ -58,6 +58,13 @@ DEFAULT_AVAILABLE_TAGS = {
     "dormitory_notice": ["입·퇴사", "시설", "일반", "긴급"],
 }
 
+DEFAULT_CATEGORY_MAP = {
+    "eoullim_career": ["특강", "교육", "상담", "캠프", "모의시험"],
+    "eoullim_external": ["공모전", "대외활동", "봉사", "인턴", "채용", "교육"],
+    "eoullim_study": ["어학", "자격증", "면접", "직무", "기타"],
+    "default": ["학사", "장학", "행사", "채용", "일반", "비교과"],
+}
+
 DEFAULT_TAG_MATCHING_RULES = {
     "yu_news": {
         "긴급": ["긴급", "즉시", "필수", "중요", "마감임박", "시급"],

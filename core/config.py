@@ -48,9 +48,13 @@ class Settings(BaseSettings):
         default_factory=lambda: constants.DEFAULT_TAG_MATCHING_RULES
     )
 
-    # --- Available Tags per Channel (for AI Prompt) ---
     AVAILABLE_TAGS: Dict[str, List[str]] = Field(
         default_factory=lambda: constants.DEFAULT_AVAILABLE_TAGS
+    )
+
+    # --- Categories per Site (for AI Prompt) ---
+    CATEGORY_MAP: Dict[str, List[str]] = Field(
+        default_factory=lambda: constants.DEFAULT_CATEGORY_MAP
     )
 
     # --- Logging ---

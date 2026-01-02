@@ -33,13 +33,8 @@ class ContentAnalyzer:
     async def analyze_notice(self, notice: Notice) -> Notice:
         """
         Analyzes the notice content using LLM to generate a summary and category.
+        Delegates to the injected AIService (supporting Gemini).
         """
-        # Safely get key from injected AI service or config
-        openai_api_key = getattr(self.ai, 'openai_api_key', None)
-        if not openai_api_key and not self.no_ai_mode:
-            # Fallback to env var if needed, but for now just log error
-            pass
-
         try:
             if self.no_ai_mode:
                 notice.category = "일반"
@@ -65,90 +60,44 @@ class ContentAnalyzer:
                      logger.info(f"[ANALYZER] Skipped AI summary for Image/Attachment-only notice")
                      # Still get embedding for search
                      if not self.no_ai_mode:
-                         await self.ai.get_embedding(f"{notice.title}\n{notice.summary}") 
+                         notice.embedding = await self.ai.get_embedding(f"{notice.title}\n{notice.summary}") 
                      return notice
                  else:
                      # Just text but short -> Use as summary
                      notice.summary = notice.content.strip()[:200]
                      logger.info(f"[ANALYZER] Skipped AI summary for short text notice")
                      if not self.no_ai_mode:
-                         await self.ai.get_embedding(f"{notice.title}\n{notice.summary}")
+                         notice.embedding = await self.ai.get_embedding(f"{notice.title}\n{notice.summary}")
                      return notice
 
             logger.info(f"[ANALYZER] Waiting {self.AI_CALL_DELAY}s before analyze_notice...")
             await asyncio.sleep(self.AI_CALL_DELAY)
 
-            # Define Category Sets based on site_key
-            default_categories = ["학사", "장학", "행사", "채용", "일반", "비교과"]
-            
-            category_map = {
-                "eoullim_career": ["특강", "교육", "상담", "캠프", "모의시험"],
-                "eoullim_external": ["공모전", "대외활동", "봉사", "인턴", "채용", "교육"],
-                "eoullim_study": ["어학", "자격증", "면접", "직무", "기타"],
-            }
-            
-            # Select target categories
-            target_categories = category_map.get(notice.site_key, default_categories)
-            category_str = ", ".join(target_categories)
+            # Delegate to AIService
+            # We pass the full content including attachment text if available
+            full_content = notice.content
+            if notice.attachment_text:
+                full_content += f"\n\n[첨부파일 내용]\n{notice.attachment_text}"
 
-            system_prompt = (
-                "You are a helpful assistant that summarizes university notices."
-                "Summarize the content in 3 bullet points in Korean."
-                f"Also classify the notice into ONE of these categories: [{category_str}]."
-                "Respond in JSON format: {'summary': '...', 'category': '...'}"
+            result = await self.ai.analyze_notice(
+                text=full_content,
+                site_key=notice.site_key,
+                title=notice.title,
+                author=notice.author or ""
             )
 
-            user_content = f"Title: {notice.title}\n\nContent:\n{notice.content[:3000]}"
-            if notice.attachment_text:
-                user_content += f"\n\nAttachments:\n{notice.attachment_text[:1000]}"
+            notice.summary = result.get("summary", notice.content[:100] + " (요약 실패)")
+            notice.category = result.get("category", "일반")
+            notice.tags = result.get("tags", [])
+            
+            # Default fallback if category is missing/invalid managed by AIService prompt mostly, 
+            # but we can enforce defaults if needed.
+            if not notice.category:
+                notice.category = "일반"
 
-            # Direct OpenAI API Call
-            if not openai_api_key:
-                 logger.error("[ANALYZER] OpenAI API key not configured for AI service.")
-                 notice.category = "일반"
-                 notice.summary = notice.content[:100] + " (AI 설정 오류)"
-                 notice.embedding = []
-                 return notice
+            logger.info(f"[ANALYZER] AI Analysis complete. Category: {notice.category}")
 
-            async with aiohttp.ClientSession() as session:
-                payload = {
-                    "model": "gpt-4o-mini",
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_content},
-                    ],
-                    "temperature": 0.3,
-                    "response_format": {"type": "json_object"},
-                }
-                
-                headers = {
-                    "Authorization": f"Bearer {openai_api_key}",
-                    "Content-Type": "application/json",
-                }
-
-                async with session.post(
-                    "https://api.openai.com/v1/chat/completions",
-                    json=payload,
-                    headers=headers,
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        result = json.loads(data["choices"][0]["message"]["content"])
-                        
-                        notice.summary = result.get("summary", "")
-                        notice.category = result.get("category", "일반")
-                        
-                        # Validate category
-                        if notice.category not in target_categories:
-                             notice.category = target_categories[0] if target_categories else "일반"
-
-                        logger.info(f"[ANALYZER] AI Analysis complete. Category: {notice.category}")
-                    else:
-                        logger.error(f"[ANALYZER] OpenAI API Error: {await resp.text()}")
-                        notice.category = "일반"
-                        notice.summary = notice.content[:100] + " (AI 오류)"
-
-            # Generate Embedding using Supabase/OpenAI
+            # Generate Embedding
             logger.info(f"[ANALYZER] Waiting {self.AI_CALL_DELAY}s before get_embedding...")
             await asyncio.sleep(self.AI_CALL_DELAY)
             
@@ -166,7 +115,7 @@ class ContentAnalyzer:
             logger.error(f"[ANALYZER] Analysis failed: {e}")
             notice.category = "일반"
             notice.summary = notice.content[:100] + " (AI 오류)"
-            notice.embedding = [] # Ensure embedding is set even on error
+            notice.embedding = [] 
             return notice
 
     async def get_diff_summary(self, old_content: str, new_content: str) -> str:
