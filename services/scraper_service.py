@@ -266,7 +266,20 @@ class ScraperService:
                 item.summary = "기숙사 식단표입니다."
 
             else:
-                item = await self.analyzer.analyze_notice(item)
+                # OPTIMIZATION: If content is identical to old_notice, reuse AI results to save tokens
+                ai_skipped = False
+                if not is_new and "old_notice" in locals() and old_notice:
+                    # Clean comparison (ignore whitespace differences)
+                    if (old_notice.content or "").strip() == (item.content or "").strip():
+                         logger.info(f"[SCRAPER] Content is identical to previous version. Reusing AI metadata for '{item.title}'.")
+                         item.summary = old_notice.summary
+                         item.category = old_notice.category
+                         item.tags = old_notice.tags
+                         item.embedding = old_notice.embedding
+                         ai_skipped = True
+                
+                if not ai_skipped:
+                    item = await self.analyzer.analyze_notice(item)
                 
                 # Force dormitory tag for dormitory_notice
                 if key == "dormitory_notice":
