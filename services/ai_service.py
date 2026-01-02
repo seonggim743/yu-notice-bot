@@ -9,21 +9,134 @@ from core.config import settings
 from core.logger import get_logger
 from core.database import Database
 from core import constants
+from datetime import datetime, timedelta
+import pytz
 
 logger = get_logger(__name__)
 
 
+def get_kst_reset_time() -> str:
+    """
+    Calculates the next Google API Reset Time (Midnight PT = 5 PM KST).
+    Returns as ISO format string.
+    """
+    tz = pytz.timezone("Asia/Seoul")
+    now = datetime.now(tz)
+    # Today 5:01 PM
+    reset_time = now.replace(hour=17, minute=1, second=0, microsecond=0)
+    
+    # If already past 5 PM, reset is tomorrow
+    if now >= reset_time:
+        reset_time += timedelta(days=1)
+    
+    return reset_time.isoformat()
+
+
+def parse_error_type(error_msg: str) -> str:
+    """
+    Determines if the 429 error is RPD (Daily Limit) or RPM (Short-term).
+    """
+    error_msg = error_msg.lower()
+    
+    # RPD Indicators
+    if "quota_metric" in error_msg and "requests_per_day" in error_msg:
+        return "RPD"
+    if "quota exceeded" in error_msg and ("day" in error_msg or "daily" in error_msg or "limit: 20" in error_msg):
+        # limit: 20 is usually the daily limit for Pro/Flash experimental
+        return "RPD"
+    
+    # RPM Indicators
+    if "requests_per_minute" in error_msg or "rate limit" in error_msg:
+        return "RPM"
+        
+    return "UNKNOWN"  # Default to short-term block if unsure
+
+
 class AIService:
     def __init__(self):
+        self.db = Database.get_client()
         if settings.GEMINI_API_KEY:
             genai.configure(api_key=settings.GEMINI_API_KEY)
-            self.model = genai.GenerativeModel(settings.GEMINI_MODEL)
-            self.db = Database.get_client()
         else:
             logger.warning("[AI] Gemini API Key missing. AI features disabled.")
-            self.model = None
 
         self.system_prompt_template = self._load_system_prompt()
+
+    async def _get_available_models(self) -> list:
+        """
+        Fetches available models from DB, sorted by priority.
+        Checks for blocked_until < NOW() or NULL.
+        """
+        if not self.db:
+            return [settings.GEMINI_MODEL]
+
+        try:
+            # Supabase/PostgREST query
+            now_iso = datetime.now(pytz.utc).isoformat()
+            
+            # Logic: (blocked_until IS NULL) OR (blocked_until < NOW)
+            # PostgREST complex filter is tricky, so we fetch all active models and filter in Python
+            # This is safer for small tables (7 rows).
+            response = self.db.table("ai_models") \
+                .select("*") \
+                .eq("is_active", True) \
+                .order("priority", desc=False) \
+                .execute()
+                
+            models = response.data
+            valid_models = []
+            
+            for m in models:
+                blocked_until = m.get("blocked_until")
+                if not blocked_until:
+                    valid_models.append(m["model_name"])
+                    continue
+                
+                # Check expiry
+                # Supabase returns ISO string with TZ
+                try:
+                    blocked_dt = datetime.fromisoformat(blocked_until.replace('Z', '+00:00'))
+                    if datetime.now(blocked_dt.tzinfo) > blocked_dt:
+                         # Unblock (Optional: Clean up DB, but lazy check is fine)
+                        valid_models.append(m["model_name"])
+                except Exception:
+                    # Parse error, assume valid to be safe? Or invalid?
+                    # Assume valid and let it fail if needed.
+                    valid_models.append(m["model_name"])
+
+            if not valid_models:
+                logger.warning("[AI] All models are currently blocked in DB.")
+                return []
+                
+            return valid_models
+
+        except Exception as e:
+            logger.error(f"[AI] Failed to fetch models from DB: {e}")
+            # Fallback to config default
+            return [settings.GEMINI_MODEL]
+
+    async def _block_model(self, model_name: str, reason: str):
+        """
+        Updates the blocked_until timestamp in DB.
+        """
+        if not self.db:
+            return
+
+        try:
+            if reason == "RPD":
+                until = get_kst_reset_time()
+                logger.warning(f"[AI] Blocking {model_name} until {until} (Daily Limit)")
+            else:
+                # RPM: Block for 2 minutes
+                until = (datetime.now(pytz.utc) + timedelta(minutes=2)).isoformat()
+                logger.warning(f"[AI] Blocking {model_name} until {until} (Rate Limit)")
+
+            self.db.table("ai_models") \
+                .update({"blocked_until": until}) \
+                .eq("model_name", model_name) \
+                .execute()
+        except Exception as e:
+            logger.error(f"[AI] Failed to block model {model_name}: {e}")
 
     def _load_system_prompt(self) -> str:
         """Loads the system prompt from resources/prompts/system_prompt.txt"""
@@ -75,7 +188,7 @@ class AIService:
             title: Notice title (critical for context)
             author: Notice author/department (critical for context)
         """
-        if not self.model:
+        if not settings.GEMINI_API_KEY:
             return {"summary": "AI Key Missing", "category": "일반", "tags": []}
 
         # Pre-process text to remove noise
@@ -112,73 +225,59 @@ class AIService:
             logger.error(f"[AI] Prompt formatting failed: {e}")
             return {"summary": "Prompt Error", "category": "일반", "tags": []}
 
-        try:
-            loop = asyncio.get_running_loop()
-            response = None
+        # Fetch models to try
+        model_list = await self._get_available_models()
+        if not model_list:
+             return {"summary": "AI 가용 모델 없음", "category": "일반", "tags": []}
+             
+        loop = asyncio.get_running_loop()
+        response = None
+        last_error = None
 
-            # Retry Logic with max attempts
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    response = await loop.run_in_executor(
-                        None,
-                        lambda: self.model.generate_content(
-                            prompt,
-                            generation_config={
-                                "response_mime_type": "application/json"
-                            },
-                        ),
-                    )
-                    break  # Success
-                except Exception as e:
-                    err_str = str(e)
-                    if "429" in err_str:
-                        # Try to parse "retry in X seconds" or "retry_delay { seconds: 57 }"
-                        wait_time = 0
+        for model_name in model_list:
+            try:
+                # Configure Model
+                gen_model = genai.GenerativeModel(model_name)
+                
+                # Pro models need longer timeout
+                timeout = 120 if "pro" in model_name.lower() or "3-flash" in model_name.lower() else 60
+                
+                logger.info(f"[AI] Trying model: {model_name} (Timeout: {timeout}s)")
+                
+                response = await loop.run_in_executor(
+                    None,
+                    lambda: gen_model.generate_content(
+                        prompt,
+                        generation_config={
+                            "response_mime_type": "application/json"
+                        },
+                        request_options={'timeout': timeout}
+                    ),
+                )
+                
+                # If we got here, success!
+                logger.info(f"[AI] Success with model: {model_name}")
+                break
+                
+            except Exception as e:
+                last_error = e
+                err_str = str(e)
+                logger.warning(f"[AI] {model_name} failed: {err_str}")
+                
+                if "429" in err_str:
+                    # Determine block duration
+                    error_type = parse_error_type(err_str)
+                    await self._block_model(model_name, error_type)
+                else:
+                    # Other errors (500, 503, etc) -> Maybe short block?
+                    # For now, just skip without blocking (or block short)
+                    pass
+                
+                continue # Try next model
 
-                        match = re.search(r"retry in (\d+(\.\d+)?)s", err_str)
-                        if match:
-                            wait_time = float(match.group(1))
-                        else:
-                            match = re.search(r"seconds:\s*(\d+)", err_str)
-                            if match:
-                                wait_time = float(match.group(1))
-
-                        # Fallback if parsing failed
-                        if wait_time == 0:
-                            wait_time = (2**attempt) * 2 + random.uniform(0, 1)
-                        else:
-                            wait_time += 1.0  # Add 1s buffer
-
-                        # Cap maximum wait time to 60 seconds
-                        if wait_time > 60:
-                            logger.warning(
-                                f"[AI] Rate limit requires {wait_time:.0f}s wait, capping at 60s"
-                            )
-                            wait_time = 60
-
-                        if attempt < max_retries - 1:
-                            logger.warning(
-                                f"[AI] Rate limit hit (attempt {attempt + 1}/{max_retries}). Retrying in {wait_time:.1f}s..."
-                            )
-                            await asyncio.sleep(wait_time)
-                        else:
-                            logger.error(
-                                f"[AI] Rate limit - max retries ({max_retries}) reached. Skipping analysis."
-                            )
-                            return {
-                                "summary": "AI 분석 실패 (Rate Limit)",
-                                "category": "일반",
-                                "tags": [],
-                            }
-                    else:
-                        raise e
-
-            if not response:
-                raise Exception("Max retries exceeded for AI analysis")
-
-            # Rate Limiting (Safety Delay) - reduced since scraper handles rate limiting
-            await asyncio.sleep(1.0)
+        if not response:
+            logger.error(f"[AI] All models failed. Last error: {last_error}")
+            return {"summary": "AI 분석 실패 (All Models Failed)", "category": "일반", "tags": []}
 
             # Token Tracking
             try:
@@ -194,15 +293,12 @@ class AIService:
             logger.debug(f"[AI] Raw Response for {title}: {response_text}")
 
             return json.loads(response_text)
-        except Exception as e:
-            logger.error(f"[AI] Analysis failed: {e}")
-            return {"summary": "AI Analysis Failed", "category": "일반", "tags": []}
 
     async def get_diff_summary(self, old_text: str, new_text: str) -> str:
         """
         Generates a summary of changes between old and new text.
         """
-        if not self.model:
+        if not settings.GEMINI_API_KEY:
             return "내용 변경 (AI Key Missing)"
 
         prompt = (
@@ -216,8 +312,10 @@ class AIService:
 
         try:
             loop = asyncio.get_running_loop()
+            # Use a cheap/fast model for diffs
+            model = genai.GenerativeModel("gemini-2.5-flash-lite") 
             response = await loop.run_in_executor(
-                None, lambda: self.model.generate_content(prompt)
+                None, lambda: model.generate_content(prompt)
             )
 
             try:
@@ -238,7 +336,7 @@ class AIService:
         Extracts menu text from an image URL or provided bytes using Gemini Vision.
         Returns JSON with 'raw_text', 'start_date', 'end_date'.
         """
-        if not self.model:
+        if not settings.GEMINI_API_KEY:
             return {}
 
         import aiohttp
@@ -267,9 +365,11 @@ class AIService:
 
             # 3. Call Gemini Vision
             loop = asyncio.get_running_loop()
+            # Use 2.5-flash for vision capabilities
+            model = genai.GenerativeModel("gemini-2.5-flash")
             response = await loop.run_in_executor(
                 None,
-                lambda: self.model.generate_content(
+                lambda: model.generate_content(
                     [prompt, {"mime_type": "image/jpeg", "data": image_data}],
                     generation_config={"response_mime_type": "application/json"},
                 ),
