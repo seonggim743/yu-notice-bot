@@ -21,11 +21,18 @@ class TestAIService:
     def ai_service(self):
         """Create AIService instance with mocked settings"""
         settings.GEMINI_API_KEY = "test_key"
-        # Re-initialize to pick up the key
-        service = AIService()
-        # Mock the model explicitly to ensure it exists even if genai.configure fails in test env
-        service.model = Mock()
-        return service
+        
+        # Mock Database
+        with patch("services.ai_service.Database") as mock_db_cls:
+            mock_db = Mock()
+            mock_db_cls.get_client.return_value = mock_db
+            
+            service = AIService()
+            # Mock internal methods to avoid DB calls
+            service._get_available_models = AsyncMock(return_value=["gemini-flash-test"])
+            service._block_model = AsyncMock()
+            
+            return service
 
     @pytest.fixture
     def sample_notice_text(self):
@@ -45,6 +52,7 @@ class TestAIService:
     def mock_gemini_response(self):
         """Mock Gemini API response"""
         mock = Mock()
+        # The .text property is accessed as an attribute, so we set it directly on the mock object instance
         mock.text = """
         {
             "summary": "2024학년도 2학기 장학금 신청 안내",
@@ -58,6 +66,10 @@ class TestAIService:
             "author": "학생처"
         }
         """
+        # Also mock usage_metadata
+        mock.usage_metadata = Mock()
+        mock.usage_metadata.prompt_token_count = 10
+        mock.usage_metadata.candidates_token_count = 10
         return mock
 
     @pytest.mark.asyncio
@@ -65,9 +77,13 @@ class TestAIService:
         self, ai_service, sample_notice_text, mock_gemini_response
     ):
         """Test successful notice analysis"""
-        with patch.object(
-            ai_service.model, "generate_content", return_value=mock_gemini_response
-        ):
+        # Mock genai.GenerativeModel
+        with patch("google.generativeai.GenerativeModel") as mock_model_cls:
+            mock_model = Mock()
+            mock_model_cls.return_value = mock_model
+            # generate_content should return the mock_gemini_response object
+            mock_model.generate_content.return_value = mock_gemini_response
+            
             result = await ai_service.analyze_notice(sample_notice_text, "yu_news")
 
             assert "summary" in result
@@ -109,9 +125,11 @@ class TestAIService:
         }
         """
 
-        with patch.object(
-            ai_service.model, "generate_content", return_value=mock_response
-        ):
+        with patch("google.generativeai.GenerativeModel") as mock_model_cls:
+            mock_model = Mock()
+            mock_model_cls.return_value = mock_model
+            mock_model.generate_content.return_value = mock_response
+            
             result = await ai_service.analyze_notice(sample_notice_text, "yu_news")
 
             assert result["tags"] == ["장학", "재학생"]
@@ -126,9 +144,12 @@ class TestAIService:
 
         mock_gemini_response.text = "마감일이 12월 15일에서 12월 20일로 연장되었습니다."
 
-        with patch.object(
-            ai_service.model, "generate_content", return_value=mock_gemini_response
-        ):
+        # Mock genai.GenerativeModel via patch since it's instantiated locally
+        with patch("google.generativeai.GenerativeModel") as mock_model_cls:
+            mock_model = Mock()
+            mock_model_cls.return_value = mock_model
+            mock_model.generate_content.return_value = mock_gemini_response
+            
             result = await ai_service.get_diff_summary(old_content, new_content)
 
             assert "마감일" in result
@@ -145,9 +166,10 @@ class TestAIService:
         }
         """
 
-        with patch.object(
-            ai_service.model, "generate_content", return_value=mock_gemini_response
-        ):
+        with patch("google.generativeai.GenerativeModel") as mock_model_cls:
+            mock_model = Mock()
+            mock_model_cls.return_value = mock_model
+            mock_model.generate_content.return_value = mock_gemini_response
             with patch("aiohttp.ClientSession") as mock_session_cls:
                 mock_response = AsyncMock()
                 mock_response.status = 200
@@ -174,14 +196,14 @@ class TestAIService:
     @pytest.mark.asyncio
     async def test_analyze_notice_api_error(self, ai_service, sample_notice_text):
         """Test handling of API errors"""
-        with patch.object(
-            ai_service.model,
-            "generate_content",
-            side_effect=Exception("API quota exceeded"),
-        ):
+        with patch("google.generativeai.GenerativeModel") as mock_model_cls:
+            mock_model = Mock()
+            mock_model_cls.return_value = mock_model
+            mock_model.generate_content.side_effect = Exception("API quota exceeded")
+
             # Should return fallback, not raise
             result = await ai_service.analyze_notice(sample_notice_text, "yu_news")
-            assert result["summary"] == "AI Analysis Failed"
+            assert result["summary"] == "AI 분석 실패 (All Models Failed)"
             assert result["category"] == "일반"
             assert result["tags"] == []
 
@@ -191,14 +213,17 @@ class TestAIService:
         mock_response = Mock()
         mock_response.text = "This is not JSON"
 
-        with patch.object(
-            ai_service.model, "generate_content", return_value=mock_response
-        ):
+        with patch("google.generativeai.GenerativeModel") as mock_model_cls:
+            mock_model = Mock()
+            mock_model_cls.return_value = mock_model
+            mock_model.generate_content.return_value = mock_response
+            
             # Should handle gracefully or raise appropriate exception
             result = await ai_service.analyze_notice(sample_notice_text, "yu_news")
 
             # Should have default fallback values
             assert "summary" in result
+            assert result["summary"] == "AI Parsing Failed"
             assert result["category"] == "일반"
 
     @pytest.mark.asyncio

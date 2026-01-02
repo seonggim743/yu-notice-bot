@@ -279,20 +279,24 @@ class AIService:
             logger.error(f"[AI] All models failed. Last error: {last_error}")
             return {"summary": "AI 분석 실패 (All Models Failed)", "category": "일반", "tags": []}
 
-            # Token Tracking
-            try:
-                usage = response.usage_metadata
-                await self._save_token_usage(
-                    usage.prompt_token_count, usage.candidates_token_count
-                )
-            except Exception:
-                pass
+        # Token Tracking
+        try:
+            usage = response.usage_metadata
+            await self._save_token_usage(
+                usage.prompt_token_count, usage.candidates_token_count
+            )
+        except Exception:
+            pass
 
-            response_text = response.text
-            # Log raw response for debugging (DEBUG level)
-            logger.debug(f"[AI] Raw Response for {title}: {response_text}")
+        response_text = response.text
+        # Log raw response for debugging (DEBUG level)
+        logger.debug(f"[AI] Raw Response for {title}: {response_text}")
 
+        try:
             return json.loads(response_text)
+        except json.JSONDecodeError:
+            logger.error(f"[AI] JSON parsing failed for {title}: {response_text[:100]}...")
+            return {"summary": "AI Parsing Failed", "category": "일반", "tags": []}
 
     async def get_diff_summary(self, old_text: str, new_text: str) -> str:
         """
