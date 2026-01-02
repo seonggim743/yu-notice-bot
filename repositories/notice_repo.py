@@ -102,6 +102,10 @@ class NoticeRepository:
             if notice_data.get("published_at"):
                 notice_data["published_at"] = notice_data["published_at"].isoformat()
 
+            # Fix: Ensure embedding is valid or None to prevent "vector must have at least 1 dimension"
+            if "embedding" in notice_data and not notice_data["embedding"]:
+                notice_data["embedding"] = None
+
             # 2. Prepare Attachments Data
             attachments_data = []
             if notice.attachments:

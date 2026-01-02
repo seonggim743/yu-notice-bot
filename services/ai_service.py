@@ -244,6 +244,26 @@ class AIService:
                 
                 logger.info(f"[AI] Trying model: {model_name} (Timeout: {timeout}s)")
                 
+                # Safety Settings to prevent false positives
+                safety_settings = [
+                    {
+                        "category": "HARM_CATEGORY_HARASSMENT",
+                        "threshold": "BLOCK_NONE",
+                    },
+                    {
+                        "category": "HARM_CATEGORY_HATE_SPEECH",
+                        "threshold": "BLOCK_NONE",
+                    },
+                    {
+                        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        "threshold": "BLOCK_NONE",
+                    },
+                    {
+                        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                        "threshold": "BLOCK_NONE",
+                    },
+                ]
+
                 response = await loop.run_in_executor(
                     None,
                     lambda: gen_model.generate_content(
@@ -251,6 +271,7 @@ class AIService:
                         generation_config={
                             "response_mime_type": "application/json"
                         },
+                        safety_settings=safety_settings,
                         request_options={'timeout': timeout}
                     ),
                 )
@@ -288,7 +309,13 @@ class AIService:
         except Exception:
             pass
 
-        response_text = response.text
+        try:
+            response_text = response.text
+        except ValueError:
+            # Captures "The response.parts quick accessor requires a single candidate..."
+            logger.warning(f"[AI] Content blocked by safety filters for {title}. PromptFeedback: {response.prompt_feedback}")
+            return {"summary": "AI 분석 거부 (Safety Block)", "category": "일반", "tags": []}
+
         # Log raw response for debugging (DEBUG level)
         logger.debug(f"[AI] Raw Response for {title}: {response_text}")
 
