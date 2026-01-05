@@ -16,6 +16,7 @@ from services.file_service import FileService
 from services.file_service import FileService
 from parsers.html_parser import HTMLParser
 from parsers.eoullim_parser import EoullimParser
+from parsers.yutopia_parser import YutopiaParser
 from services.auth_service import AuthService
 from core.performance import get_performance_monitor
 from core import constants
@@ -100,6 +101,13 @@ class ScraperService:
                             target.link_selector,
                             target.content_selector
                         )
+                    elif target.key == "yutopia":
+                        target_dict["parser"] = YutopiaParser(
+                            target.list_selector,
+                            target.title_selector,
+                            target.link_selector,
+                            target.content_selector
+                        )
                     else:
                         target_dict["parser"] = HTMLParser(
                             target.list_selector,
@@ -146,39 +154,114 @@ class ScraperService:
         Runs the scraper for all loaded targets.
         Returns: True if all targets succeeded, False if any failed.
         """
-        # Authenticate if needed
-        if any(t["key"].startswith("eoullim_") for t in self.targets):
-            cookies = await self.auth_service.get_eoullim_cookies()
+        # Group targets by Auth Type
+        eoullim_targets = []
+        yutopia_targets = []
+        public_targets = []
+
+        for t in self.targets:
+            if t["key"].startswith("eoullim_"):
+                eoullim_targets.append(t)
+            elif t["key"] == "yutopia":
+                yutopia_targets.append(t)
+            else:
+                public_targets.append(t)
+
+        success = True
+        monitor = get_performance_monitor()
+        
+        # Create a single session, but we will manage cookies carefully
+        # Alternatively, we could create fresh sessions for each context to be safe.
+        # Given the "session kickout" issue, simple cookie updates might not be enough if the SERVER tracks the session ID.
+        # Let's try to clear cookies between contexts or just use the same session and hope updating cookies works (usually standard).
+        # Actually, if we re-login, we get NEW cookies. Updating the jar is fine.
         
         session = await self.fetcher.create_session()
-        
-        if "cookies" in locals() and cookies:
-            self.fetcher.set_cookies(session, cookies)
-            
-        success = True
-        
+
         async with session:
-            monitor = get_performance_monitor()
             with monitor.measure("full_scrape_run"):
-                logger.info(f"[SCRAPER] Processing {len(self.targets)} targets sequentially...")
-                for target in self.targets:
+                
+                # 1. Public Targets (No Auth)
+                if public_targets:
+                    logger.info(f"[SCRAPER] Processing {len(public_targets)} public targets...")
+                    for target in public_targets:
+                        try:
+                            await self.process_target(session, target)
+                        except Exception as e:
+                            logger.error(f"[SCRAPER] Public Target {target['key']} failed: {e}")
+                            success = False
+                            await self._send_error_alert(target, e)
+
+                # 2. Eoullim Targets
+                if eoullim_targets:
+                    logger.info(f"[SCRAPER] Processing {len(eoullim_targets)} Eoullim targets...")
+                    # Authenticate Just-In-Time
                     try:
-                        await self.process_target(session, target)
+                        cookies = await self.auth_service.get_eoullim_cookies()
+                        if cookies:
+                            session.cookie_jar.clear() # Clear previous cookies
+                            self.fetcher.set_cookies(session, cookies)
+                            for target in eoullim_targets:
+                                try:
+                                    await self.process_target(session, target)
+                                except Exception as e:
+                                    logger.error(f"[SCRAPER] Eoullim Target {target['key']} failed: {e}")
+                                    success = False
+                                    await self._send_error_alert(target, e)
+                        else:
+                            logger.error("[SCRAPER] Eoullim Authentication failed. Skipping targets.")
+                            success = False
                     except Exception as e:
-                        logger.error(f"[SCRAPER] Target {target['key']} failed: {e}")
+                        logger.error(f"[SCRAPER] Eoullim Auth Error: {e}")
                         success = False
-                        # Send Immediate Dev Alert
-                        from core.error_notifier import get_error_notifier, ErrorSeverity
-                        await get_error_notifier().send_critical_error(
-                            f"Target '{target['key']}' failed during scraping loop",
-                            exception=e,
-                            context={"key": target["key"]},
-                            severity=ErrorSeverity.ERROR
-                        )
-            
+
+                # 3. YUtopia Targets
+                if yutopia_targets:
+                    logger.info(f"[SCRAPER] Processing {len(yutopia_targets)} YUtopia targets...")
+                    # Authenticate Just-In-Time (May invalidate Eoullim session, which is fine now)
+                    try:
+                        cookies = await self.auth_service.get_yutopia_cookies()
+                        if cookies:
+                            session.cookie_jar.clear() # Clear previous cookies
+                            self.fetcher.set_cookies(session, cookies)
+                            
+                            # Warm Up
+                            try:
+                                warmup_url = "https://yutopia.yu.ac.kr/modules/yu/sso/loginCheck.php"
+                                logger.info(f"[SCRAPER] Warming up YUtopia session: {warmup_url}")
+                                async with session.get(warmup_url) as resp:
+                                    await resp.read()
+                                logger.info("[SCRAPER] YUtopia session warmup complete.")
+                            except Exception as e:
+                                logger.warning(f"[SCRAPER] YUtopia session warmup failed: {e}")
+
+                            for target in yutopia_targets:
+                                try:
+                                    await self.process_target(session, target)
+                                except Exception as e:
+                                    logger.error(f"[SCRAPER] YUtopia Target {target['key']} failed: {e}")
+                                    success = False
+                                    await self._send_error_alert(target, e)
+                        else:
+                             logger.error("[SCRAPER] YUtopia Authentication failed. Skipping targets.")
+                             success = False
+                    except Exception as e:
+                        logger.error(f"[SCRAPER] YUtopia Auth Error: {e}")
+                        success = False
+
             logger.info(f"[SCRAPER] Complete. Success: {success}")
             monitor.log_summary()
             return success
+
+    async def _send_error_alert(self, target: Dict, e: Exception):
+        """Helper to send error alerts."""
+        from core.error_notifier import get_error_notifier, ErrorSeverity
+        await get_error_notifier().send_critical_error(
+            f"Target '{target['key']}' failed during scrape",
+            exception=e,
+            context={"key": target["key"]},
+            severity=ErrorSeverity.ERROR
+        )
 
     async def process_target(self, session: aiohttp.ClientSession, target: Dict):
         key = target["key"]
@@ -550,11 +633,27 @@ class ScraperService:
         session = await self.fetcher.create_session()
         
         # Authenticate if needed for test URL
-        if target and target["key"].startswith("eoullim_"):
-            logger.info(f"[TEST] Eoullim target detected. Performing login...")
-            cookies = await self.auth_service.get_eoullim_cookies()
-            if cookies:
-                self.fetcher.set_cookies(session, cookies)
+        if target:
+            if target["key"].startswith("eoullim_"):
+                logger.info(f"[TEST] Eoullim target detected. Performing login...")
+                cookies = await self.auth_service.get_eoullim_cookies()
+                if cookies:
+                    self.fetcher.set_cookies(session, cookies)
+            elif target["key"] == "yutopia":
+                logger.info(f"[TEST] YUtopia target detected. Performing login...")
+                cookies = await self.auth_service.get_yutopia_cookies()
+                if cookies:
+                    self.fetcher.set_cookies(session, cookies)
+                
+                # YUtopia Session Warm-up
+                try:
+                    warmup_url = "https://yutopia.yu.ac.kr/modules/yu/sso/loginCheck.php"
+                    logger.info(f"[TEST] Warming up YUtopia session: {warmup_url}")
+                    async with session.get(warmup_url) as resp:
+                         await resp.read()
+                    logger.info("[TEST] YUtopia session warmup complete.")
+                except Exception as e:
+                    logger.warning(f"[TEST] YUtopia session warmup failed: {e}")
                 
         async with session:
             try:
@@ -581,6 +680,12 @@ class ScraperService:
                 
                 logger.info(f"[TEST] Parsed Item: {item.title}")
                 logger.info(f"[TEST] Summary: {item.summary}")
+                
+                # Process Attachments (Download, Text Extraction, Preview Generation)
+                # Ensure we have the cookies/session state
+                if item.attachments:
+                    logger.info(f"[TEST] Processing {len(item.attachments)} attachments...")
+                    await self.process_attachments(session, item)
                 
                 # Send Notification
                 await self.notifier.send_telegram(session, item, is_new=True, modified_reason="[TEST RUN]")

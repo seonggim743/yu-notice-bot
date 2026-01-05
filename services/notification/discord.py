@@ -261,12 +261,23 @@ class DiscordNotifier(BaseNotifier):
                                     import re
                                     from urllib.parse import unquote
 
-                                    match = re.search(
-                                        r'filename\*?=["\']?(?:UTF-8\'\')?([^"\';]+)',
+                                    # Try filename* (RFC 5987)
+                                    match_star = re.search(
+                                        r'filename\*=UTF-8\'\'([^;]+)',
                                         file_resp.headers["Content-Disposition"],
+                                        re.IGNORECASE
                                     )
-                                    if match:
-                                        actual_filename = unquote(match.group(1))
+                                    # Try filename
+                                    match_std = re.search(
+                                        r'filename=["\']?([^"\';]+)["\']?',
+                                        file_resp.headers["Content-Disposition"],
+                                        re.IGNORECASE
+                                    )
+
+                                    if match_star:
+                                        actual_filename = unquote(match_star.group(1))
+                                    elif match_std:
+                                        actual_filename = unquote(match_std.group(1))
 
                                 logger.info(
                                     f"[NOTIFIER] Downloaded attachment: '{actual_filename}' ({file_size} bytes)"

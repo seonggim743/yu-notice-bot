@@ -70,5 +70,14 @@
     "title_selector": "td.subject a",
     "link_selector": "td.subject a",
     "content_selector": "div.contents"
+  },
+  {
+    "key": "yutopia",
+    "url": "https://yutopia.yu.ac.kr/ko/program/all/list/0/1?sort=date",
+    "base_url": "https://yutopia.yu.ac.kr",
+    "list_selector": "ul.columns-4 > li",
+    "title_selector": "b.title",
+    "link_selector": "a",
+    "content_selector": "div.description div[data-role='wysiwyg-content']"
   }
 ]

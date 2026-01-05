@@ -153,3 +153,8 @@ README.md
 USAGE.md
 INSTALL.md
 DOCKER.md
+
+# Debug & Test Artifacts
+debug_screenshots/
+*.html
+test_*.py
