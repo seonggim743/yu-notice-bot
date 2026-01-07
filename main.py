@@ -30,10 +30,53 @@ from core.exceptions import (
 )
 from services.scraper_service import ScraperService
 
+# Optional: Import components for explicit DI (advanced usage)
+# from services.components import TargetManager, HashCalculator, ChangeDetector, AttachmentProcessor
+# from services.scraper.fetcher import NoticeFetcher
+# from repositories.notice_repo import NoticeRepository
+# from services.notification_service import NotificationService
+# from services.file_service import FileService
+
 
 class Bot:
-    def __init__(self, init_mode: bool = False, no_ai_mode: bool = False):
-        self.scraper = ScraperService(init_mode=init_mode, no_ai_mode=no_ai_mode)
+    """
+    Main Bot class that orchestrates the scraping loop.
+    
+    The Bot uses ScraperService which internally manages:
+    - TargetManager: Target loading and filtering
+    - HashCalculator: Content hashing for change detection
+    - ChangeDetector: Modification detection with AI diff summaries
+    - AttachmentProcessor: File download, text extraction, preview generation
+    
+    For testing or custom configurations, you can inject custom instances:
+    
+        # Example: Custom DI for testing
+        custom_scraper = ScraperService(
+            target_manager=MockTargetManager(),
+            repo=MockNoticeRepository(),
+            notifier=MockNotificationService(),
+        )
+        bot = Bot(scraper=custom_scraper)
+    """
+    
+    def __init__(
+        self,
+        init_mode: bool = False,
+        no_ai_mode: bool = False,
+        scraper: ScraperService = None,
+    ):
+        """
+        Initialize the Bot.
+        
+        Args:
+            init_mode: If True, seeds database without notifications
+            no_ai_mode: If True, skips AI analysis
+            scraper: Optional custom ScraperService instance (for DI/testing)
+        """
+        self.scraper = scraper or ScraperService(
+            init_mode=init_mode,
+            no_ai_mode=no_ai_mode
+        )
         self.running = True
         self.error_count = 0
         self.MAX_CONSECUTIVE_ERRORS = 5

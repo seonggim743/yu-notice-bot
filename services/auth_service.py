@@ -3,14 +3,15 @@ from typing import Dict, Optional
 from playwright.async_api import async_playwright
 from core.config import settings
 from core.logger import get_logger
+from core import constants
 
 logger = get_logger(__name__)
 
 class AuthService:
     def __init__(self):
-        self.login_url = "https://portal.yu.ac.kr/sso/login.jsp?type=linc&cReturn_Url=join.yu.ac.kr"
-        # The URL we expect to be redirected to after successful login
-        self.success_url_pattern = "join.yu.ac.kr"
+        self.login_url = constants.AUTH_SSO_EOULLIM_URL
+        # The URL pattern we expect to be redirected to after successful login
+        self.success_url_pattern = constants.AUTH_SUCCESS_EOULLIM_PATTERN
 
     async def get_eoullim_cookies(self) -> Optional[Dict[str, str]]:
         """
@@ -113,9 +114,8 @@ class AuthService:
             logger.warning("[AUTH] YU_EOULLIM_ID or YU_EOULLIM_PW not set. Skipping YUtopia authentication.")
             return None
 
-        # YUtopia specific text URL
-        # Based on browser observation
-        target_login_url = "https://portal.yu.ac.kr/sso/login.jsp?type=linc&cReturn_Url=https%3A%2F%2Fyutopia.yu.ac.kr%2Fmodules%2Fyu%2Fsso%2FloginCheck.php"
+        # YUtopia specific SSO URL
+        target_login_url = constants.AUTH_SSO_YUTOPIA_URL
         
         logger.info("[AUTH] Starting YUtopia SSO login process...")
         

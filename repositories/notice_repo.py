@@ -87,6 +87,33 @@ class NoticeRepository:
             logger.error(f"Failed to fetch notice {site_key}/{article_id}: {e}")
             return None
 
+    def get_notice_id(self, site_key: str, article_id: str) -> Optional[str]:
+        """
+        Fetches just the notice UUID by site_key and article_id.
+        
+        Args:
+            site_key: Site identifier
+            article_id: Article identifier
+            
+        Returns:
+            Notice UUID or None if not found
+        """
+        try:
+            response = (
+                self.db.table("notices")
+                .select("id")
+                .eq("site_key", site_key)
+                .eq("article_id", article_id)
+                .single()
+                .execute()
+            )
+            if response.data:
+                return response.data.get("id")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to fetch notice ID {site_key}/{article_id}: {e}")
+            return None
+
     def upsert_notice(self, notice: Notice) -> Optional[str]:
         """
         Upserts a notice and its attachments using RPC for atomicity.

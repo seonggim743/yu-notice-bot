@@ -149,31 +149,34 @@ from concurrent.futures import ThreadPoolExecutor
 class DiscordLogHandler(logging.Handler):
     """
     Custom handler to send WARNING/ERROR logs to Discord.
-    Uses ThreadPoolExecutor to avoid blocking the main thread.
+    Uses ThreadPoolExecutor to avoid blocking the async event loop.
     Implements throttling to prevent spam.
     """
+    # Max number of error hashes to track (prevents memory leak)
+    MAX_ERROR_CACHE = 100
+    # Throttle window in seconds
+    THROTTLE_SECONDS = 60
+
     def __init__(self):
         super().__init__()
         self.executor = ThreadPoolExecutor(max_workers=1)
-        self.last_errors = {}  # {hash_key: last_time}
-        self.webhook_url = settings.DISCORD_ERROR_CHANNEL_ID # Using Channel ID as Webhook URL for simplicity or need to adapt if it's just ID.
-        # Wait, config says DISCORD_ERROR_CHANNEL_ID is a channel ID, not webhook.
-        # If we use bot token, we need to post to channel.
+        self.last_errors = {}  # {hash_key: timestamp}
         self.bot_token = settings.DISCORD_BOT_TOKEN
         self.channel_id = settings.DISCORD_ERROR_CHANNEL_ID
 
     def _send_to_discord(self, record: logging.LogRecord):
+        """Send log record to Discord (runs in thread pool)."""
         try:
             if not self.bot_token or not self.channel_id:
                 return
 
             # Format message
-            color = 0xFF0000 if record.levelno >= logging.ERROR else 0xFFA500 # Red or Orange
+            color = 0xFF0000 if record.levelno >= logging.ERROR else 0xFFA500  # Red or Orange
             
             # Create Embed
             embed = {
                 "title": f"[{record.levelname}] {record.name}",
-                "description": record.getMessage(),
+                "description": record.getMessage()[:4000],  # Discord description limit
                 "color": color,
                 "timestamp": datetime.utcnow().isoformat(),
                 "footer": {"text": f"Module: {record.module}:{record.lineno}"}
@@ -182,52 +185,74 @@ class DiscordLogHandler(logging.Handler):
             # Add traceback if available
             if record.exc_info:
                 exc_text = self.formatException(record.exc_info)
-                # Truncate if too long (Discord limit 1024)
+                # Truncate if too long (Discord field limit 1024)
                 if len(exc_text) > 1000:
                     exc_text = exc_text[:1000] + "..."
                 embed["fields"] = [{"name": "Traceback", "value": f"```python\n{exc_text}\n```"}]
 
-            payload = {
-                "embeds": [embed]
-            }
+            payload = {"embeds": [embed]}
 
-            # Send request (Synchronous inside ThreadPool)
+            # Send request (synchronous, but runs in separate thread)
             headers = {
                 "Authorization": f"Bot {self.bot_token}",
                 "Content-Type": "application/json"
             }
             url = f"https://discord.com/api/v10/channels/{self.channel_id}/messages"
             
-            requests.post(url, headers=headers, json=payload, timeout=2.0)
+            response = requests.post(url, headers=headers, json=payload, timeout=5.0)
             
+            # Log failures but don't raise
+            if response.status_code not in [200, 201, 204]:
+                sys.stderr.write(f"Discord log failed: {response.status_code} - {response.text[:200]}\n")
+                
+        except requests.exceptions.Timeout:
+            sys.stderr.write("Discord log timeout\n")
+        except requests.exceptions.RequestException as e:
+            sys.stderr.write(f"Discord log request error: {e}\n")
         except Exception as e:
             # Fallback to stderr if Discord fails
             sys.stderr.write(f"Failed to send log to Discord: {e}\n")
+
+    def _cleanup_old_errors(self, current_time: float):
+        """Remove old error hashes to prevent memory leak."""
+        if len(self.last_errors) > self.MAX_ERROR_CACHE:
+            # Remove entries older than throttle window
+            expired_keys = [
+                k for k, v in self.last_errors.items()
+                if current_time - v > self.THROTTLE_SECONDS
+            ]
+            for k in expired_keys:
+                del self.last_errors[k]
 
     def emit(self, record: logging.LogRecord):
         try:
             # 1. Throttling Check
             # Create hash key from static parts (pathname, lineno, msg template)
-            # We use record.msg (template) instead of record.getMessage() (formatted) to group similar errors
-            msg_key = hashlib.md5(f"{record.pathname}:{record.lineno}:{str(record.msg)}".encode()).hexdigest()
+            msg_key = hashlib.md5(
+                f"{record.pathname}:{record.lineno}:{str(record.msg)}".encode()
+            ).hexdigest()
             current_time = time.time()
             
             if msg_key in self.last_errors:
-                if current_time - self.last_errors[msg_key] < 60:
-                    return # Ignore duplicate within 60s
+                if current_time - self.last_errors[msg_key] < self.THROTTLE_SECONDS:
+                    return  # Ignore duplicate within throttle window
             
             self.last_errors[msg_key] = current_time
+            
+            # Cleanup old entries periodically
+            self._cleanup_old_errors(current_time)
 
-            # 2. Async Dispatch
+            # 2. Dispatch to thread pool (non-blocking)
             self.executor.submit(self._send_to_discord, record)
             
         except Exception:
             self.handleError(record)
 
     def close(self):
-        """Graceful shutdown"""
+        """Graceful shutdown."""
         self.executor.shutdown(wait=False)
         super().close()
+
 
 
 def get_logger(

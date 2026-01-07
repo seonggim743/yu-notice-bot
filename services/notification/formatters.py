@@ -8,76 +8,15 @@ import html
 from datetime import datetime
 from typing import Dict, Any, Optional
 
+from core import constants
 
-# Category Emoji Mappings
-CATEGORY_EMOJIS = {
-    "긴급": "🚨",
-    "장학": "💰",
-    "학사": "🎓",
-    "취업": "💼",
-    "행사": "🎉",
-    "과제/시험": "📝",
-    "수상/성과": "🏆",
-    "생활관": "🏠",
-    "일반": "📢",
-}
-
-# Category Color Mappings (for Discord Embeds)
-CATEGORY_COLORS = {
-    "긴급": 0xFF0000,  # 🔴 Red
-    "장학": 0xFFD700,  # 💰 Gold
-    "학사": 0x0099FF,  # 🎓 Blue
-    "취업": 0x9B59B6,  # 💼 Purple
-    "행사": 0x2ECC71,  # 🎉 Green
-    "과제/시험": 0xE74C3C,  # 📝 Red-Orange
-    "수상/성과": 0xF39C12,  # 🏆 Orange
-    "생활관": 0x1ABC9C,  # 🏠 Turquoise
-    "일반": 0x95A5A6,  # 📢 Grey
-}
-
-# Category Icon URLs (for Discord Thumbnails)
-CATEGORY_ICONS = {
-    "긴급": "https://cdn-icons-png.flaticon.com/512/595/595067.png",
-    "장학": "https://cdn-icons-png.flaticon.com/512/3135/3135706.png",
-    "학사": "https://cdn-icons-png.flaticon.com/512/3976/3976625.png",
-    "취업": "https://cdn-icons-png.flaticon.com/512/3281/3281307.png",
-    "행사": "https://cdn-icons-png.flaticon.com/512/3176/3176366.png",
-    "과제/시험": "https://cdn-icons-png.flaticon.com/512/2965/2965358.png",
-    "생활관": "https://cdn-icons-png.flaticon.com/512/1946/1946488.png",
-    "일반": "https://www.yu.ac.kr/_res/yu/kr/img/common/logo.png",
-}
-
-# File Extension Emoji Mappings
-FILE_EXTENSION_EMOJIS = {
-    "pdf": "📕",
-    "doc": "📘",
-    "docx": "📘",
-    "xls": "📗",
-    "xlsx": "📗",
-    "ppt": "📙",
-    "pptx": "📙",
-    "zip": "📦",
-    "rar": "📦",
-    "hwp": "📄",
-    "hwpx": "📄",
-    "jpg": "🖼️",
-    "jpeg": "🖼️",
-    "png": "🖼️",
-    "gif": "🖼️",
-}
-
-# Site Name Mappings (Localization)
-SITE_NAME_MAP = {
-    "yu_news": "영대소식",
-    "cse_notice": "컴공공지",
-    "bachelor_guide": "학사안내",
-    "calendar": "학사일정",
-    "dormitory_notice": "생활관공지",
-    "dormitory_menu": "기숙사식단",
-}
-
-# School Logo URL
-SCHOOL_LOGO_URL = "https://www.yu.ac.kr/_res/yu/kr/img/common/logo.png"
+# Re-export from constants for backward compatibility and convenience
+CATEGORY_EMOJIS = constants.CATEGORY_EMOJIS
+CATEGORY_COLORS = constants.CATEGORY_COLORS
+CATEGORY_ICONS = constants.CATEGORY_ICON_URLS
+FILE_EXTENSION_EMOJIS = constants.FILE_EMOJI_MAP
+SITE_NAME_MAP = constants.SITE_NAME_MAP
+SCHOOL_LOGO_URL = constants.SCHOOL_LOGO_URL
 
 
 def generate_clean_diff(old_text: str, new_text: str) -> str:
