@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Set
+from typing import Dict, Optional, Set, TYPE_CHECKING
 from supabase import Client
 from models.notice import Notice
 from core.database import Database
@@ -9,8 +9,29 @@ logger = get_logger(__name__)
 
 
 class NoticeRepository:
-    def __init__(self):
-        self.db: Client = Database.get_client()
+    """
+    Repository for notice CRUD operations.
+    
+    Supports dependency injection for testability.
+    
+    Usage:
+        # With DI (recommended)
+        db_client = DatabaseClient()
+        db = db_client.connect()
+        repo = NoticeRepository(db=db)
+        
+        # Without DI (backward compatible)
+        repo = NoticeRepository()
+    """
+    
+    def __init__(self, db: Optional[Client] = None):
+        """
+        Initialize NoticeRepository.
+        
+        Args:
+            db: Optional Supabase client. If not provided, uses Database.get_client()
+        """
+        self.db: Client = db or Database.get_client()
 
     def get_last_processed_ids(
         self, site_key: str, limit: int = 1000

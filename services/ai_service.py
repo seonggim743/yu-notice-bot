@@ -1,10 +1,11 @@
 import google.generativeai as genai
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 import json
 import asyncio
 import random
 import re
+from supabase import Client
 from core.config import settings
 from core.logger import get_logger
 from core.database import Database
@@ -53,8 +54,29 @@ def parse_error_type(error_msg: str) -> str:
 
 
 class AIService:
-    def __init__(self):
-        self.db = Database.get_client()
+    """
+    AI service for notice analysis using Google Gemini.
+    
+    Supports dependency injection for testability.
+    
+    Usage:
+        # With DI (recommended)
+        db = db_client.connect()
+        ai_service = AIService(db=db)
+        
+        # Without DI (backward compatible)
+        ai_service = AIService()
+    """
+    
+    def __init__(self, db: Optional[Client] = None):
+        """
+        Initialize AIService.
+        
+        Args:
+            db: Optional Supabase client for model management.
+                If not provided, uses Database.get_client()
+        """
+        self.db = db or Database.get_client()
         if settings.GEMINI_API_KEY:
             genai.configure(api_key=settings.GEMINI_API_KEY)
         else:

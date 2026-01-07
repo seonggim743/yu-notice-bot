@@ -4,7 +4,7 @@ Refactored to use component-based architecture with dependency injection.
 """
 import asyncio
 import aiohttp
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 from core.config import settings
 from core.logger import get_logger
@@ -12,6 +12,7 @@ from core.exceptions import NetworkException, ScraperException
 from core.interfaces import INotificationService, IFileService, INoticeRepository
 from core import constants
 from core.performance import get_performance_monitor
+from core.error_notifier import ErrorNotifier, ErrorSeverity, get_error_notifier
 
 from models.notice import Notice
 from repositories.notice_repo import NoticeRepository
@@ -58,6 +59,7 @@ class ScraperService:
         notifier: Optional[INotificationService] = None,
         file_service: Optional[IFileService] = None,
         repo: Optional[INoticeRepository] = None,
+        error_notifier: Optional[ErrorNotifier] = None,
         # Component dependencies (optional)
         target_manager: Optional[TargetManager] = None,
         hash_calculator: Optional[HashCalculator] = None,
@@ -94,6 +96,7 @@ class ScraperService:
         self.notifier = notifier or NotificationService()
         self.file_service = file_service or FileService()
         self.repo = repo or NoticeRepository()
+        self.error_notifier = error_notifier or get_error_notifier()
         
         # Internal components
         self.fetcher = fetcher or NoticeFetcher()
@@ -280,9 +283,8 @@ class ScraperService:
         return success
     
     async def _send_error_alert(self, target: Dict, e: Exception) -> None:
-        """Helper to send error alerts."""
-        from core.error_notifier import get_error_notifier, ErrorSeverity
-        await get_error_notifier().send_critical_error(
+        """Helper to send error alerts using injected ErrorNotifier."""
+        await self.error_notifier.send_critical_error(
             f"Target '{target['key']}' failed during scrape",
             exception=e,
             context={"key": target["key"]},
