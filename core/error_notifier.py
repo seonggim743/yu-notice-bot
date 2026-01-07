@@ -345,21 +345,51 @@ class ErrorNotifier:
             return False
 
 
+# =============================================================================
+# Dependency Injection Support
+# =============================================================================
+
 # Global instance with thread-safe initialization
 _error_notifier = None
 _error_notifier_lock = __import__("threading").Lock()
 
 
+def set_error_notifier(notifier: ErrorNotifier) -> None:
+    """
+    Set the global error notifier instance (Composition Root pattern).
+    
+    Call this from main.py to inject a configured ErrorNotifier instance.
+    This enables proper Dependency Injection while maintaining backward
+    compatibility with code that uses get_error_notifier().
+    
+    Args:
+        notifier: Configured ErrorNotifier instance
+        
+    Example:
+        # In main.py (Composition Root)
+        error_notifier = ErrorNotifier()
+        set_error_notifier(error_notifier)
+        
+        # Pass to services that need it
+        bot = Bot(error_notifier=error_notifier)
+    """
+    global _error_notifier
+    with _error_notifier_lock:
+        _error_notifier = notifier
+    logger.debug("[ERROR_NOTIFIER] Global instance set via DI")
+
+
 def get_error_notifier() -> ErrorNotifier:
     """
-    Get singleton error notifier instance.
+    Get error notifier instance.
     
-    Thread-safe initialization using double-checked locking pattern.
-    Uses threading.Lock because this is a sync function that may be
-    called from both sync and async contexts.
+    If set_error_notifier() was called, returns that instance.
+    Otherwise, creates a new instance (backward compatibility).
+    
+    For new code, prefer receiving ErrorNotifier via constructor injection.
     
     Returns:
-        ErrorNotifier singleton instance
+        ErrorNotifier instance
     """
     global _error_notifier
     
@@ -374,3 +404,10 @@ def get_error_notifier() -> ErrorNotifier:
             _error_notifier = ErrorNotifier()
     
     return _error_notifier
+
+
+def _reset_error_notifier_for_testing() -> None:
+    """Reset global state for testing purposes only."""
+    global _error_notifier
+    with _error_notifier_lock:
+        _error_notifier = None

@@ -1,3 +1,9 @@
+"""
+Yu Notice Bot V2 - Main Entry Point (Composition Root)
+
+This module serves as the Composition Root for the application.
+All dependencies are created here and injected into services.
+"""
 import asyncio
 import signal
 import sys
@@ -20,8 +26,9 @@ except Exception as e:
 logger.debug(f"CWD = {os.getcwd()}")
 logger.debug(f"Discord Token configured: {'Yes' if settings.DISCORD_BOT_TOKEN else 'No'}")
 
-from core.database import Database
-from core.error_notifier import get_error_notifier, ErrorSeverity
+# 3. Import Dependencies
+from core.database import Database, DatabaseClient
+from core.error_notifier import ErrorNotifier, ErrorSeverity, set_error_notifier, get_error_notifier
 from core.exceptions import (
     NetworkException,
     ScraperException,
@@ -29,13 +36,6 @@ from core.exceptions import (
     DatabaseException,
 )
 from services.scraper_service import ScraperService
-
-# Optional: Import components for explicit DI (advanced usage)
-# from services.components import TargetManager, HashCalculator, ChangeDetector, AttachmentProcessor
-# from services.scraper.fetcher import NoticeFetcher
-# from repositories.notice_repo import NoticeRepository
-# from services.notification_service import NotificationService
-# from services.file_service import FileService
 
 
 class Bot:
@@ -48,15 +48,7 @@ class Bot:
     - ChangeDetector: Modification detection with AI diff summaries
     - AttachmentProcessor: File download, text extraction, preview generation
     
-    For testing or custom configurations, you can inject custom instances:
-    
-        # Example: Custom DI for testing
-        custom_scraper = ScraperService(
-            target_manager=MockTargetManager(),
-            repo=MockNoticeRepository(),
-            notifier=MockNotificationService(),
-        )
-        bot = Bot(scraper=custom_scraper)
+    Supports dependency injection for testability.
     """
     
     def __init__(
@@ -64,6 +56,7 @@ class Bot:
         init_mode: bool = False,
         no_ai_mode: bool = False,
         scraper: ScraperService = None,
+        error_notifier: ErrorNotifier = None,
     ):
         """
         Initialize the Bot.
@@ -72,11 +65,13 @@ class Bot:
             init_mode: If True, seeds database without notifications
             no_ai_mode: If True, skips AI analysis
             scraper: Optional custom ScraperService instance (for DI/testing)
+            error_notifier: Optional ErrorNotifier instance (for DI/testing)
         """
         self.scraper = scraper or ScraperService(
             init_mode=init_mode,
             no_ai_mode=no_ai_mode
         )
+        self.error_notifier = error_notifier or get_error_notifier()
         self.running = True
         self.error_count = 0
         self.MAX_CONSECUTIVE_ERRORS = 5
@@ -97,7 +92,7 @@ class Bot:
             logger.critical(f"Database connection failed: {e}")
             # Send error notification
             asyncio.create_task(
-                get_error_notifier().send_critical_error(
+                self.error_notifier.send_critical_error(
                     "Database connection failed during startup",
                     exception=e,
                     severity=ErrorSeverity.CRITICAL,
@@ -163,7 +158,7 @@ class Bot:
                 # Network errors are retryable - don't send notification immediately
                 if self.error_count >= 3:
                     asyncio.create_task(
-                        get_error_notifier().send_critical_error(
+                        self.error_notifier.send_critical_error(
                             f"Repeated network errors ({self.error_count})",
                             exception=e,
                             severity=ErrorSeverity.WARNING,
@@ -176,7 +171,7 @@ class Bot:
                 )
 
                 asyncio.create_task(
-                    get_error_notifier().send_critical_error(
+                    self.error_notifier.send_critical_error(
                         f"{type(e).__name__} in main loop",
                         exception=e,
                         context={"error_count": self.error_count, "details": e.details},
@@ -192,7 +187,7 @@ class Bot:
 
                 # Send error notification
                 asyncio.create_task(
-                    get_error_notifier().send_critical_error(
+                    self.error_notifier.send_critical_error(
                         f"Unexpected error in main loop (attempt {self.error_count}/{self.MAX_CONSECUTIVE_ERRORS})",
                         exception=e,
                         context={
@@ -207,7 +202,7 @@ class Bot:
                     logger.critical("Too many consecutive errors. Shutting down.")
                     # Final shutdown notification
                     asyncio.create_task(
-                        get_error_notifier().send_critical_error(
+                        self.error_notifier.send_critical_error(
                             "Bot shutting down due to repeated failures",
                             context={"consecutive_errors": self.error_count},
                             severity=ErrorSeverity.CRITICAL,
@@ -232,6 +227,34 @@ class Bot:
             logger.info("Stopping Bot...")
             logger.info("=" * 60)
             self.running = False
+
+
+# =============================================================================
+# Composition Root - Dependency Assembly
+# =============================================================================
+
+def create_dependencies():
+    """
+    Creates and wires all application dependencies.
+    
+    This is the Composition Root pattern - all dependency creation
+    happens here, making the dependency graph explicit and testable.
+    
+    Returns:
+        Dict with all created dependencies
+    """
+    # 1. Create Error Notifier (needed early for error reporting)
+    error_notifier = ErrorNotifier()
+    set_error_notifier(error_notifier)  # Set global for backward compatibility
+    
+    # 2. Database will be lazily initialized on first use
+    # (Database.get_client() handles connection with retry)
+    
+    logger.debug("[COMPOSITION_ROOT] Dependencies created")
+    
+    return {
+        "error_notifier": error_notifier,
+    }
 
 
 if __name__ == "__main__":
@@ -261,9 +284,18 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    # Random Jitter removed (Sequential execution strategy)
-
-    bot = Bot(init_mode=args.init, no_ai_mode=args.no_ai)
+    # ==========================================================================
+    # Composition Root: Create all dependencies
+    # ==========================================================================
+    deps = create_dependencies()
+    error_notifier = deps["error_notifier"]
+    
+    # Create Bot with injected dependencies
+    bot = Bot(
+        init_mode=args.init,
+        no_ai_mode=args.no_ai,
+        error_notifier=error_notifier,
+    )
     
     # Apply target filter if specified
     if args.target:
@@ -293,7 +325,7 @@ if __name__ == "__main__":
             logger.critical(f"Run failed: {e}", exc_info=True)
             # Send error notification
             asyncio.run(
-                get_error_notifier().send_critical_error(
+                error_notifier.send_critical_error(
                     "Bot run failed in --once/--init mode",
                     exception=e,
                     severity=ErrorSeverity.CRITICAL,
@@ -302,8 +334,7 @@ if __name__ == "__main__":
             exit_code = 1
     else:
         try:
-            # Note: bot.start() is the infinite loop mode (local dev often), currently it ignores return.
-            # But ScraperService.run is called inside bot.start loop.
+            # Infinite loop mode
             asyncio.run(bot.start())
         except KeyboardInterrupt:
             logger.info("Interrupted by user")
