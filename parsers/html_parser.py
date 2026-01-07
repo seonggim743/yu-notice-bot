@@ -295,6 +295,10 @@ class HTMLParser(BaseParser):
         if not content_div:
             body = soup.body
             snippet = body.decode_contents()[:500] if body else "No Body"
+<<<<<<< Updated upstream
+=======
+
+>>>>>>> Stashed changes
             logger.warning(
                 f"[PARSER] Content not found for {notice.url}\n"
                 f"Tried selectors: {', '.join(self.content_selectors)}\n"

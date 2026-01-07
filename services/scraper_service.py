@@ -24,11 +24,42 @@ logger = get_logger(__name__)
 
 
 class ScraperService:
+<<<<<<< Updated upstream
     def __init__(self, init_mode: bool = False, no_ai_mode: bool = False):
         self.repo = NoticeRepository()
         self.ai = AIService()
         self.notifier = NotificationService()
         self.file_service = FileService()
+=======
+    """
+    Main scraper service that orchestrates notice fetching, parsing, and notification.
+    Supports dependency injection for easier testing and extensibility.
+    """
+
+    def __init__(
+        self,
+        init_mode: bool = False,
+        no_ai_mode: bool = False,
+        # Dependency Injection - Optional, defaults to real implementations
+        notifier: Optional[INotificationService] = None,
+        file_service: Optional[IFileService] = None,
+        repo: Optional[INoticeRepository] = None,
+        fetcher: Optional[NoticeFetcher] = None,
+        parser: Optional[NoticeParser] = None,
+        analyzer: Optional[ContentAnalyzer] = None,
+    ):
+        # Inject or create default instances
+        self.repo = repo or NoticeRepository()
+        self.notifier = notifier or NotificationService()
+        self.file_service = file_service or FileService()
+        
+        # New Components
+        self.fetcher = fetcher or NoticeFetcher()
+        self.parser = parser or NoticeParser()
+        self.analyzer = analyzer or ContentAnalyzer(no_ai_mode=no_ai_mode)
+        self.auth_service = AuthService()
+        
+>>>>>>> Stashed changes
         self.init_mode = init_mode
         self.no_ai_mode = no_ai_mode
 
