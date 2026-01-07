@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Dict, Any, Optional
 
 from core import constants
+from core.utils import get_utc_now
 
 # Re-export from constants for backward compatibility and convenience
 CATEGORY_EMOJIS = constants.CATEGORY_EMOJIS
@@ -209,7 +210,7 @@ def create_discord_embed(notice, is_new: bool, modified_reason: str = "", change
         "url": notice.url,
         "author": {"name": "Yu Notice Bot", "icon_url": SCHOOL_LOGO_URL},
         "footer": {"text": footer_text},
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_utc_now().isoformat(),
         "fields": [],
     }
 

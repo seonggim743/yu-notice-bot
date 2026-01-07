@@ -7,6 +7,7 @@ from enum import Enum
 from collections import defaultdict
 from core.config import settings
 from core.logger import get_logger
+from core.utils import get_now
 
 logger = get_logger(__name__)
 
@@ -38,7 +39,7 @@ class ErrorNotifier:
         Returns:
             True if notification should be sent, False otherwise
         """
-        now = datetime.now()
+        now = get_now()
 
         # Clean old errors (older than 1 hour)
         self.error_history[error_key] = [
@@ -94,7 +95,7 @@ class ErrorNotifier:
         error_details = {
             "message": error_message,
             "severity": severity.value,
-            "timestamp": datetime.now().isoformat(),
+            "timestamp": get_now().isoformat(),
             "context": context or {},
         }
 
