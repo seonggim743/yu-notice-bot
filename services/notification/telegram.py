@@ -1,5 +1,6 @@
 """
 Telegram notification service.
+Implements NotificationChannel interface for Strategy Pattern.
 """
 import aiohttp
 import json
@@ -14,7 +15,7 @@ from core.logger import get_logger
 from core import constants
 from core.utils import parse_content_disposition
 from models.notice import Notice
-from services.notification.base import BaseNotifier
+from services.notification.base import BaseNotifier, NotificationChannel
 from services.notification.formatters import create_telegram_message
 from services.file.image import ImageHandler
 
@@ -23,14 +24,47 @@ from services.notification.dev_notifier import DevNotifier
 logger = get_logger(__name__)
 
 
-class TelegramNotifier(BaseNotifier):
-    """Handles all Telegram-specific notification logic."""
+class TelegramNotifier(BaseNotifier, NotificationChannel):
+    """
+    Handles all Telegram-specific notification logic.
+    Implements NotificationChannel interface for Strategy Pattern compatibility.
+    """
+    
+    @property
+    def channel_name(self) -> str:
+        return "telegram"
 
     def __init__(self):
         self.telegram_token = settings.TELEGRAM_TOKEN
         self.chat_id = settings.TELEGRAM_CHAT_ID
         self.image_handler = ImageHandler()
         self.dev_notifier = DevNotifier()
+    
+    def is_enabled(self) -> bool:
+        """Check if Telegram is configured and enabled."""
+        return bool(self.telegram_token and self.chat_id)
+    
+    async def send_notice(
+        self,
+        session: aiohttp.ClientSession,
+        notice: Notice,
+        is_new: bool,
+        modified_reason: str = "",
+        existing_message_id: Optional[Any] = None,
+        changes: Optional[Dict] = None,
+    ) -> Optional[Any]:
+        """
+        Strategy Pattern interface method.
+        Delegates to send_telegram for actual implementation.
+        """
+        return await self.send_telegram(
+            session=session,
+            notice=notice,
+            is_new=is_new,
+            modified_reason=modified_reason,
+            existing_message_id=existing_message_id,
+            changes=changes,
+        )
 
     async def _send_telegram_api(
         self,
