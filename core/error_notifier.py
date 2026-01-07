@@ -345,13 +345,32 @@ class ErrorNotifier:
             return False
 
 
-# Global instance
+# Global instance with thread-safe initialization
 _error_notifier = None
+_error_notifier_lock = __import__("threading").Lock()
 
 
 def get_error_notifier() -> ErrorNotifier:
-    """Get singleton error notifier instance"""
+    """
+    Get singleton error notifier instance.
+    
+    Thread-safe initialization using double-checked locking pattern.
+    Uses threading.Lock because this is a sync function that may be
+    called from both sync and async contexts.
+    
+    Returns:
+        ErrorNotifier singleton instance
+    """
     global _error_notifier
-    if _error_notifier is None:
-        _error_notifier = ErrorNotifier()
+    
+    # Fast path: already initialized
+    if _error_notifier is not None:
+        return _error_notifier
+    
+    # Slow path: need to initialize with lock
+    with _error_notifier_lock:
+        # Double-check after acquiring lock
+        if _error_notifier is None:
+            _error_notifier = ErrorNotifier()
+    
     return _error_notifier
