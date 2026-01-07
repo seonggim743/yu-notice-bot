@@ -11,7 +11,7 @@ import hashlib
 import time
 import threading
 from queue import Queue, Empty
-from datetime import datetime
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
@@ -219,7 +219,7 @@ class DiscordLogHandler(logging.Handler):
                 "title": f"[{record.levelname}] {record.name}",
                 "description": record.getMessage()[:4000],  # Discord description limit
                 "color": color,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "footer": {"text": f"Module: {record.module}:{record.lineno}"}
             }
             

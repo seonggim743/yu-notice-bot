@@ -4,6 +4,7 @@ from typing import Dict, Optional
 from datetime import datetime
 from collections import defaultdict
 from core.logger import get_logger
+from core.utils import get_now
 
 logger = get_logger(__name__)
 
@@ -45,7 +46,7 @@ class PerformanceMonitor:
                 {
                     "duration": duration,
                     "duration_ms": duration_ms,
-                    "timestamp": datetime.now(),
+                    "timestamp": get_now(),
                     "context": context or {},
                     "success": error is None,
                 }

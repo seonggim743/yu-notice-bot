@@ -13,7 +13,7 @@ from aiohttp import MultipartWriter
 from core.config import settings
 from core.logger import get_logger
 from core import constants
-from core.utils import parse_content_disposition
+from core.utils import parse_content_disposition, get_utc_now
 from models.notice import Notice
 from services.notification.base import BaseNotifier, NotificationChannel
 from services.notification.formatters import create_discord_embed, format_change_summary
@@ -369,7 +369,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                 "description": f"**수정 사유:** {modified_reason}\n\n[원본 공지 보러가기]({notice.url})",
                 "color": 0xFFA500,  # Orange
                 "footer": {"text": "Yu Notice Bot • 업데이트됨"},
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": get_utc_now().isoformat(),
             }
             update_embed["fields"] = []
 

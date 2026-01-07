@@ -5,8 +5,10 @@ Provides common functionality used across multiple modules.
 import re
 import asyncio
 import functools
+from datetime import datetime, timezone
 from typing import Optional, Callable, Any, TypeVar, Tuple
 from urllib.parse import unquote
+from zoneinfo import ZoneInfo
 
 from core.logger import get_logger
 
@@ -14,6 +16,57 @@ logger = get_logger(__name__)
 
 # Type variable for generic async function return type
 T = TypeVar('T')
+
+# Standard timezone constants
+KST = ZoneInfo("Asia/Seoul")
+UTC = timezone.utc
+
+
+def get_now() -> datetime:
+    """
+    Get current datetime in KST (Korea Standard Time).
+    
+    Always returns a timezone-aware datetime object.
+    Use this instead of datetime.now() for consistent timezone handling.
+    
+    Returns:
+        Current datetime with Asia/Seoul timezone
+        
+    Example:
+        >>> from core.utils import get_now
+        >>> now = get_now()
+        >>> print(now.tzinfo)  # Asia/Seoul
+    """
+    return datetime.now(KST)
+
+
+def get_utc_now() -> datetime:
+    """
+    Get current datetime in UTC.
+    
+    Always returns a timezone-aware datetime object.
+    Use this for Discord/API timestamps that expect UTC.
+    
+    Returns:
+        Current datetime with UTC timezone
+    """
+    return datetime.now(UTC)
+
+
+def to_kst(dt: datetime) -> datetime:
+    """
+    Convert any datetime to KST.
+    
+    Args:
+        dt: Datetime object (aware or naive)
+        
+    Returns:
+        Datetime in KST timezone
+    """
+    if dt.tzinfo is None:
+        # Assume naive datetime is in UTC
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(KST)
 
 
 def parse_content_disposition(header_value: str, fallback_name: str = "") -> str:
