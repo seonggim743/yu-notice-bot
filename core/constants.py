@@ -1,4 +1,76 @@
+# =============================================================================
+# URL Constants (Authentication & External Resources)
+# =============================================================================
+
+# YU Authentication URLs
+AUTH_SSO_EOULLIM_URL = "https://portal.yu.ac.kr/sso/login.jsp?type=linc&cReturn_Url=join.yu.ac.kr"
+AUTH_SSO_YUTOPIA_URL = "https://portal.yu.ac.kr/sso/login.jsp?type=linc&cReturn_Url=https%3A%2F%2Fyutopia.yu.ac.kr%2Fmodules%2Fyu%2Fsso%2FloginCheck.php"
+AUTH_SUCCESS_EOULLIM_PATTERN = "join.yu.ac.kr"
+AUTH_SUCCESS_YUTOPIA_PATTERN = "yutopia.yu.ac.kr"
+
+# Session Warmup URLs
+YUTOPIA_SESSION_WARMUP_URL = "https://yutopia.yu.ac.kr/modules/yu/sso/loginCheck.php"
+
+# School Resources
+SCHOOL_LOGO_URL = "https://www.yu.ac.kr/_res/yu/kr/img/common/logo.png"
+
+# Category Icon URLs (for Discord Thumbnails)
+# Using Flaticon CDN for consistent category icons
+CATEGORY_ICON_URLS = {
+    "긴급": "https://cdn-icons-png.flaticon.com/512/595/595067.png",
+    "장학": "https://cdn-icons-png.flaticon.com/512/3135/3135706.png",
+    "학사": "https://cdn-icons-png.flaticon.com/512/3976/3976625.png",
+    "취업": "https://cdn-icons-png.flaticon.com/512/3281/3281307.png",
+    "행사": "https://cdn-icons-png.flaticon.com/512/3176/3176366.png",
+    "과제/시험": "https://cdn-icons-png.flaticon.com/512/2965/2965358.png",
+    "수상/성과": "https://cdn-icons-png.flaticon.com/512/3135/3135783.png",
+    "생활관": "https://cdn-icons-png.flaticon.com/512/1946/1946488.png",
+    "일반": "https://www.yu.ac.kr/_res/yu/kr/img/common/logo.png",
+}
+
+# Site Name Mappings (Localization)
+SITE_NAME_MAP = {
+    "yu_news": "영대소식",
+    "cse_notice": "컴공공지",
+    "bachelor_guide": "학사안내",
+    "calendar": "학사일정",
+    "dormitory_notice": "생활관공지",
+    "dormitory_menu": "기숙사식단",
+    "eoullim_career": "이음림커리어",
+    "eoullim_external": "이음림대외활동",
+    "eoullim_study": "이음림스터디",
+    "yutopia": "유토피아",
+}
+
+# Category Emoji Mappings
+CATEGORY_EMOJIS = {
+    "긴급": "🚨",
+    "장학": "💰",
+    "학사": "🎓",
+    "취업": "💼",
+    "행사": "🎉",
+    "과제/시험": "📝",
+    "수상/성과": "🏆",
+    "생활관": "🏠",
+    "일반": "📢",
+}
+
+# Category Color Mappings (for Discord Embeds - Hex values)
+CATEGORY_COLORS = {
+    "긴급": 0xFF0000,  # 🔴 Red
+    "장학": 0xFFD700,  # 💰 Gold
+    "학사": 0x0099FF,  # 🎓 Blue
+    "취업": 0x9B59B6,  # 💼 Purple
+    "행사": 0x2ECC71,  # 🎉 Green
+    "과제/시험": 0xE74C3C,  # 📝 Red-Orange
+    "수상/성과": 0xF39C12,  # 🏆 Orange
+    "생활관": 0x1ABC9C,  # 🏠 Turquoise
+    "일반": 0x95A5A6,  # 📢 Grey
+}
+
+# =============================================================================
 # Scraper Settings
+# =============================================================================
 MAX_AI_SUMMARIES = 50
 AI_CALL_DELAY = 7.0  # Seconds between AI calls
 NOTICE_PROCESS_DELAY = 0.5  # Seconds between processing notices
@@ -8,17 +80,23 @@ MAX_PREVIEWS = 10  # Maximum number of previews to generate per run
 SHORT_NOTICE_CONTENT_LENGTH = 100
 SHORT_NOTICE_ATTACHMENT_LENGTH = 50
 
+# =============================================================================
 # Notification Settings
+# =============================================================================
 TELEGRAM_MAX_MESSAGE_LENGTH = 4096
 TELEGRAM_FILE_SIZE_LIMIT = 50 * 1024 * 1024  # 50 MB
 DISCORD_MAX_EMBED_LENGTH = 1024
 DISCORD_FILE_SIZE_LIMIT = 25 * 1024 * 1024  # 25 MB
 FILENAME_TRUNCATE_LENGTH = 20
 
+# =============================================================================
 # AI Settings
+# =============================================================================
 AI_TEXT_TRUNCATE_LIMIT = 8000
 
+# =============================================================================
 # File Extension Emojis
+# =============================================================================
 FILE_EMOJI_MAP = {
     "pdf": "📕",
     "doc": "📘",
@@ -29,6 +107,8 @@ FILE_EMOJI_MAP = {
     "pptx": "📙",
     "zip": "📦",
     "rar": "📦",
+    "hwp": "📄",
+    "hwpx": "📄",
     "jpg": "🖼️",
     "jpeg": "🖼️",
     "png": "🖼️",
@@ -36,7 +116,9 @@ FILE_EMOJI_MAP = {
     "default": "📄",
 }
 
+# =============================================================================
 # Default Configuration Values
+# =============================================================================
 DEFAULT_SCRAPE_INTERVAL = 600
 DEFAULT_LOG_LEVEL = "INFO"
 DEFAULT_LOG_FILE = "bot.log"

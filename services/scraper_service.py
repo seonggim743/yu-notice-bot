@@ -215,9 +215,9 @@ class ScraperService:
                             session.cookie_jar.clear() # Clear previous cookies
                             self.fetcher.set_cookies(session, cookies)
                             
-                            # Warm Up
+                            # Warm Up YUtopia Session
                             try:
-                                warmup_url = "https://yutopia.yu.ac.kr/modules/yu/sso/loginCheck.php"
+                                warmup_url = constants.YUTOPIA_SESSION_WARMUP_URL
                                 logger.info(f"[SCRAPER] Warming up YUtopia session: {warmup_url}")
                                 async with session.get(warmup_url) as resp:
                                     await resp.read()

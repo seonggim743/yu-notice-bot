@@ -12,6 +12,7 @@ from aiohttp import MultipartWriter
 from core.config import settings
 from core.logger import get_logger
 from core import constants
+from core.utils import parse_content_disposition
 from models.notice import Notice
 from services.notification.base import BaseNotifier
 from services.notification.formatters import create_telegram_message
@@ -465,28 +466,11 @@ class TelegramNotifier(BaseNotifier):
                                     )
                                     break
 
-                                actual_filename = att.name
-                                if "Content-Disposition" in file_resp.headers:
-                                    import re
-                                    from urllib.parse import unquote
-
-                                    # Try filename* (RFC 5987)
-                                    match_star = re.search(
-                                        r'filename\*=UTF-8\'\'([^;]+)',
-                                        file_resp.headers["Content-Disposition"],
-                                        re.IGNORECASE
-                                    )
-                                    # Try filename
-                                    match_std = re.search(
-                                        r'filename=["\']?([^"\';]+)["\']?',
-                                        file_resp.headers["Content-Disposition"],
-                                        re.IGNORECASE
-                                    )
-
-                                    if match_star:
-                                        actual_filename = unquote(match_star.group(1))
-                                    elif match_std:
-                                        actual_filename = unquote(match_std.group(1))
+                                # Parse filename from Content-Disposition header
+                                actual_filename = parse_content_disposition(
+                                    file_resp.headers.get("Content-Disposition", ""),
+                                    fallback_name=att.name
+                                )
                                 collected_files.append((actual_filename, file_data))
                                 logger.info(
                                     f"[NOTIFIER] Downloaded file {idx}/{len(notice.attachments)}: {actual_filename}"
