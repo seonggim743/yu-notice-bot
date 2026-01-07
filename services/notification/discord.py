@@ -1,5 +1,6 @@
 """
 Discord notification service.
+Implements NotificationChannel interface for Strategy Pattern.
 """
 import aiohttp
 import json
@@ -14,15 +15,48 @@ from core.logger import get_logger
 from core import constants
 from core.utils import parse_content_disposition
 from models.notice import Notice
-from services.notification.base import BaseNotifier
+from services.notification.base import BaseNotifier, NotificationChannel
 from services.notification.formatters import create_discord_embed, format_change_summary
 from services.tag_matcher import TagMatcher
 
 logger = get_logger(__name__)
 
 
-class DiscordNotifier(BaseNotifier):
-    """Handles all Discord-specific notification logic."""
+class DiscordNotifier(BaseNotifier, NotificationChannel):
+    """
+    Handles all Discord-specific notification logic.
+    Implements NotificationChannel interface for Strategy Pattern compatibility.
+    """
+    
+    @property
+    def channel_name(self) -> str:
+        return "discord"
+    
+    def is_enabled(self) -> bool:
+        """Check if Discord is configured and enabled."""
+        return bool(settings.DISCORD_BOT_TOKEN and settings.DISCORD_CHANNEL_MAP)
+    
+    async def send_notice(
+        self,
+        session: aiohttp.ClientSession,
+        notice: Notice,
+        is_new: bool,
+        modified_reason: str = "",
+        existing_message_id: Optional[Any] = None,
+        changes: Optional[Dict] = None,
+    ) -> Optional[Any]:
+        """
+        Strategy Pattern interface method.
+        Delegates to send_discord for actual implementation.
+        """
+        return await self.send_discord(
+            session=session,
+            notice=notice,
+            is_new=is_new,
+            modified_reason=modified_reason,
+            existing_thread_id=existing_message_id,  # Discord uses thread_id
+            changes=changes,
+        )
 
     async def send_discord(
         self,

@@ -243,17 +243,34 @@ def create_dependencies():
     Returns:
         Dict with all created dependencies
     """
+    # Import notification components here to avoid circular imports
+    from services.notification.telegram import TelegramNotifier
+    from services.notification.discord import DiscordNotifier
+    from services.notification_service import NotificationService
+    
     # 1. Create Error Notifier (needed early for error reporting)
     error_notifier = ErrorNotifier()
     set_error_notifier(error_notifier)  # Set global for backward compatibility
     
-    # 2. Database will be lazily initialized on first use
+    # 2. Create Notification Channels (Strategy Pattern)
+    notification_channels = [
+        TelegramNotifier(),
+        DiscordNotifier(),
+    ]
+    
+    # 3. Create NotificationService with injected channels
+    notification_service = NotificationService(channels=notification_channels)
+    
+    # 4. Database will be lazily initialized on first use
     # (Database.get_client() handles connection with retry)
     
     logger.debug("[COMPOSITION_ROOT] Dependencies created")
+    logger.debug(f"[COMPOSITION_ROOT] Notification channels: {[ch.channel_name for ch in notification_channels]}")
     
     return {
         "error_notifier": error_notifier,
+        "notification_channels": notification_channels,
+        "notification_service": notification_service,
     }
 
 
