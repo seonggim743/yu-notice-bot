@@ -20,11 +20,13 @@ class SensitiveDataFilter(logging.Filter):
         (r"(TELEGRAM_TOKEN=|bot)[0-9]{8,}:[A-Za-z0-9_-]{35}", r"\1***MASKED***"),
         (r"(GEMINI_API_KEY=|AIza)[A-Za-z0-9_-]{35,}", r"\1***MASKED***"),
         (r"(SUPABASE_KEY=|eyJ)[A-Za-z0-9_.-]{100,}", r"\1***MASKED***"),
+        (r"(OPENAI_API_KEY=|sk-)[A-Za-z0-9]{40,}", r"\1***MASKED***"),
         (
-            r"(DISCORD_WEBHOOK_URL=)https://discord\.com/api/webhooks/[0-9]+/[A-Za-z0-9_-]+",
+            r"(DISCORD_WEBHOOK_URL=|https://discord\.com/api/webhooks/)[0-9]+/[A-Za-z0-9_-]+",
             r"\1***MASKED***",
         ),
         (r"(CANVAS_TOKEN=)[A-Za-z0-9]{50,}", r"\1***MASKED***"),
+        (r"https://[a-z0-9-]+\.supabase\.co", r"***SUPABASE_URL***"),
     ]
 
     def filter(self, record: logging.LogRecord) -> bool:
@@ -139,8 +141,6 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(log_record, ensure_ascii=False)
 
 
-<<<<<<< Updated upstream
-=======
 import requests
 import hashlib
 import time
@@ -255,22 +255,13 @@ class DiscordLogHandler(logging.Handler):
 
 
 
->>>>>>> Stashed changes
 def get_logger(
     name: str,
     log_level: Optional[str] = None,
     log_file: Optional[str] = None,
 ) -> logging.Logger:
     """
-    Get a configured logger instance with console and file handlers.
-
-    Args:
-        name: Logger name (usually __name__)
-        log_level: Optional override for log level
-        log_file: Optional override for log file path
-
-    Returns:
-        Configured logger instance
+    Get a configured logger instance with console, file, and Discord handlers.
     """
     # Get or create logger
     logger = logging.getLogger(name)
@@ -325,6 +316,13 @@ def get_logger(
         file_handler.addFilter(SensitiveDataFilter())
 
         logger.addHandler(file_handler)
+
+    # Discord Handler (WARNING+)
+    if settings.DISCORD_BOT_TOKEN and settings.DISCORD_ERROR_CHANNEL_ID:
+        discord_handler = DiscordLogHandler()
+        discord_handler.setLevel(logging.WARNING)
+        discord_handler.addFilter(SensitiveDataFilter())
+        logger.addHandler(discord_handler)
 
     # Add console handler
     logger.addHandler(console_handler)

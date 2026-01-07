@@ -27,15 +27,6 @@
     "content_selector": ".b-view-content"
   },
   {
-    "key": "calendar",
-    "url": "https://hcms.yu.ac.kr/main/bachelor/calendar.do",
-    "base_url": "https://hcms.yu.ac.kr/main/bachelor/calendar.do",
-    "list_selector": "table tbody tr",
-    "title_selector": "a",
-    "link_selector": "a",
-    "content_selector": ".b-view-content"
-  },
-  {
     "key": "dormitory_notice",
     "url": "https://www.yu.ac.kr/dormi/community/notice.do",
     "base_url": "https://www.yu.ac.kr/dormi/community/notice.do",
@@ -52,5 +43,41 @@
     "title_selector": "a",
     "link_selector": "a",
     "content_selector": ".b-view-content"
+  },
+  {
+    "key": "eoullim_career",
+    "url": "https://join.yu.ac.kr/front_new/index.php?g_page=program&m_page=program01",
+    "base_url": "https://join.yu.ac.kr/front_new/",
+    "list_selector": "div.program_list div.program_con",
+    "title_selector": "p.pro_title",
+    "link_selector": "div.con > a",
+    "content_selector": "div.program_view"
+  },
+  {
+    "key": "eoullim_external",
+    "url": "https://join.yu.ac.kr/front_new/index.php?g_page=program&m_page=program04",
+    "base_url": "https://join.yu.ac.kr/front_new/",
+    "list_selector": "table.responsive tbody tr",
+    "title_selector": "td.subject a",
+    "link_selector": "td.subject a",
+    "content_selector": "div.contents"
+  },
+  {
+    "key": "eoullim_study",
+    "url": "https://join.yu.ac.kr/front_new/index.php?g_page=program&m_page=program06",
+    "base_url": "https://join.yu.ac.kr/front_new/",
+    "list_selector": "table.responsive tbody tr",
+    "title_selector": "td.subject a",
+    "link_selector": "td.subject a",
+    "content_selector": "div.contents"
+  },
+  {
+    "key": "yutopia",
+    "url": "https://yutopia.yu.ac.kr/ko/program/all/list/0/1?sort=date",
+    "base_url": "https://yutopia.yu.ac.kr",
+    "list_selector": "ul.columns-4 > li",
+    "title_selector": "b.title",
+    "link_selector": "a",
+    "content_selector": "div.description div[data-role='wysiwyg-content']"
   }
 ]

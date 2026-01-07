@@ -59,3 +59,6 @@ class Notice(BaseModel):
     
     # Message IDs for other platforms (e.g. Telegram)
     message_ids: Dict[str, Any] = Field(default_factory=dict)
+    
+    # Extra Info (e.g. OCR text, raw metadata)
+    extra_info: Dict[str, Any] = Field(default_factory=dict)

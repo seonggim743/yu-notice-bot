@@ -143,6 +143,7 @@ bot.log*
 
 # Debug directory
 scripts/debug/
+debug_*.py
 
 # Internal Documentation
 docs/
@@ -152,3 +153,8 @@ README.md
 USAGE.md
 INSTALL.md
 DOCKER.md
+
+# Debug & Test Artifacts
+debug_screenshots/
+*.html
+test_*.py

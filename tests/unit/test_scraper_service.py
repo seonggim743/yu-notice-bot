@@ -141,7 +141,7 @@ class TestScraperService:
             )
             mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            html = await scraper_service.fetch_url(mock_session, "https://test.com")
+            html = await scraper_service.fetcher.fetch_url(mock_session, "https://test.com")
             assert html == "<html>Test</html>"
 
     @pytest.mark.asyncio
@@ -171,7 +171,7 @@ class TestScraperService:
             mock_session.get.return_value.__aexit__ = AsyncMock(return_value=None)
 
             with pytest.raises(NetworkException):
-                await scraper_service.fetch_url(mock_session, "https://test.com")
+                await scraper_service.fetcher.fetch_url(mock_session, "https://test.com")
 
     @pytest.mark.asyncio
     async def test_detect_modifications(self, scraper_service):
@@ -194,7 +194,7 @@ class TestScraperService:
 
         # Mock AI diff summary
         with patch.object(
-            scraper_service.ai, "get_diff_summary", return_value="Content changed"
+            scraper_service.analyzer.ai, "get_diff_summary", return_value="Content changed"
         ):
             changes = await scraper_service.detect_modifications(new_notice, old_notice)
 

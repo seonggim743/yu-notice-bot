@@ -1,7 +1,8 @@
 from pydantic_settings import BaseSettings
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Union
 from pydantic import Field, field_validator
 import json
+import os
 from core import constants
 
 
@@ -19,32 +20,41 @@ class Settings(BaseSettings):
     TELEGRAM_CHAT_ID: Optional[str] = Field(
         None, description="Target Chat ID", validation_alias="CHAT_ID"
     )
+    TELEGRAM_ERROR_TOPIC_ID: Optional[int] = Field(
+        None, description="Topic ID for error notifications"
+    )
 
     # Topic Map: Site Key -> Topic ID
     # Can be JSON string or dict
-    TELEGRAM_TOPIC_MAP: Dict[str, int] = Field(default_factory=dict)
+    TELEGRAM_TOPIC_MAP: Union[Dict[str, int], str] = Field(default_factory=dict)
 
     # --- Discord ---
+    # Dev/Admin Notification
+    DEV_PLATFORM: str = os.getenv("DEV_PLATFORM", "telegram") # telegram or discord
+    DEV_CHANNEL_ID: str = os.getenv("DEV_CHANNEL_ID", "")
     # Bot API (recommended)
     DISCORD_BOT_TOKEN: Optional[str] = None
-    DISCORD_CHANNEL_MAP: Dict[str, str] = Field(default_factory=dict)
+    DISCORD_CHANNEL_MAP: Union[Dict[str, str], str] = Field(default_factory=dict)
 
     # Forum Tags: Site Key -> Tag Name -> Tag ID
-    DISCORD_TAG_MAP: Dict[str, Dict[str, str]] = Field(default_factory=dict)
+    DISCORD_TAG_MAP: Union[Dict[str, Dict[str, str]], str] = Field(default_factory=dict)
 
-    # Webhook (legacy, for backward compatibility)
-    DISCORD_WEBHOOK_MAP: Dict[str, str] = Field(default_factory=dict)
-    DISCORD_WEBHOOK_URL: Optional[str] = None
+    # Error Channel (Optional, defaults to 'dev' in CHANNEL_MAP)
+    DISCORD_ERROR_CHANNEL_ID: Optional[str] = None
 
     # --- Tag Matching Rules ---
     # Site Key -> Tag Name -> Keywords
-    TAG_MATCHING_RULES: Dict[str, Dict[str, List[str]]] = Field(
+    TAG_MATCHING_RULES: Union[Dict[str, Dict[str, List[str]]], str] = Field(
         default_factory=lambda: constants.DEFAULT_TAG_MATCHING_RULES
     )
 
-    # --- Available Tags per Channel (for AI Prompt) ---
     AVAILABLE_TAGS: Dict[str, List[str]] = Field(
         default_factory=lambda: constants.DEFAULT_AVAILABLE_TAGS
+    )
+
+    # --- Categories per Site (for AI Prompt) ---
+    CATEGORY_MAP: Dict[str, List[str]] = Field(
+        default_factory=lambda: constants.DEFAULT_CATEGORY_MAP
     )
 
     # --- Logging ---
@@ -60,10 +70,21 @@ class Settings(BaseSettings):
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     )
 
+    # --- Eoullim Login ---
+    YU_EOULLIM_ID: Optional[str] = Field(None, description="Eoullim ID")
+    YU_EOULLIM_PW: Optional[str] = Field(None, description="Eoullim Password")
+
     @field_validator("TELEGRAM_TOPIC_MAP", mode="before")
     @classmethod
     def parse_telegram_topic_map(cls, v):
         if isinstance(v, str):
+            v = v.strip()
+            # Handle accidental copy-paste of "KEY=VALUE"
+            if v.startswith("TELEGRAM_TOPIC_MAP="):
+                v = v.split("=", 1)[1]
+            # Handle surrounding quotes
+            v = v.strip("'").strip('"')
+            
             if not v or v.strip() == "":
                 return {}
             try:
@@ -71,25 +92,24 @@ class Settings(BaseSettings):
                 # Convert values to int
                 return {k: int(val) for k, val in parsed.items()}
             except (json.JSONDecodeError, ValueError) as e:
+                # If it's just a string but not JSON, maybe return empty or raise?
+                # But we allow Union[Dict, str] now, so if it fails JSON, we might leave it as str?
+                # No, the type hint says Union, but we want to PARSE it if possible.
+                # If it fails, we raise error because we expect JSON structure.
                 raise ValueError(f"TELEGRAM_TOPIC_MAP must be valid JSON: {e}")
         return v
 
-    @field_validator("DISCORD_WEBHOOK_MAP", mode="before")
-    @classmethod
-    def parse_discord_webhook_map(cls, v):
-        if isinstance(v, str):
-            if not v or v.strip() == "":
-                return {}
-            try:
-                return json.loads(v)
-            except json.JSONDecodeError as e:
-                raise ValueError(f"DISCORD_WEBHOOK_MAP must be valid JSON: {e}")
-        return v
+
 
     @field_validator("DISCORD_CHANNEL_MAP", mode="before")
     @classmethod
     def parse_discord_channel_map(cls, v):
         if isinstance(v, str):
+            v = v.strip()
+            if v.startswith("DISCORD_CHANNEL_MAP="):
+                v = v.split("=", 1)[1]
+            v = v.strip("'").strip('"')
+
             if not v or v.strip() == "":
                 return {}
             try:
@@ -102,6 +122,11 @@ class Settings(BaseSettings):
     @classmethod
     def parse_discord_tag_map(cls, v):
         if isinstance(v, str):
+            v = v.strip()
+            if v.startswith("DISCORD_TAG_MAP="):
+                v = v.split("=", 1)[1]
+            v = v.strip("'").strip('"')
+
             if not v or v.strip() == "":
                 return {}
             try:
@@ -114,6 +139,11 @@ class Settings(BaseSettings):
     @classmethod
     def parse_tag_matching_rules(cls, v):
         if isinstance(v, str):
+            v = v.strip()
+            if v.startswith("TAG_MATCHING_RULES="):
+                v = v.split("=", 1)[1]
+            v = v.strip("'").strip('"')
+
             if not v or v.strip() == "":
                 return cls.model_fields["TAG_MATCHING_RULES"].default_factory()
             try:
@@ -123,10 +153,10 @@ class Settings(BaseSettings):
         return v
 
     def model_post_init(self, __context):
-        # Backward Compatibility: If DISCORD_CHANNEL_MAP is empty but WEBHOOK_MAP exists,
-        # assume user is using WEBHOOK_MAP env var for Channel IDs (as per migration plan).
-        if not self.DISCORD_CHANNEL_MAP and self.DISCORD_WEBHOOK_MAP:
-            self.DISCORD_CHANNEL_MAP = self.DISCORD_WEBHOOK_MAP.copy()
+        # Fallback: If TELEGRAM_ERROR_TOPIC_ID is not set, try to get 'dev' from TELEGRAM_TOPIC_MAP
+        if not self.TELEGRAM_ERROR_TOPIC_ID and self.TELEGRAM_TOPIC_MAP:
+            self.TELEGRAM_ERROR_TOPIC_ID = self.TELEGRAM_TOPIC_MAP.get("dev")
+
 
     class Config:
         env_file = ".env"
@@ -155,13 +185,9 @@ class Settings(BaseSettings):
         if not self.GEMINI_API_KEY:
             errors.append("⚠️ GEMINI_API_KEY is missing - AI features will be disabled")
 
-        if (
-            not self.DISCORD_BOT_TOKEN
-            and not self.DISCORD_WEBHOOK_MAP
-            and not self.DISCORD_WEBHOOK_URL
-        ):
+        if not self.DISCORD_BOT_TOKEN:
             errors.append(
-                "⚠️ No Discord configuration found - Discord notifications will be disabled"
+                "⚠️ DISCORD_BOT_TOKEN is missing - Discord notifications will be disabled"
             )
 
         # URL Validation (Basic)

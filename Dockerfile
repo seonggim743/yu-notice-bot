@@ -10,7 +10,7 @@ WORKDIR /app
 # - libreoffice: For converting HWP/DOCX/XLSX to PDF
 # - fonts-nanum: Korean fonts for correct rendering
 # - curl: For downloading files if needed
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     poppler-utils \
     libreoffice \
     libreoffice-l10n-ko \
@@ -26,9 +26,12 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+
 # Install Playwright browsers (Chromium only for efficiency)
-# Set fixed path for browsers so they are found regardless of HOME dir
-ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 RUN mkdir -p /ms-playwright
 RUN playwright install chromium
 RUN playwright install-deps chromium
@@ -36,4 +39,3 @@ RUN playwright install-deps chromium
 # NOTE: We do NOT copy source code here.
 # This image is intended to be a "runtime environment" for GitHub Actions.
 # The source code will be mounted or checked out at runtime.
-

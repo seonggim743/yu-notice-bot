@@ -6,6 +6,7 @@ Provides diff generation, emoji mappings, text formatting, and message creation.
 import difflib
 import html
 from datetime import datetime
+from typing import Dict, Any, Optional
 
 
 # Category Emoji Mappings
@@ -180,7 +181,40 @@ def format_date(dt_str: str) -> str:
         return dt_str
 
 
-def create_discord_embed(notice, is_new: bool, modified_reason: str = "") -> dict:
+def format_change_summary(changes: Dict[str, Any]) -> str:
+    """
+    Format granular changes into a summary string.
+    """
+    lines = []
+    if "title" in changes:
+        lines.append(f"📝 **제목 변경**: {changes['title']}")
+    
+    # AI Summary for content
+    if "content" in changes:
+        lines.append(f"📝 **내용 변경**: {changes['content']}")
+        
+    # Granular Attachment Changes
+    if "attachments_added" in changes:
+        for f in changes["attachments_added"]:
+             lines.append(f"➕ **첨부 추가**: {f}")
+    if "attachments_removed" in changes:
+        for f in changes["attachments_removed"]:
+             lines.append(f"➖ **첨부 삭제**: {f}")
+             
+    # Fallback for generic attachment change
+    if "attachments" in changes and not ("attachments_added" in changes or "attachments_removed" in changes):
+        lines.append(f"📎 **첨부파일 변경**: {changes['attachments']}")
+
+    if "image" in changes:
+        lines.append("🖼️ **이미지 변경됨**")
+        
+    if "attachment_text" in changes:
+        lines.append(f"📎 **첨부파일 내용 변경**: (상세 내용 확인 필요)")
+        
+    return "\n".join(lines)
+
+
+def create_discord_embed(notice, is_new: bool, modified_reason: str = "", changes: Optional[Dict] = None) -> dict:
     """
     Create Discord Embed with consistent formatting.
 
@@ -188,6 +222,7 @@ def create_discord_embed(notice, is_new: bool, modified_reason: str = "") -> dic
         notice: Notice object
         is_new: Whether this is a new notice
         modified_reason: Reason for modification (if applicable)
+        changes: Dictionary of specific changes (optional)
 
     Returns:
         Discord Embed dict
@@ -218,13 +253,19 @@ def create_discord_embed(notice, is_new: bool, modified_reason: str = "") -> dic
         summary_header = "📝 **원문**"
     
     description_text = ""
+    
+    # [NEW] Change Summary Header for Modified Notices
+    # We now add this as a dedicated Field, so we don't append to description here.
+    # However, if we don't have detailed changes but have a reason, we can mention it here or in fields.
+    # Logic moved to Field generation.
+
     if summary_text:
         formatted_summary = format_summary_lines(summary_text)
-        description_text = f"{summary_header}\n{formatted_summary}"
+        description_text += f"{summary_header}\n{formatted_summary}"
 
     embed = {
         "title": f"{prefix} {emoji} {truncate_text(notice.title, 200)}",
-        "description": description_text[:2000],
+        "description": truncate_text(description_text, 4000), # Truncate description
         "color": color,
         "url": notice.url,
         "author": {"name": "Yu Notice Bot", "icon_url": SCHOOL_LOGO_URL},
@@ -240,40 +281,55 @@ def create_discord_embed(notice, is_new: bool, modified_reason: str = "") -> dic
     else:
         embed["thumbnail"] = {"url": get_category_icon_url(notice.category)}
 
-    # Add fields
+    # Add fields - Skip for dormitory_menu
+    is_menu = notice.site_key == "dormitory_menu"
+
+    # [NEW] Add Change Summary as the FIRST Field
+    if not is_new:
+        change_summary = ""
+        if changes:
+             change_summary = format_change_summary(changes)
+        
+        if change_summary:
+            embed["fields"].append(
+                {"name": "🔄 변경 요약", "value": change_summary, "inline": False}
+            )
+        elif modified_reason:
+             # Fallback if no specific changes dict or empty summary
+             embed["fields"].append(
+                {"name": "⚠️ 수정 사항", "value": truncate_text(modified_reason, 1000), "inline": False}
+            )
+
     if notice.deadline:
         embed["fields"].append(
             {"name": "📅 마감일", "value": notice.deadline, "inline": True}
         )
 
-    if notice.target_dept and notice.target_dept != "전체":
+    if not is_menu and notice.target_dept and notice.target_dept != "전체":
         embed["fields"].append(
-            {"name": "🎯 대상", "value": notice.target_dept, "inline": True}
+            {"name": "🎯 대상", "value": truncate_text(notice.target_dept, 1000), "inline": True}
         )
 
-    if notice.eligibility:
+    if not is_menu and notice.eligibility:
         eligibility_text = notice.eligibility
         if isinstance(notice.eligibility, list):
             eligibility_text = ", ".join(notice.eligibility)
 
         if eligibility_text:
             embed["fields"].append(
-                {"name": "✅ 자격 요건", "value": eligibility_text, "inline": False}
+                {"name": "✅ 자격 요건", "value": truncate_text(eligibility_text, 1000), "inline": False}
             )
 
     if notice.tags and len(notice.tags) > 0:
         tags_text = " ".join([f"`{tag}`" for tag in notice.tags[:5]])
         embed["fields"].append({"name": "🏷️ 태그", "value": tags_text, "inline": False})
 
-    if modified_reason:
-        embed["fields"].append(
-            {"name": "⚠️ 수정 사항", "value": modified_reason, "inline": False}
-        )
+
 
     return embed
 
 
-def create_telegram_message(notice, is_new: bool, modified_reason: str = "") -> str:
+def create_telegram_message(notice, is_new: bool, modified_reason: str = "", changes: Optional[Dict] = None) -> str:
     """
     Create Telegram message with consistent formatting.
 
@@ -281,6 +337,7 @@ def create_telegram_message(notice, is_new: bool, modified_reason: str = "") -> 
         notice: Notice object
         is_new: Whether this is a new notice
         modified_reason: Reason for modification (if applicable)
+        changes: Dictionary of specific changes (optional)
 
     Returns:
         Telegram message HTML string
@@ -302,13 +359,21 @@ def create_telegram_message(notice, is_new: bool, modified_reason: str = "") -> 
         format_summary_lines(escape_html(summary_text)) if summary_text else ""
     )
 
-    msg = (
-        f"{prefix} <a href='{notice.url}'><b>{emoji} {safe_title}</b></a>\n\n"
-        f"{summary_header}\n"
-        f"{safe_summary}\n\n"
-    )
+    msg = f"{prefix} <a href='{notice.url}'><b>{emoji} {safe_title}</b></a>\n\n"
 
-    # Add optional fields
+    # [NEW] Change Summary Header
+    if not is_new and changes:
+        change_summary = format_change_summary(changes)
+        if change_summary:
+            msg += f"<b>[변경 요약]</b>\n{change_summary}\n\n"
+    elif not is_new and modified_reason:
+        msg += f"⚠️ <b>수정 사항</b>: {modified_reason}\n\n"
+
+    msg += f"{summary_header}\n{safe_summary}\n\n"
+
+    # Add optional fields - Skip for dormitory_menu
+    is_menu = notice.site_key == "dormitory_menu"
+
     if notice.author:
         msg += f"✍️ <b>작성자</b>: {escape_html(notice.author)}\n"
 
@@ -318,17 +383,18 @@ def create_telegram_message(notice, is_new: bool, modified_reason: str = "") -> 
     if notice.deadline:
         msg += f"⏰ <b>마감일</b>: {notice.deadline}\n"
 
-    if notice.target_dept and notice.target_dept != "전체":
+    if not is_menu and notice.target_dept and notice.target_dept != "전체":
         msg += f"🎯 <b>대상</b>: {escape_html(notice.target_dept)}\n"
 
-    if notice.eligibility:
+    if not is_menu and notice.eligibility:
         items = notice.eligibility[:3]
         reqs = "\n".join([f"• {escape_html(req)}" for req in items])
         msg += f"✅ <b>자격요건</b>\n{reqs}\n\n"
-    elif notice.deadline or notice.target_dept:
+    elif notice.deadline or (not is_menu and notice.target_dept):
         msg += "\n"
 
-    if modified_reason:
+    # Removed generic modified_reason field in favor of header
+    if modified_reason and not changes:
         msg += f"⚠️ <b>수정 사항</b>: {modified_reason}\n\n"
 
     # Hashtags

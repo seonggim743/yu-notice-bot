@@ -16,13 +16,9 @@ except Exception as e:
     logger.critical(f"Failed to load configuration: {e}", exc_info=True)
     sys.exit(1)
 
-# Debug: Verify Config Loading
-print(f"DEBUG: CWD = {os.getcwd()}")
-# Debug: Check if tokens are loaded
-discord_token = settings.DISCORD_BOT_TOKEN or ""
-print(
-    f"DEBUG: Loaded Discord Token = {discord_token[:5]}...{discord_token[-5:] if len(discord_token) > 10 else 'TooShort'}"
-)
+# Debug: Verify Config Loading (safe logging)
+logger.debug(f"CWD = {os.getcwd()}")
+logger.debug(f"Discord Token configured: {'Yes' if settings.DISCORD_BOT_TOKEN else 'No'}")
 
 from core.database import Database
 from core.error_notifier import get_error_notifier, ErrorSeverity
@@ -222,16 +218,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    # Random Jitter for Matrix Execution (Prevent API Rate Limits)
-    # Only apply if running in CI (GITHUB_ACTIONS env var) or if --target is specified
-    if os.getenv("GITHUB_ACTIONS") or args.target:
-        import random
-        
-        # 1~10 seconds random delay
-        delay = random.uniform(1.0, 10.0)
-        logger.info(f"🎲 Random Jitter: Sleeping for {delay:.2f}s before starting...")
-        import time
-        time.sleep(delay)
+    # Random Jitter removed (Sequential execution strategy)
 
     bot = Bot(init_mode=args.init, no_ai_mode=args.no_ai)
     
@@ -254,7 +241,9 @@ if __name__ == "__main__":
                 logger.info(f"🧪 Running Test Notification for: {args.test_url}")
                 asyncio.run(bot.scraper.run_test(args.test_url))
             else:
-                asyncio.run(bot.scraper.run())
+                success = asyncio.run(bot.scraper.run())
+                if not success:
+                    exit_code = 1
 
             logger.info("Run completed successfully")
         except Exception as e:
@@ -270,6 +259,8 @@ if __name__ == "__main__":
             exit_code = 1
     else:
         try:
+            # Note: bot.start() is the infinite loop mode (local dev often), currently it ignores return.
+            # But ScraperService.run is called inside bot.start loop.
             asyncio.run(bot.start())
         except KeyboardInterrupt:
             logger.info("Interrupted by user")

@@ -1,8 +1,8 @@
-name: YU Crawler Bot (Slow Cycle)
+name: YU Crawler Bot (Fast Cycle)
 
 on:
   schedule:
-    - cron: '0 */6 * * *' # Every 6 hours
+    - cron: '*/30 * * * *' # Every 30 minutes
   workflow_dispatch:
 
 permissions:
@@ -11,11 +11,6 @@ permissions:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        site: [calendar, dormitory_menu]
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,6 +41,8 @@ jobs:
           DISCORD_TAG_MAP: ${{ secrets.DISCORD_TAG_MAP || '{}' }}
           CANVAS_TOKEN: ${{ secrets.CANVAS_TOKEN }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
+          YU_EOULLIM_ID: ${{ secrets.YU_EOULLIM_ID }}
+          YU_EOULLIM_PW: ${{ secrets.YU_EOULLIM_PW }}
           IMAGE_NAME: ${{ env.IMAGE_NAME_LOWER }}
         run: |
           docker run --rm \
@@ -53,6 +50,8 @@ jobs:
           -e SUPABASE_KEY="$SUPABASE_KEY" \
           -e GEMINI_API_KEY="$GEMINI_API_KEY" \
           -e DISCORD_BOT_TOKEN="$DISCORD_BOT_TOKEN" \
+          -e YU_EOULLIM_ID="$YU_EOULLIM_ID" \
+          -e YU_EOULLIM_PW="$YU_EOULLIM_PW" \
           -e TELEGRAM_TOKEN="$TELEGRAM_TOKEN" \
           -e CHAT_ID="$CHAT_ID" \
           -e TELEGRAM_TOPIC_MAP="$TELEGRAM_TOPIC_MAP" \
@@ -64,7 +63,7 @@ jobs:
           -e GEMINI_MODEL="$GEMINI_MODEL" \
           -v ${{ github.workspace }}:/app \
           ghcr.io/$IMAGE_NAME:latest \
-          python main.py --target ${{ matrix.site }} --once
+          python main.py --once
 
       - name: Extract Error Logs
         if: failure()
@@ -82,7 +81,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: bot-logs-${{ matrix.site }}
+          name: bot-logs
           path: bot.log
           retention-days: 7
 

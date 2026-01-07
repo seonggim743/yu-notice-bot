@@ -8,7 +8,7 @@ Context Instruction: Use the Title and Author to infer the Category and Tags, es
 
 Output JSON format:
 {{
-  "category": string (Choose one: '장학', '학사', '취업', '생활관', '일반'),
+  "category": string (Choose one: {classification_categories}),
 {tags_instruction}
   "summary": string (3-line Korean summary. MUST include: 1) What (Content), 2) When/Where (Event Date/Loc), 3) How (Application method). End with noun-endings ~함),
   "deadline": string or null (YYYY-MM-DD. Application Deadline ONLY. If 'First-come' or 'Always open', return null),

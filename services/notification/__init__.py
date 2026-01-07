@@ -1,9 +1,11 @@
 """
 Notification service initialization.
-Currently exports formatters module only.
-Full NotificationService will be available after telegram/discord modules are created.
+Exports all notification-related classes for easy importing.
 """
 
+from services.notification.base import BaseNotifier
+from services.notification.telegram import TelegramNotifier
+from services.notification.discord import DiscordNotifier
 from services.notification import formatters
 
-__all__ = ["formatters"]
+__all__ = ["BaseNotifier", "TelegramNotifier", "DiscordNotifier", "formatters"]

@@ -151,7 +151,7 @@ class HTMLParser(BaseParser):
         self._extract_attachments(soup, notice)
 
         # 3. Extract Content
-        self._extract_content(soup, notice)
+        self._extract_content(soup, notice, html)
 
         # 4. Extract Images
         self._extract_images(soup, notice)
@@ -255,7 +255,7 @@ class HTMLParser(BaseParser):
                 notice.attachments.append(Attachment(name=name, url=url))
                 logger.info(f"[PARSER] Added attachment: {name} -> {url}")
 
-    def _extract_content(self, soup: BeautifulSoup, notice: Notice):
+    def _extract_content(self, soup: BeautifulSoup, notice: Notice, html: str = ""):
         """Extract main content text"""
         content_div = None
 
@@ -295,10 +295,7 @@ class HTMLParser(BaseParser):
         if not content_div:
             body = soup.body
             snippet = body.decode_contents()[:500] if body else "No Body"
-<<<<<<< Updated upstream
-=======
 
->>>>>>> Stashed changes
             logger.warning(
                 f"[PARSER] Content not found for {notice.url}\n"
                 f"Tried selectors: {', '.join(self.content_selectors)}\n"
@@ -370,7 +367,13 @@ class HTMLParser(BaseParser):
                 continue
 
             notice.image_urls.append(full_url)
-            logger.info(f"[PARSER] Added image: {full_url}")
+            
+            # Log truncation for Base64
+            display_url = full_url
+            if len(full_url) > 200 and full_url.startswith("data:image"):
+                display_url = f"{full_url[:50]}...[Base64 Truncated, Total Len: {len(full_url)}]"
+            
+            logger.info(f"[PARSER] Added image: {display_url}")
 
     # Public helper methods for testing (proxies to private methods or implementation)
     def extract_text(self, soup: BeautifulSoup) -> str:
@@ -378,7 +381,7 @@ class HTMLParser(BaseParser):
         notice = Notice(
             site_key="test", article_id="test", title="test", url="http://test.com"
         )
-        self._extract_content(soup, notice)
+        self._extract_content(soup, notice, str(soup))
         return notice.content
 
     def extract_attachments(
