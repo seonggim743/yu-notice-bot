@@ -75,6 +75,10 @@ class Bot:
         self.running = True
         self.error_count = 0
         self.MAX_CONSECUTIVE_ERRORS = 5
+        
+        # Fire-and-forget task protection
+        # Keeps strong references to background tasks to prevent GC collection
+        self._background_tasks: set = set()
 
     async def validate_startup(self) -> bool:
         """Validate system requirements before starting"""
@@ -90,8 +94,8 @@ class Bot:
                 return False
         except Exception as e:
             logger.critical(f"Database connection failed: {e}")
-            # Send error notification
-            asyncio.create_task(
+            # Send error notification (protected from GC)
+            self._create_background_task(
                 self.error_notifier.send_critical_error(
                     "Database connection failed during startup",
                     exception=e,
@@ -118,6 +122,27 @@ class Bot:
 
         logger.info("[OK] Startup validation passed")
         return True
+    
+    def _create_background_task(self, coro) -> asyncio.Task:
+        """
+        Creates a background task with strong reference protection.
+        
+        Prevents fire-and-forget tasks from being garbage collected
+        before completion by keeping a reference in _background_tasks set.
+        
+        Args:
+            coro: Coroutine to run as background task
+            
+        Returns:
+            The created Task object
+        """
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        
+        # Auto-remove from set when task completes
+        task.add_done_callback(self._background_tasks.discard)
+        
+        return task
 
     async def start(self):
         # Validate startup
@@ -157,7 +182,7 @@ class Bot:
 
                 # Network errors are retryable - don't send notification immediately
                 if self.error_count >= 3:
-                    asyncio.create_task(
+                    self._create_background_task(
                         self.error_notifier.send_critical_error(
                             f"Repeated network errors ({self.error_count})",
                             exception=e,
@@ -170,7 +195,7 @@ class Bot:
                     f"Bot Error ({self.error_count}/{self.MAX_CONSECUTIVE_ERRORS}): {type(e).__name__}: {e}"
                 )
 
-                asyncio.create_task(
+                self._create_background_task(
                     self.error_notifier.send_critical_error(
                         f"{type(e).__name__} in main loop",
                         exception=e,
@@ -185,8 +210,8 @@ class Bot:
                     exc_info=True,
                 )
 
-                # Send error notification
-                asyncio.create_task(
+                # Send error notification (protected from GC)
+                self._create_background_task(
                     self.error_notifier.send_critical_error(
                         f"Unexpected error in main loop (attempt {self.error_count}/{self.MAX_CONSECUTIVE_ERRORS})",
                         exception=e,
@@ -200,8 +225,8 @@ class Bot:
 
                 if self.error_count >= self.MAX_CONSECUTIVE_ERRORS:
                     logger.critical("Too many consecutive errors. Shutting down.")
-                    # Final shutdown notification
-                    asyncio.create_task(
+                    # Final shutdown notification (protected from GC)
+                    self._create_background_task(
                         self.error_notifier.send_critical_error(
                             "Bot shutting down due to repeated failures",
                             context={"consecutive_errors": self.error_count},

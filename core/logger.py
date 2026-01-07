@@ -1,12 +1,24 @@
+"""
+Logging configuration with async-safe handlers.
+Provides structured logging with Discord integration.
+"""
 import logging
 import sys
 import re
 import json
+import atexit
+import hashlib
+import time
+import threading
+from queue import Queue, Empty
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional
+
 import pytz
+import requests
+
 from core.config import settings
 
 # KST Timezone
@@ -141,31 +153,60 @@ class JSONFormatter(logging.Formatter):
         return json.dumps(log_record, ensure_ascii=False)
 
 
-import requests
-import hashlib
-import time
-from concurrent.futures import ThreadPoolExecutor
-
 class DiscordLogHandler(logging.Handler):
     """
-    Custom handler to send WARNING/ERROR logs to Discord.
-    Uses ThreadPoolExecutor to avoid blocking the async event loop.
-    Implements throttling to prevent spam.
+    Async-safe Discord log handler using Queue + Background Worker Thread.
+    
+    Features:
+    - Non-blocking: Uses queue to avoid blocking the event loop
+    - Throttling: Prevents spam by deduplicating similar errors
+    - Graceful shutdown: Flushes queue on exit via atexit
+    - Memory-safe: Limits error cache and queue size
     """
+    
     # Max number of error hashes to track (prevents memory leak)
     MAX_ERROR_CACHE = 100
     # Throttle window in seconds
     THROTTLE_SECONDS = 60
+    # Max queue size to prevent memory issues
+    MAX_QUEUE_SIZE = 100
+    # Timeout for queue operations
+    QUEUE_TIMEOUT = 0.1
 
     def __init__(self):
         super().__init__()
-        self.executor = ThreadPoolExecutor(max_workers=1)
-        self.last_errors = {}  # {hash_key: timestamp}
         self.bot_token = settings.DISCORD_BOT_TOKEN
         self.channel_id = settings.DISCORD_ERROR_CHANNEL_ID
+        
+        # Queue for async-safe logging
+        self._queue: Queue = Queue(maxsize=self.MAX_QUEUE_SIZE)
+        self._last_errors: dict = {}  # {hash_key: timestamp}
+        self._lock = threading.Lock()
+        
+        # Background worker thread
+        self._shutdown = threading.Event()
+        self._worker = threading.Thread(target=self._worker_loop, daemon=True)
+        self._worker.start()
+        
+        # Register atexit handler for graceful shutdown
+        atexit.register(self._graceful_shutdown)
+
+    def _worker_loop(self):
+        """Background worker that processes log queue."""
+        while not self._shutdown.is_set():
+            try:
+                # Wait for items with timeout (allows checking shutdown flag)
+                record = self._queue.get(timeout=self.QUEUE_TIMEOUT)
+                self._send_to_discord(record)
+                self._queue.task_done()
+            except Empty:
+                continue
+            except Exception as e:
+                # Never crash the worker thread
+                sys.stderr.write(f"[DiscordLogHandler] Worker error: {e}\n")
 
     def _send_to_discord(self, record: logging.LogRecord):
-        """Send log record to Discord (runs in thread pool)."""
+        """Send log record to Discord (runs in worker thread)."""
         try:
             if not self.bot_token or not self.channel_id:
                 return
@@ -192,7 +233,7 @@ class DiscordLogHandler(logging.Handler):
 
             payload = {"embeds": [embed]}
 
-            # Send request (synchronous, but runs in separate thread)
+            # Send request
             headers = {
                 "Authorization": f"Bot {self.bot_token}",
                 "Content-Type": "application/json"
@@ -215,44 +256,67 @@ class DiscordLogHandler(logging.Handler):
 
     def _cleanup_old_errors(self, current_time: float):
         """Remove old error hashes to prevent memory leak."""
-        if len(self.last_errors) > self.MAX_ERROR_CACHE:
+        if len(self._last_errors) > self.MAX_ERROR_CACHE:
             # Remove entries older than throttle window
             expired_keys = [
-                k for k, v in self.last_errors.items()
+                k for k, v in self._last_errors.items()
                 if current_time - v > self.THROTTLE_SECONDS
             ]
             for k in expired_keys:
-                del self.last_errors[k]
+                del self._last_errors[k]
 
     def emit(self, record: logging.LogRecord):
+        """Emit a log record (non-blocking)."""
         try:
             # 1. Throttling Check
-            # Create hash key from static parts (pathname, lineno, msg template)
             msg_key = hashlib.md5(
                 f"{record.pathname}:{record.lineno}:{str(record.msg)}".encode()
             ).hexdigest()
             current_time = time.time()
             
-            if msg_key in self.last_errors:
-                if current_time - self.last_errors[msg_key] < self.THROTTLE_SECONDS:
-                    return  # Ignore duplicate within throttle window
-            
-            self.last_errors[msg_key] = current_time
-            
-            # Cleanup old entries periodically
-            self._cleanup_old_errors(current_time)
+            with self._lock:
+                if msg_key in self._last_errors:
+                    if current_time - self._last_errors[msg_key] < self.THROTTLE_SECONDS:
+                        return  # Ignore duplicate within throttle window
+                
+                self._last_errors[msg_key] = current_time
+                self._cleanup_old_errors(current_time)
 
-            # 2. Dispatch to thread pool (non-blocking)
-            self.executor.submit(self._send_to_discord, record)
+            # 2. Queue the record (non-blocking)
+            try:
+                self._queue.put_nowait(record)
+            except Exception:
+                # Queue full, drop the log (better than blocking)
+                sys.stderr.write("[DiscordLogHandler] Queue full, dropping log\n")
             
         except Exception:
             self.handleError(record)
 
-    def close(self):
-        """Graceful shutdown."""
-        self.executor.shutdown(wait=False)
-        super().close()
+    def _graceful_shutdown(self):
+        """Graceful shutdown - flush queue before exit."""
+        # Signal worker to stop
+        self._shutdown.set()
+        
+        # Wait for worker to finish (max 5 seconds)
+        self._worker.join(timeout=5.0)
+        
+        # Drain remaining queue items
+        remaining = 0
+        while not self._queue.empty():
+            try:
+                record = self._queue.get_nowait()
+                self._send_to_discord(record)
+                remaining += 1
+            except Empty:
+                break
+        
+        if remaining > 0:
+            sys.stderr.write(f"[DiscordLogHandler] Flushed {remaining} logs on shutdown\n")
 
+    def close(self):
+        """Close the handler."""
+        self._graceful_shutdown()
+        super().close()
 
 
 def get_logger(
