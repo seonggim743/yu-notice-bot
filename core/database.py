@@ -2,6 +2,7 @@
 Database module with Dependency Injection support.
 Provides Supabase client connection with retry logic.
 """
+import time
 from typing import Optional
 from supabase import create_client, Client
 
@@ -58,8 +59,6 @@ class DatabaseClient:
         """
         if self._client is not None:
             return self._client
-        
-        import time
         
         for attempt in range(1, max_retries + 1):
             try:
