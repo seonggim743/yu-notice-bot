@@ -129,6 +129,34 @@ class ScraperService:
         """Calculates content hash for a notice."""
         return self.hash_calculator.calculate_hash(notice)
     
+    # ==========================================================================
+    # Backward-compatible delegation methods
+    # These forward to ChangeDetector for API compatibility with existing code
+    # ==========================================================================
+    
+    async def should_process_article(
+        self,
+        session: aiohttp.ClientSession,
+        new_item: Notice,
+        old_item: Notice
+    ) -> bool:
+        """
+        Determines if an article should be processed (has changes).
+        
+        Delegates to ChangeDetector.should_process_article.
+        Maintained for backward compatibility.
+        """
+        return await self.change_detector.should_process_article(session, new_item, old_item)
+    
+    async def detect_modifications(self, item: Notice, old_notice: Notice) -> Dict:
+        """
+        Detects specific modifications between old and new notice versions.
+        
+        Delegates to ChangeDetector.detect_modifications.
+        Maintained for backward compatibility.
+        """
+        return await self.change_detector.detect_modifications(item, old_notice)
+    
     async def run(self) -> bool:
         """
         Runs the scraper for all loaded targets.

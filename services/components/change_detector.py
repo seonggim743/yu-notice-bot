@@ -94,20 +94,31 @@ class ChangeDetector:
             
             # Size/ETag check via HEAD request
             if old_att.file_size or old_att.etag:
-                meta = await self.fetcher.fetch_file_head(session, new_att.url, new_item.url)
-                
-                if meta.get("content_length") and old_att.file_size:
-                    if meta["content_length"] != old_att.file_size:
-                        logger.debug(
-                            f"[CHANGE_DETECTOR] Attachment size changed for {new_att.name}: "
-                            f"{old_att.file_size} -> {meta['content_length']}"
-                        )
+                try:
+                    meta = await self.fetcher.fetch_file_head(session, new_att.url, new_item.url)
+                    
+                    # Check if HEAD request returned valid data
+                    if not meta or (not meta.get("content_length") and not meta.get("etag")):
+                        # HEAD failed or returned no useful data, force update
+                        logger.debug(f"[CHANGE_DETECTOR] HEAD request returned no data for {new_att.name}, forcing update")
                         return True
-                        
-                if meta.get("etag") and old_att.etag:
-                    if meta["etag"] != old_att.etag:
-                        logger.debug(f"[CHANGE_DETECTOR] Attachment ETag changed for {new_att.name}")
-                        return True
+                    
+                    if meta.get("content_length") and old_att.file_size:
+                        if meta["content_length"] != old_att.file_size:
+                            logger.debug(
+                                f"[CHANGE_DETECTOR] Attachment size changed for {new_att.name}: "
+                                f"{old_att.file_size} -> {meta['content_length']}"
+                            )
+                            return True
+                            
+                    if meta.get("etag") and old_att.etag:
+                        if meta["etag"] != old_att.etag:
+                            logger.debug(f"[CHANGE_DETECTOR] Attachment ETag changed for {new_att.name}")
+                            return True
+                except Exception as e:
+                    # HEAD request failed, force update to be safe
+                    logger.debug(f"[CHANGE_DETECTOR] HEAD request exception for {new_att.name}: {e}, forcing update")
+                    return True
             else:
                 # No metadata stored, force update
                 return True
