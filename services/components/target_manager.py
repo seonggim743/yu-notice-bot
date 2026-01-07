@@ -1,6 +1,7 @@
 """
 TargetManager component for loading and managing scraping targets.
 Extracted from ScraperService for Single Responsibility Principle.
+Uses ParserFactory for OCP-compliant parser creation.
 """
 import os
 import json
@@ -8,9 +9,7 @@ from typing import Dict, List, Optional
 
 from core.logger import get_logger
 from models.target import Target
-from parsers.html_parser import HTMLParser
-from parsers.eoullim_parser import EoullimParser
-from parsers.yutopia_parser import YutopiaParser
+from parsers.parser_factory import ParserFactory, get_parser_factory
 
 logger = get_logger(__name__)
 
@@ -19,6 +18,8 @@ class TargetManager:
     """
     Manages scraping target configuration.
     Responsible for loading, validating, and filtering targets.
+    
+    Uses ParserFactory for creating parser instances, enabling OCP compliance.
     """
     
     # Default path to targets.json (relative to this file)
@@ -26,22 +27,29 @@ class TargetManager:
         os.path.dirname(__file__), "../../resources/targets.json"
     )
     
-    def __init__(self, targets_path: Optional[str] = None):
+    def __init__(
+        self,
+        targets_path: Optional[str] = None,
+        parser_factory: Optional[ParserFactory] = None,
+    ):
         """
         Initialize TargetManager.
         
         Args:
             targets_path: Optional custom path to targets.json file.
                          If not provided, uses DEFAULT_TARGETS_PATH.
+            parser_factory: Optional ParserFactory instance for DI.
+                           If not provided, uses global singleton.
         """
         self.targets_path = targets_path or self.DEFAULT_TARGETS_PATH
+        self.parser_factory = parser_factory or get_parser_factory()
         self._targets: List[Dict] = []
         self._all_targets: List[Dict] = []  # Original unfiltered list
     
     def load_targets(self) -> List[Dict]:
         """
         Loads targets from resources/targets.json and validates them.
-        Creates appropriate parser instances for each target.
+        Creates appropriate parser instances for each target using ParserFactory.
         
         Returns:
             List of validated target dictionaries with parser instances.
@@ -60,8 +68,14 @@ class TargetManager:
                     target = Target(**item)
                     target_dict = target.model_dump()
                     
-                    # Create parser instance based on target type (Strategy Pattern)
-                    target_dict["parser"] = self._create_parser(target)
+                    # Use ParserFactory for OCP-compliant parser creation
+                    target_dict["parser"] = self.parser_factory.get_parser(
+                        site_key=target.key,
+                        list_selector=target.list_selector,
+                        title_selector=target.title_selector,
+                        link_selector=target.link_selector,
+                        content_selector=target.content_selector,
+                    )
                     valid_targets.append(target_dict)
                     
                 except Exception as e:
@@ -81,38 +95,6 @@ class TargetManager:
         except Exception as e:
             logger.error(f"[TARGET_MANAGER] Failed to load targets: {e}")
             return []
-    
-    def _create_parser(self, target: Target):
-        """
-        Factory method to create appropriate parser for target.
-        
-        Args:
-            target: Target configuration object
-            
-        Returns:
-            Parser instance (HTMLParser, EoullimParser, or YutopiaParser)
-        """
-        if target.key.startswith("eoullim_"):
-            return EoullimParser(
-                target.list_selector,
-                target.title_selector,
-                target.link_selector,
-                target.content_selector
-            )
-        elif target.key == "yutopia":
-            return YutopiaParser(
-                target.list_selector,
-                target.title_selector,
-                target.link_selector,
-                target.content_selector
-            )
-        else:
-            return HTMLParser(
-                target.list_selector,
-                target.title_selector,
-                target.link_selector,
-                target.content_selector
-            )
     
     def filter_targets(self, target_key: str) -> None:
         """

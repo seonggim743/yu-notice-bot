@@ -1,16 +1,33 @@
+"""
+Network operations for fetching notices and files.
+Refactored to use async_retry decorator for clean retry logic.
+"""
 import aiohttp
 import asyncio
 from typing import Optional, Dict, Any
+
 from core.config import settings
 from core.logger import get_logger
 from core.exceptions import NetworkException, ScraperException
+from core.utils import async_retry
 
 logger = get_logger(__name__)
+
+
+# Define retryable network exceptions
+TRANSIENT_EXCEPTIONS = (
+    asyncio.TimeoutError,
+    aiohttp.ServerDisconnectedError,
+    aiohttp.ClientConnectionError,
+)
+
 
 class NoticeFetcher:
     """
     Handles network operations for fetching notices and files.
+    Uses async_retry decorator for clean retry logic with exponential backoff.
     """
+    
     def __init__(self):
         self.timeout = aiohttp.ClientTimeout(total=60, connect=10, sock_read=30)
         self.headers = {
@@ -40,54 +57,85 @@ class NoticeFetcher:
         session.cookie_jar.update_cookies(cookies)
         logger.info(f"[FETCHER] Injected {len(cookies)} cookies into session.")
 
-
     async def fetch_url(self, session: aiohttp.ClientSession, url: str) -> str:
         """
         Fetches URL content with error handling and retry logic.
-        """
-        max_retries = 3
-        attempt = 0
         
-        while attempt < max_retries:
-            try:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                    resp.raise_for_status()
-                    return await resp.text()
-            except (asyncio.TimeoutError, aiohttp.ServerDisconnectedError, aiohttp.ClientConnectionError) as e:
-                # Transient network errors
-                attempt += 1
-                if attempt >= max_retries:
-                    raise NetworkException(f"Timeout/Connection error fetching {url} after {max_retries} retries", {"url": url})
+        Args:
+            session: aiohttp session
+            url: URL to fetch
+            
+        Returns:
+            Response text content
+            
+        Raises:
+            NetworkException: On network errors after retries exhausted
+            ScraperException: On unexpected errors
+        """
+        return await self._fetch_url_with_retry(session, url)
+    
+    @async_retry(
+        max_retries=3,
+        base_delay=1.0,
+        retryable_exceptions=TRANSIENT_EXCEPTIONS,
+    )
+    async def _fetch_url_with_retry(self, session: aiohttp.ClientSession, url: str) -> str:
+        """Internal method with retry decorator applied."""
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
+                # Handle HTTP errors
+                if resp.status in [403, 404]:
+                    raise NetworkException(
+                        f"HTTP {resp.status} error fetching {url}",
+                        {"url": url, "status": resp.status}
+                    )
                 
-                wait_time = 2 ** (attempt - 1)
-                logger.warning(f"[FETCHER] Network error fetching {url} (Attempt {attempt}/{max_retries}). Retrying in {wait_time}s... Error: {e}")
-                await asyncio.sleep(wait_time)
+                if 500 <= resp.status < 600 or resp.status == 429:
+                    # Raise to trigger retry
+                    raise aiohttp.ServerDisconnectedError(
+                        f"Server error {resp.status}"
+                    )
                 
-            except aiohttp.ClientResponseError as e:
-                # HTTP Status errors
-                # Fail Fast on 404/403
-                if e.status in [403, 404]:
-                    raise NetworkException(f"HTTP {e.status} error fetching {url}", {"url": url, "error": str(e)})
+                resp.raise_for_status()
+                return await resp.text()
                 
-                # Retry on 5xx or 429
-                if 500 <= e.status < 600 or e.status == 429:
-                    attempt += 1
-                    if attempt >= max_retries:
-                        raise NetworkException(f"HTTP {e.status} error fetching {url} after {max_retries} retries", {"url": url, "error": str(e)})
-                    
-                    wait_time = 2 ** (attempt - 1)
-                    logger.warning(f"[FETCHER] HTTP {e.status} error fetching {url} (Attempt {attempt}/{max_retries}). Retrying in {wait_time}s...")
-                    await asyncio.sleep(wait_time)
-                else:
-                    # Other 4xx errors - Fail Fast
-                    raise NetworkException(f"HTTP {e.status} error fetching {url}", {"url": url, "error": str(e)})
-                    
-            except Exception as e:
-                raise ScraperException(f"Unexpected error fetching {url}", {"url": url, "error": str(e)})
+        except TRANSIENT_EXCEPTIONS:
+            # Re-raise for retry decorator to handle
+            raise
+        except aiohttp.ClientResponseError as e:
+            if e.status in [403, 404]:
+                raise NetworkException(
+                    f"HTTP {e.status} error fetching {url}",
+                    {"url": url, "error": str(e)}
+                )
+            raise NetworkException(
+                f"HTTP error fetching {url}: {e}",
+                {"url": url, "error": str(e)}
+            )
+        except NetworkException:
+            raise
+        except Exception as e:
+            raise ScraperException(
+                f"Unexpected error fetching {url}",
+                {"url": url, "error": str(e)}
+            )
 
-    async def fetch_file_head(self, session: aiohttp.ClientSession, url: str, referer: str) -> Dict[str, Any]:
+    async def fetch_file_head(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        referer: str
+    ) -> Dict[str, Any]:
         """
         Performs a HEAD request to get file metadata.
+        
+        Args:
+            session: aiohttp session
+            url: File URL
+            referer: Referer header value
+            
+        Returns:
+            Dict with status, content_length, and etag
         """
         headers = {
             "Referer": referer,
@@ -104,55 +152,57 @@ class NoticeFetcher:
             logger.warning(f"HEAD request failed for {url}: {e}")
             return {"status": 0, "content_length": 0, "etag": None}
 
-    async def download_file(self, session: aiohttp.ClientSession, url: str, referer: str) -> Optional[bytes]:
+    async def download_file(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        referer: str
+    ) -> Optional[bytes]:
         """
-        Downloads a file fully with retry logic.
+        Downloads a file with retry logic.
+        
+        Args:
+            session: aiohttp session
+            url: File URL
+            referer: Referer header value
+            
+        Returns:
+            File bytes or None on failure
         """
+        try:
+            return await self._download_file_with_retry(session, url, referer)
+        except Exception as e:
+            logger.warning(f"Download failed for {url}: {e}")
+            return None
+    
+    @async_retry(
+        max_retries=3,
+        base_delay=1.0,
+        retryable_exceptions=TRANSIENT_EXCEPTIONS,
+    )
+    async def _download_file_with_retry(
+        self,
+        session: aiohttp.ClientSession,
+        url: str,
+        referer: str
+    ) -> bytes:
+        """Internal download method with retry decorator."""
         headers = {
             "Referer": referer,
             "User-Agent": settings.USER_AGENT,
         }
         
-        max_retries = 3
-        attempt = 0
-        
-        while attempt < max_retries:
-            try:
-                async with session.get(url, headers=headers) as resp:
-                    resp.raise_for_status()
-                    return await resp.read()
-            except (asyncio.TimeoutError, aiohttp.ServerDisconnectedError, aiohttp.ClientConnectionError) as e:
-                attempt += 1
-                if attempt >= max_retries:
-                    logger.warning(f"Download failed for {url} after {max_retries} retries: {e}")
-                    return None
-                
-                wait_time = 2 ** (attempt - 1)
-                logger.warning(f"[FETCHER] Download error for {url} (Attempt {attempt}/{max_retries}). Retrying in {wait_time}s... Error: {e}")
-                await asyncio.sleep(wait_time)
-                
-            except aiohttp.ClientResponseError as e:
-                # Fail Fast on 404/403
-                if e.status in [403, 404]:
-                    logger.warning(f"Download failed for {url}: HTTP {e.status}")
-                    return None
-                
-                # Retry on 5xx or 429
-                if 500 <= e.status < 600 or e.status == 429:
-                    attempt += 1
-                    if attempt >= max_retries:
-                        logger.warning(f"Download failed for {url} after {max_retries} retries: HTTP {e.status}")
-                        return None
-                    
-                    wait_time = 2 ** (attempt - 1)
-                    logger.warning(f"[FETCHER] Download HTTP {e.status} for {url} (Attempt {attempt}/{max_retries}). Retrying in {wait_time}s...")
-                    await asyncio.sleep(wait_time)
-                else:
-                    logger.warning(f"Download failed for {url}: HTTP {e.status}")
-                    return None
-                    
-            except Exception as e:
-                logger.warning(f"Download failed for {url}: {e}")
-                return None
-        
-        return None
+        async with session.get(url, headers=headers) as resp:
+            # Fail fast on 403/404
+            if resp.status in [403, 404]:
+                raise NetworkException(
+                    f"HTTP {resp.status} downloading {url}",
+                    {"url": url, "status": resp.status}
+                )
+            
+            # Trigger retry on server errors
+            if 500 <= resp.status < 600 or resp.status == 429:
+                raise aiohttp.ServerDisconnectedError(f"Server error {resp.status}")
+            
+            resp.raise_for_status()
+            return await resp.read()
