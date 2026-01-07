@@ -84,14 +84,16 @@ class NoticeRepository:
             if isinstance(data.get("embedding"), str):
                 try:
                     data["embedding"] = json.loads(data["embedding"])
-                except:
+                except json.JSONDecodeError:
+                    # pgvector may return malformed JSON, default to empty
                     data["embedding"] = []
 
             # Fix: Parse message_ids if it's a string
             if isinstance(data.get("message_ids"), str):
                 try:
                     data["message_ids"] = json.loads(data["message_ids"])
-                except:
+                except json.JSONDecodeError:
+                    # supabase may return malformed JSON, default to empty
                     data["message_ids"] = {}
 
             # Fetch attachments

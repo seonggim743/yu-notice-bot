@@ -1,5 +1,6 @@
 import google.generativeai as genai
 import os
+import aiohttp
 from typing import Dict, Any, Optional
 import json
 import asyncio
@@ -391,8 +392,6 @@ class AIService:
         """
         if not settings.GEMINI_API_KEY:
             return {}
-
-        import aiohttp
 
         try:
             # 1. Download Image (if not provided)

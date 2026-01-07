@@ -392,9 +392,7 @@ class HTMLParser(BaseParser):
         return notice.attachments
 
     def extract_date(self, text: str) -> Optional[str]:
-        # Helper for testing date extraction logic
-        import re
-
+        """Helper for testing date extraction logic."""
         # Support YYYY-MM-DD, YYYY.MM.DD, and YYYY년 MM월 DD일
         match = re.search(r"(\d{4})[-.년]\s*(\d{1,2})[-.월]\s*(\d{1,2})", text)
         if match:
