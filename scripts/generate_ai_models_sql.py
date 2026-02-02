@@ -27,11 +27,9 @@ def migrate():
     INSERT INTO ai_models (model_name, priority) VALUES
     ('gemini-3-flash-preview', 1),
     ('gemini-2.5-flash', 2),
-    ('gemini-flash-latest', 3),
-    ('gemini-2.5-pro', 4),
-    ('gemini-flash-lite-latest', 5),
-    ('gemini-2.5-flash-lite', 6),
-    ('gemini-2.0-flash-lite', 7);
+    ('gemini-2.5-pro', 3),
+    ('gemini-flash-lite-latest', 4),
+    ('gemini-2.5-flash-lite', 5);
     """
     
     print("Please execute the following SQL in your Supabase SQL Editor:")

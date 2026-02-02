@@ -1,5 +1,6 @@
 import asyncio
 import aiohttp
+import html
 import traceback
 from datetime import datetime, timedelta
 from typing import Dict, Optional, List
@@ -16,6 +17,8 @@ class ErrorSeverity(Enum):
     """Error severity levels"""
 
     CRITICAL = "🔴 CRITICAL"
+    ERROR = "🟠 ERROR"
+    WARNING = "🟡 WARNING"
     HIGH = "🟠 HIGH"
     MEDIUM = "🟡 MEDIUM"
     LOW = "🟢 LOW"
@@ -318,7 +321,7 @@ class ErrorNotifier:
                 for i, chunk in enumerate(traceback_chunks):
                     page_num = i + 2
                     pagination = f"({page_num}/{total_pages}) 🔍 <b>Traceback:</b>\n"
-                    msg_content = f"{pagination}<pre>{chunk}</pre>"
+                    msg_content = f"{pagination}<pre>{html.escape(chunk)}</pre>"
                     
                     # If it's the last chunk, add timestamp footer
                     if i == len(traceback_chunks) - 1:
