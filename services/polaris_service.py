@@ -1,10 +1,9 @@
 import os
-import time
 import zipfile
 import logging
 import subprocess
 import sys
-from typing import List, Optional
+from typing import List
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +30,6 @@ class PolarisService:
 import os
 import time
 import sys
-import zipfile
 from playwright.sync_api import sync_playwright
 
 def run_conversion():
@@ -39,7 +37,7 @@ def run_conversion():
     output_dir = r"{os.path.abspath(output_dir).replace(os.sep, '/')}"
     debug_dir = r"{debug_dir.replace(os.sep, '/')}"
     url = "{self.url}"
-    
+
     print(f"[SCRIPT] Processing {{file_path}} -> {{output_dir}}")
 
     try:
@@ -48,154 +46,255 @@ def run_conversion():
             context = browser.new_context(accept_downloads=True)
             page = context.new_page()
 
+            # Phase 1: Navigate and wait for page load
             print(f"[SCRIPT] Navigating to {{url}}...")
-            page.goto(url)
+            page.goto(url, wait_until="domcontentloaded")
+            page.wait_for_timeout(3000)
 
-            # Debug: Dump HTML
+            # Wait for desktop loading indicator to disappear
+            try:
+                loading = page.get_by_text("데스크탑 레이아웃 준비 중")
+                loading.wait_for(state="hidden", timeout=30000)
+                print("[SCRIPT] Desktop loading completed")
+            except:
+                print("[SCRIPT] No loading indicator found or already loaded")
+
+            # Debug: Dump HTML + screenshot
             try:
                 with open(os.path.join(debug_dir, "page_dump.html"), "w", encoding="utf-8") as f:
                     f.write(page.content())
-                print(f"[SCRIPT] Dumped HTML to page_dump.html")
-                page.screenshot(path=os.path.join(debug_dir, "initial_page.png"))
+                page.screenshot(path=os.path.join(debug_dir, "01_after_load.png"))
+                print("[SCRIPT] Saved 01_after_load.png")
             except Exception as e:
                 print(f"[SCRIPT] Failed to dump debug info: {{e}}")
 
-            # Try to close popup (specific)
+            # Phase 2: Dismiss any dialog (e.g. LanguageDetectionDialog)
             try:
-                close_btn = page.locator(".Vue-Toastification__close-button").first
-                if close_btn.is_visible(timeout=5000):
-                    print("[SCRIPT] Closing popup...")
-                    close_btn.click()
-                    time.sleep(1)
+                dialog = page.locator("[role='dialog']")
+                if dialog.first.is_visible(timeout=3000):
+                    print("[SCRIPT] Dialog detected, attempting to close...")
+                    close_btns = [
+                        dialog.locator("button").filter(has_text="OK"),
+                        dialog.locator("button").filter(has_text="확인"),
+                        dialog.locator("button").filter(has_text="닫기"),
+                        dialog.locator("button").filter(has_text="Close"),
+                    ]
+                    for btn in close_btns:
+                        try:
+                            if btn.first.is_visible(timeout=1000):
+                                btn.first.click()
+                                page.wait_for_timeout(500)
+                                print("[SCRIPT] Dialog closed")
+                                break
+                        except:
+                            continue
             except:
                 pass
 
-            # 1. Upload File
-            print(f"[SCRIPT] Attempting upload...")
+            # Phase 3: Upload file
+            print("[SCRIPT] Attempting file upload...")
             uploaded = False
-            
-            # Method A: File Chooser (User-like)
+
+            # Method A: Direct input[type='file'] (hidden input, most reliable)
             try:
-                # The button is .addFileBtn
-                upload_trigger = page.locator(".addFileBtn").first
-                
-                # Check if it's visible
-                if upload_trigger.is_visible(timeout=5000):
-                    print(f"[SCRIPT] Found upload trigger (.addFileBtn), clicking...")
-                    
-                    # Ensure it's not disabled (though class might be misleading)
-                    # We'll just try clicking it.
-                    
+                file_input = page.locator("input[type='file']").first
+                file_input.set_input_files(file_path)
+                uploaded = True
+                print("[SCRIPT] Uploaded via direct input[type='file']")
+            except Exception as e:
+                print(f"[SCRIPT] Direct input method failed: {{e}}")
+
+            # Method B: File chooser via upload button click
+            if not uploaded:
+                try:
+                    print("[SCRIPT] Falling back to file chooser method...")
+                    upload_btn = page.get_by_text("파일 업로드").first
                     with page.expect_file_chooser(timeout=10000) as fc_info:
-                        upload_trigger.click()
-                    
+                        upload_btn.click()
                     file_chooser = fc_info.value
                     file_chooser.set_files(file_path)
                     uploaded = True
-                    print("[SCRIPT] Uploaded via File Chooser")
-            except Exception as e:
-                print(f"[SCRIPT] File chooser method failed: {{e}}")
+                    print("[SCRIPT] Uploaded via file chooser")
+                except Exception as e:
+                    print(f"[SCRIPT] File chooser method failed: {{e}}")
 
-            # Method B: Direct Input (Fallback)
             if not uploaded:
-                print("[SCRIPT] Falling back to direct input manipulation...")
-                # The input is inside .addFileBtn
-                file_input = page.locator(".addFileBtn input[type='file']")
-                
-                # It might be hidden, so we use set_input_files which handles this
-                file_input.set_input_files(file_path)
-                
-                # Dispatch events
-                print(f"[SCRIPT] Dispatching change event...")
-                page.evaluate("document.querySelector('.addFileBtn input[type=file]').dispatchEvent(new Event('change', {{'bubbles': true}}))")
-                page.evaluate("document.querySelector('.addFileBtn input[type=file]').dispatchEvent(new Event('input', {{'bubbles': true}}))")
-            
-            # Take screenshot after upload
-            time.sleep(3)
-            page.screenshot(path=os.path.join(debug_dir, "after_upload.png"))
-            print(f"[SCRIPT] Saved after_upload.png")
+                raise Exception("All upload methods failed")
 
-            # 2. Wait for Convert Button
-            print(f"[SCRIPT] Waiting for conversion button...")
-            # Try multiple selectors
-            convert_btn = page.locator("#btn_convert, .funcBtn").first
-            try:
-                convert_btn.wait_for(state="visible", timeout=30000)
-            except Exception as e:
-                print(f"[SCRIPT] Timeout waiting for convert button. Taking screenshot...")
+            page.wait_for_timeout(5000)
+            page.screenshot(path=os.path.join(debug_dir, "02_after_upload.png"))
+            print("[SCRIPT] Saved 02_after_upload.png")
+
+            # Phase 4: Find and click convert button via JavaScript
+            # Use page.evaluate to atomically find + click (avoids locator race conditions)
+            print("[SCRIPT] Waiting for convert button...")
+            convert_clicked = False
+            for attempt in range(30):  # 30 * 2s = 60s max
+                result = page.evaluate("""() => {{
+                    const buttons = document.querySelectorAll('button');
+                    for (const btn of buttons) {{
+                        const text = btn.textContent || '';
+                        if (text.includes('JPG로') && !btn.disabled) {{
+                            btn.click();
+                            return 'clicked';
+                        }} else if (text.includes('JPG로') && btn.disabled) {{
+                            return 'disabled';
+                        }}
+                    }}
+                    return 'not_found';
+                }}""")
+
+                if result == 'clicked':
+                    convert_clicked = True
+                    print("[SCRIPT] Convert button clicked via JS")
+                    break
+                elif result == 'disabled':
+                    if attempt % 5 == 0:
+                        print(f"[SCRIPT] Convert button found but disabled ({{attempt * 2}}s)")
+                else:
+                    if attempt == 0:
+                        print("[SCRIPT] Convert button not found yet, waiting...")
+
+                page.wait_for_timeout(2000)
+                if attempt == 2:
+                    page.screenshot(path=os.path.join(debug_dir, "03_waiting_for_convert.png"))
+
+            if not convert_clicked:
                 page.screenshot(path=os.path.join(debug_dir, "timeout_convert_btn.png"))
-                raise e
-            
-            # Check if button is disabled
-            if "btnDisabled" in convert_btn.get_attribute("class") or convert_btn.is_disabled():
-                print(f"[SCRIPT] Button disabled, waiting for enablement...")
-                time.sleep(2)
-            
-            print(f"[SCRIPT] Clicking convert button...")
-            convert_btn.click()
+                try:
+                    with open(os.path.join(debug_dir, "page_dump_no_convert.html"), "w", encoding="utf-8") as f:
+                        f.write(page.content())
+                except:
+                    pass
+                raise Exception("Convert button never appeared or remained disabled")
 
-            # 3. Wait for Download Button
-            print(f"[SCRIPT] Waiting for conversion completion...")
-            # Wait for the download button to appear
-            download_btn = page.locator(".file_down_btn, .downloadBtn").first
-            try:
-                download_btn.wait_for(state="visible", timeout=60000)
-            except Exception as e:
-                print(f"[SCRIPT] Timeout waiting for download button. Taking screenshot...")
+            page.wait_for_timeout(1000)
+            page.screenshot(path=os.path.join(debug_dir, "03_after_convert_click.png"))
+
+            # Phase 5: Wait for download buttons to appear (poll with progress screenshots)
+            print("[SCRIPT] Waiting for conversion to complete...")
+            download_area = page.locator("button").filter(has_text="다운로드").first
+            conversion_done = False
+            for wait_round in range(12):  # 12 * 5s = 60s max
+                try:
+                    download_area.wait_for(state="visible", timeout=5000)
+                    conversion_done = True
+                    break
+                except:
+                    elapsed = (wait_round + 1) * 5
+                    print(f"[SCRIPT] Still waiting for conversion... ({{elapsed}}s)")
+                    if wait_round in (2, 5, 8):  # Screenshots at 15s, 30s, 45s
+                        page.screenshot(path=os.path.join(debug_dir, f"conversion_wait_{{elapsed}}s.png"))
+
+            if not conversion_done:
+                print("[SCRIPT] Timeout waiting for download button after 60s")
                 page.screenshot(path=os.path.join(debug_dir, "timeout_download_btn.png"))
-                raise e
+                try:
+                    with open(os.path.join(debug_dir, "page_dump_timeout.html"), "w", encoding="utf-8") as f:
+                        f.write(page.content())
+                except:
+                    pass
+                raise Exception("Conversion timed out - download button never appeared")
 
-            print(f"[SCRIPT] Download button found. Clicking...")
-            
-            # 4. Handle Download
-            # It might be a popup OR a modal OR a direct download
-            
-            # We'll try to detect if a popup opens
-            target_page = page
-            try:
-                with context.expect_page(timeout=3000) as popup_info:
-                    download_btn.click()
-                
-                popup = popup_info.value
-                print(f"[SCRIPT] Popup opened. Waiting for 'Download All'...")
-                popup.wait_for_load_state("networkidle")
-                target_page = popup
-            except Exception as e:
-                print(f"[SCRIPT] No popup detected (timeout), assuming modal or direct download on main page... (Error: {{e}})")
-                # The click happened, so we just proceed to check the main page
-            
-            # Now look for the actual download trigger (e.g. "Download All" inside the popup/modal)
-            # Or maybe the previous click already triggered it?
-            
-            # Try to find the "Download All" button
-            download_all_btn = target_page.locator("a.btn_download, button.btn_download, .download_all, .allDownload, .download_zip").first
-            
-            if download_all_btn.is_visible(timeout=5000):
-                print(f"[SCRIPT] Found 'Download All' button, clicking...")
-                with target_page.expect_download(timeout=30000) as download_info:
-                    download_all_btn.click()
+            page.screenshot(path=os.path.join(debug_dir, "04_conversion_done.png"))
+            print("[SCRIPT] Conversion complete, download buttons visible")
+
+            # Phase 6: Download converted files
+            # "ZIP 파일 다운로드" opens a download dialog (not a direct download).
+            # Inside the dialog, "모든 파일 다운로드 (ZIP)" triggers actual download.
+            print("[SCRIPT] Initiating download...")
+            download_path = None
+
+            # Step 1: Click "ZIP 파일 다운로드" to open download dialog
+            zip_btn_clicked = page.evaluate("""() => {{
+                const buttons = document.querySelectorAll('button');
+                for (const btn of buttons) {{
+                    const text = btn.textContent || '';
+                    if (text.includes('ZIP 파일 다운로드')) {{
+                        btn.click();
+                        return true;
+                    }}
+                }}
+                return false;
+            }}""")
+
+            if zip_btn_clicked:
+                print("[SCRIPT] Opened download dialog")
+                page.wait_for_timeout(2000)
+                page.screenshot(path=os.path.join(debug_dir, "05_download_dialog.png"))
+
+                # Step 2: Click "모든 파일 다운로드 (ZIP)" in the dialog
+                try:
+                    with page.expect_download(timeout=10000) as download_info:
+                        page.evaluate("""() => {{
+                            const buttons = document.querySelectorAll('button');
+                            for (const btn of buttons) {{
+                                const text = btn.textContent || '';
+                                if (text.includes('모든 파일 다운로드')) {{
+                                    btn.click();
+                                    return true;
+                                }}
+                            }}
+                            return false;
+                        }}""")
+                    download = download_info.value
+                    download_path = os.path.join(output_dir, download.suggested_filename)
+                    download.save_as(download_path)
+                    print(f"[SCRIPT] Downloaded ZIP: {{download_path}}")
+                    print(f"OUTPUT_FILE:{{download_path}}")
+                except Exception as dl_err:
+                    print(f"[SCRIPT] ZIP download failed: {{dl_err}}")
             else:
-                print(f"[SCRIPT] 'Download All' button not found. Checking if download already started...")
-                # Maybe the first click was enough? (Direct download)
-                # But we missed the expect_download context.
-                # This is tricky. If direct download happened, we might have missed the event.
-                # But usually there's a confirmation or it's a separate button.
-                raise Exception("Could not find download trigger")
-            
-            download = download_info.value
-            download_path = os.path.join(output_dir, download.suggested_filename)
-            download.save_as(download_path)
-            
-            print(f"[SCRIPT] Downloaded to: {{download_path}}")
+                print("[SCRIPT] ZIP download button not found")
+
+            # Step 3: Fallback - extract images directly from page
+            if not download_path:
+                print("[SCRIPT] Extracting converted images from page...")
+                page.screenshot(path=os.path.join(debug_dir, "06_image_extraction.png"))
+
+                import base64 as b64mod
+                img_data_list = page.evaluate("""async () => {{
+                    const results = [];
+                    const imgs = document.querySelectorAll('img');
+                    for (const img of imgs) {{
+                        const src = img.src || '';
+                        if (src.startsWith('blob:') || (src.startsWith('data:') && src.length > 1000)) {{
+                            try {{
+                                let dataUrl;
+                                if (src.startsWith('blob:')) {{
+                                    const resp = await fetch(src);
+                                    const blob = await resp.blob();
+                                    dataUrl = await new Promise(resolve => {{
+                                        const reader = new FileReader();
+                                        reader.onload = () => resolve(reader.result);
+                                        reader.readAsDataURL(blob);
+                                    }});
+                                }} else {{
+                                    dataUrl = src;
+                                }}
+                                results.push(dataUrl);
+                            }} catch(e) {{}}
+                        }}
+                    }}
+                    return results;
+                }}""")
+
+                if img_data_list:
+                    for idx, data_url in enumerate(img_data_list):
+                        b64_str = data_url.split(",", 1)[1] if "," in data_url else data_url
+                        img_path = os.path.join(output_dir, f"page_{{idx+1}}.jpg")
+                        with open(img_path, "wb") as img_f:
+                            img_f.write(b64mod.b64decode(b64_str))
+                        print(f"[SCRIPT] Extracted image: {{img_path}}")
+                        print(f"OUTPUT_FILE:{{img_path}}")
+                else:
+                    raise Exception("No converted images found on page")
+
             browser.close()
-            
-            # Return the downloaded file path
-            print(f"OUTPUT_FILE:{{download_path}}")
 
     except Exception as e:
         print(f"[SCRIPT] Error: {{e}}", file=sys.stderr)
         try:
-            # Take screenshot on error
             error_shot = os.path.join(debug_dir, "polaris_worker_error.png")
             page.screenshot(path=error_shot)
             print(f"[SCRIPT] Saved error screenshot to {{error_shot}}", file=sys.stderr)
@@ -216,7 +315,7 @@ if __name__ == "__main__":
                 [sys.executable, script_path],
                 capture_output=True,
                 text=True,
-                timeout=45 # 45 seconds timeout (reduced from 120s)
+                timeout=120  # 120 seconds timeout (WASM conversion + possible download fallback)
             )
             
             # Log output
@@ -229,28 +328,30 @@ if __name__ == "__main__":
                 logger.error(f"[POLARIS] Worker failed with exit code {result.returncode}")
                 return []
 
-            # Parse output for downloaded file
-            downloaded_file = None
+            # Parse output for downloaded files (supports multiple OUTPUT_FILE lines from fallback)
+            downloaded_files = []
             for line in result.stdout.splitlines():
                 if line.startswith("OUTPUT_FILE:"):
-                    downloaded_file = line.split(":", 1)[1].strip()
-                    break
-            
-            if not downloaded_file or not os.path.exists(downloaded_file):
+                    f = line.split(":", 1)[1].strip()
+                    if os.path.exists(f):
+                        downloaded_files.append(f)
+
+            if not downloaded_files:
                 logger.error("[POLARIS] No output file found from worker")
                 return []
 
-            # Process the downloaded file (ZIP or JPG)
+            # Process downloaded files (ZIP or individual images)
             extracted_files = []
-            if downloaded_file.lower().endswith(".zip"):
-                logger.info(f"[POLARIS] Extracting ZIP: {downloaded_file}")
-                with zipfile.ZipFile(downloaded_file, 'r') as zip_ref:
-                    zip_ref.extractall(output_dir)
-                    for name in zip_ref.namelist():
-                        if name.lower().endswith(('.jpg', '.jpeg')):
-                            extracted_files.append(os.path.join(output_dir, name))
-            elif downloaded_file.lower().endswith(('.jpg', '.jpeg')):
-                extracted_files.append(downloaded_file)
+            for downloaded_file in downloaded_files:
+                if downloaded_file.lower().endswith(".zip"):
+                    logger.info(f"[POLARIS] Extracting ZIP: {downloaded_file}")
+                    with zipfile.ZipFile(downloaded_file, 'r') as zip_ref:
+                        zip_ref.extractall(output_dir)
+                        for name in zip_ref.namelist():
+                            if name.lower().endswith(('.jpg', '.jpeg', '.png')):
+                                extracted_files.append(os.path.join(output_dir, name))
+                elif downloaded_file.lower().endswith(('.jpg', '.jpeg', '.png')):
+                    extracted_files.append(downloaded_file)
             
             logger.info(f"[POLARIS] Extracted {len(extracted_files)} images")
             return extracted_files
