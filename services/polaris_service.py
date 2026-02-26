@@ -201,8 +201,13 @@ def run_conversion():
 
             # Phase 6: Download converted files
             # Download converted files.
-            # Multi-page results show "ZIP 파일 다운로드" -> opens dialog -> "모든 파일 다운로드 (ZIP)".
-            # Single-page results show "파일 다운로드" -> direct download (no ZIP).
+            # Both single-page and multi-page follow the same pattern:
+            # 1. Click the green download button ("파일 다운로드" or "ZIP 파일 다운로드")
+            # 2. A dialog appears with 3 buttons:
+            #    - "다운로드 (N)" - individual download
+            #    - "모든 파일 다운로드 (ZIP)" - ZIP download
+            #    - "취소" - cancel
+            # We always use "모든 파일 다운로드 (ZIP)" for consistency.
             print("[SCRIPT] Initiating download...")
             download_path = None
 
@@ -218,12 +223,14 @@ def run_conversion():
             }}""")
             print(f"[SCRIPT] Detected download button type: {{btn_type}}")
 
-            if btn_type == 'zip':
-                # Multi-page: Click "ZIP 파일 다운로드" to open download dialog
-                page.evaluate("""() => {{
+            if btn_type in ('zip', 'single'):
+                # Both types: Click the download button to open the dialog
+                target_text = 'ZIP 파일 다운로드' if btn_type == 'zip' else '파일 다운로드'
+                page.evaluate(f"""() => {{
                     const buttons = document.querySelectorAll('button');
                     for (const btn of buttons) {{
-                        if ((btn.textContent || '').includes('ZIP 파일 다운로드')) {{
+                        const text = (btn.textContent || '').trim();
+                        if (text.includes('{target_text}')) {{
                             btn.click();
                             return;
                         }}
@@ -253,31 +260,7 @@ def run_conversion():
                     print(f"[SCRIPT] Downloaded ZIP: {{download_path}}")
                     print(f"OUTPUT_FILE:{{download_path}}")
                 except Exception as dl_err:
-                    print(f"[SCRIPT] ZIP download failed: {{dl_err}}")
-
-            elif btn_type == 'single':
-                # Single-page: Click "파일 다운로드" for direct download
-                try:
-                    with page.expect_download(timeout=10000) as download_info:
-                        page.evaluate("""() => {{
-                            const buttons = document.querySelectorAll('button');
-                            for (const btn of buttons) {{
-                                const text = (btn.textContent || '').trim();
-                                if (text.includes('파일 다운로드') && !text.includes('ZIP')) {{
-                                    btn.click();
-                                    return true;
-                                }}
-                            }}
-                            return false;
-                        }}""")
-                    download = download_info.value
-                    suggested = download.suggested_filename
-                    download_path = os.path.join(output_dir, suggested)
-                    download.save_as(download_path)
-                    print(f"[SCRIPT] Downloaded single file: {{download_path}}")
-                    print(f"OUTPUT_FILE:{{download_path}}")
-                except Exception as dl_err:
-                    print(f"[SCRIPT] Single file download failed: {{dl_err}}")
+                    print(f"[SCRIPT] Download failed: {{dl_err}}")
             else:
                 print("[SCRIPT] No download button found")
 

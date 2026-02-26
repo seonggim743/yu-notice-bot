@@ -452,6 +452,7 @@ class AIService:
                 contents=text[:9000],
                 config=types.EmbedContentConfig(
                     task_type="RETRIEVAL_DOCUMENT",
+                    output_dimensionality=768,
                 ),
             )
             return result.embeddings[0].values
