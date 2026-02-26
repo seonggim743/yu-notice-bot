@@ -225,12 +225,12 @@ def run_conversion():
 
             if btn_type in ('zip', 'single'):
                 # Both types: Click the download button to open the dialog
-                target_text = 'ZIP 파일 다운로드' if btn_type == 'zip' else '파일 다운로드'
-                page.evaluate(f"""() => {{
+                # "파일 다운로드" matches both "파일 다운로드" (single) and "ZIP 파일 다운로드" (multi)
+                page.evaluate("""() => {{
                     const buttons = document.querySelectorAll('button');
                     for (const btn of buttons) {{
                         const text = (btn.textContent || '').trim();
-                        if (text.includes('{target_text}')) {{
+                        if (text.includes('파일 다운로드')) {{
                             btn.click();
                             return;
                         }}
