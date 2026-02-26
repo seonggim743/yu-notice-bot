@@ -1,4 +1,5 @@
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import os
 import aiohttp
 from typing import Dict, Any, Optional
@@ -79,8 +80,9 @@ class AIService:
         """
         self.db = db or Database.get_client()
         if settings.GEMINI_API_KEY:
-            genai.configure(api_key=settings.GEMINI_API_KEY)
+            self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
         else:
+            self.client = None
             logger.warning("[AI] Gemini API Key missing. AI features disabled.")
 
         self.system_prompt_template = self._load_system_prompt()
@@ -211,7 +213,7 @@ class AIService:
             title: Notice title (critical for context)
             author: Notice author/department (critical for context)
         """
-        if not settings.GEMINI_API_KEY:
+        if not self.client:
             return {"summary": "AI Key Missing", "category": "일반", "tags": []}
 
         # Pre-process text to remove noise
@@ -253,15 +255,11 @@ class AIService:
         if not model_list:
              return {"summary": "AI 가용 모델 없음", "category": "일반", "tags": []}
              
-        loop = asyncio.get_running_loop()
         response = None
         last_error = None
 
         for model_name in model_list:
             try:
-                # Configure Model
-                gen_model = genai.GenerativeModel(model_name)
-                
                 # Pro models need longer timeout
                 timeout = 120 if "pro" in model_name.lower() or "3-flash" in model_name.lower() else 60
                 
@@ -269,40 +267,45 @@ class AIService:
                 
                 # Safety Settings to prevent false positives
                 safety_settings = [
-                    {
-                        "category": "HARM_CATEGORY_HARASSMENT",
-                        "threshold": "BLOCK_NONE",
-                    },
-                    {
-                        "category": "HARM_CATEGORY_HATE_SPEECH",
-                        "threshold": "BLOCK_NONE",
-                    },
-                    {
-                        "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
-                        "threshold": "BLOCK_NONE",
-                    },
-                    {
-                        "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
-                        "threshold": "BLOCK_NONE",
-                    },
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_HARASSMENT",
+                        threshold="OFF",
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_HATE_SPEECH",
+                        threshold="OFF",
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                        threshold="OFF",
+                    ),
+                    types.SafetySetting(
+                        category="HARM_CATEGORY_DANGEROUS_CONTENT",
+                        threshold="OFF",
+                    ),
                 ]
 
-                response = await loop.run_in_executor(
-                    None,
-                    lambda: gen_model.generate_content(
-                        prompt,
-                        generation_config={
-                            "response_mime_type": "application/json"
-                        },
-                        safety_settings=safety_settings,
-                        request_options={'timeout': timeout}
+                response = await asyncio.wait_for(
+                    self.client.aio.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_mime_type="application/json",
+                            safety_settings=safety_settings,
+                        ),
                     ),
+                    timeout=timeout,
                 )
                 
                 # If we got here, success!
                 logger.info(f"[AI] Success with model: {model_name}")
                 break
                 
+            except asyncio.TimeoutError:
+                last_error = TimeoutError(f"Timeout after {timeout}s")
+                logger.warning(f"[AI] {model_name} timed out after {timeout}s")
+                continue
+
             except Exception as e:
                 last_error = e
                 err_str = str(e)
@@ -352,7 +355,7 @@ class AIService:
         """
         Generates a summary of changes between old and new text.
         """
-        if not settings.GEMINI_API_KEY:
+        if not self.client:
             return "내용 변경 (AI Key Missing)"
 
         prompt = (
@@ -365,11 +368,9 @@ class AIService:
         )
 
         try:
-            loop = asyncio.get_running_loop()
-            # Use a cheap/fast model for diffs
-            model = genai.GenerativeModel("gemini-2.5-flash-lite") 
-            response = await loop.run_in_executor(
-                None, lambda: model.generate_content(prompt)
+            response = await self.client.aio.models.generate_content(
+                model="gemini-2.5-flash-lite",
+                contents=prompt,
             )
 
             try:
@@ -390,7 +391,7 @@ class AIService:
         Extracts menu text from an image URL or provided bytes using Gemini Vision.
         Returns JSON with 'raw_text', 'start_date', 'end_date'.
         """
-        if not settings.GEMINI_API_KEY:
+        if not self.client:
             return {}
 
         try:
@@ -416,14 +417,14 @@ class AIService:
             )
 
             # 3. Call Gemini Vision
-            loop = asyncio.get_running_loop()
-            # Use 2.5-flash for vision capabilities
-            model = genai.GenerativeModel("gemini-2.5-flash")
-            response = await loop.run_in_executor(
-                None,
-                lambda: model.generate_content(
-                    [prompt, {"mime_type": "image/jpeg", "data": image_data}],
-                    generation_config={"response_mime_type": "application/json"},
+            response = await self.client.aio.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[
+                    prompt,
+                    types.Part.from_bytes(data=image_data, mime_type="image/jpeg"),
+                ],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
                 ),
             )
 
@@ -443,16 +444,17 @@ class AIService:
             return {}
 
     async def get_embedding(self, text: str) -> list:
-        if not settings.GEMINI_API_KEY:
+        if not self.client:
             return []
         try:
-            result = genai.embed_content(
-                model="models/text-embedding-004",
-                content=text[:9000],
-                task_type="retrieval_document",
-                title="University Notice",
+            result = await self.client.aio.models.embed_content(
+                model="gemini-embedding-001",
+                contents=text[:9000],
+                config=types.EmbedContentConfig(
+                    task_type="RETRIEVAL_DOCUMENT",
+                ),
             )
-            return result["embedding"]
+            return result.embeddings[0].values
         except Exception as e:
             logger.error(f"Embedding failed: {e}")
             return []
