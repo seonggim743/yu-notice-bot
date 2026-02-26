@@ -89,29 +89,29 @@ class TestAIService:
         
         result = await ai_service.analyze_notice(sample_notice_text, "yu_news")
 
-            assert "summary" in result
-            assert "category" in result
-            assert "tags" in result
-            assert "deadline" in result
-            assert "target_dept" in result
-            assert "target_grades" in result
+        assert "summary" in result
+        assert "category" in result
+        assert "tags" in result
+        assert "deadline" in result
+        assert "target_dept" in result
+        assert "target_grades" in result
 
-            # Tags should be between 1-5 (Prompt requests 1-2, but code allows list)
-            # If tags are empty, that's also valid if AI returned none
-            assert len(result["tags"]) >= 0
+        # Tags should be between 1-5 (Prompt requests 1-2, but code allows list)
+        # If tags are empty, that's also valid if AI returned none
+        assert len(result["tags"]) >= 0
 
-            # Category should be one of expected values
-            assert result["category"] in [
-                "긴급",
-                "장학",
-                "학사",
-                "취업",
-                "행사",
-                "과제/시험",
-                "수상/성과",
-                "생활관",
-                "일반",
-            ]
+        # Category should be one of expected values
+        assert result["category"] in [
+            "긴급",
+            "장학",
+            "학사",
+            "취업",
+            "행사",
+            "과제/시험",
+            "수상/성과",
+            "생활관",
+            "일반",
+        ]
 
     @pytest.mark.asyncio
     async def test_analyze_notice_with_tags(self, ai_service, sample_notice_text):
