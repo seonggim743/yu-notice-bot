@@ -200,30 +200,40 @@ def run_conversion():
             print("[SCRIPT] Conversion complete, download buttons visible")
 
             # Phase 6: Download converted files
-            # "ZIP 파일 다운로드" opens a download dialog (not a direct download).
-            # Inside the dialog, "모든 파일 다운로드 (ZIP)" triggers actual download.
+            # Download converted files.
+            # Multi-page results show "ZIP 파일 다운로드" -> opens dialog -> "모든 파일 다운로드 (ZIP)".
+            # Single-page results show "파일 다운로드" -> direct download (no ZIP).
             print("[SCRIPT] Initiating download...")
             download_path = None
 
-            # Step 1: Click "ZIP 파일 다운로드" to open download dialog
-            zip_btn_clicked = page.evaluate("""() => {{
+            # Detect which download button is present
+            btn_type = page.evaluate("""() => {{
                 const buttons = document.querySelectorAll('button');
                 for (const btn of buttons) {{
-                    const text = btn.textContent || '';
-                    if (text.includes('ZIP 파일 다운로드')) {{
-                        btn.click();
-                        return true;
-                    }}
+                    const text = (btn.textContent || '').trim();
+                    if (text.includes('ZIP 파일 다운로드')) return 'zip';
+                    if (text.includes('파일 다운로드') && !text.includes('ZIP')) return 'single';
                 }}
-                return false;
+                return 'none';
             }}""")
+            print(f"[SCRIPT] Detected download button type: {{btn_type}}")
 
-            if zip_btn_clicked:
+            if btn_type == 'zip':
+                # Multi-page: Click "ZIP 파일 다운로드" to open download dialog
+                page.evaluate("""() => {{
+                    const buttons = document.querySelectorAll('button');
+                    for (const btn of buttons) {{
+                        if ((btn.textContent || '').includes('ZIP 파일 다운로드')) {{
+                            btn.click();
+                            return;
+                        }}
+                    }}
+                }}""")
                 print("[SCRIPT] Opened download dialog")
                 page.wait_for_timeout(2000)
                 page.screenshot(path=os.path.join(debug_dir, "05_download_dialog.png"))
 
-                # Step 2: Click "모든 파일 다운로드 (ZIP)" in the dialog
+                # Click "모든 파일 다운로드 (ZIP)" in the dialog
                 try:
                     with page.expect_download(timeout=10000) as download_info:
                         page.evaluate("""() => {{
@@ -244,10 +254,34 @@ def run_conversion():
                     print(f"OUTPUT_FILE:{{download_path}}")
                 except Exception as dl_err:
                     print(f"[SCRIPT] ZIP download failed: {{dl_err}}")
-            else:
-                print("[SCRIPT] ZIP download button not found")
 
-            # Step 3: Fallback - extract images directly from page
+            elif btn_type == 'single':
+                # Single-page: Click "파일 다운로드" for direct download
+                try:
+                    with page.expect_download(timeout=10000) as download_info:
+                        page.evaluate("""() => {{
+                            const buttons = document.querySelectorAll('button');
+                            for (const btn of buttons) {{
+                                const text = (btn.textContent || '').trim();
+                                if (text.includes('파일 다운로드') && !text.includes('ZIP')) {{
+                                    btn.click();
+                                    return true;
+                                }}
+                            }}
+                            return false;
+                        }}""")
+                    download = download_info.value
+                    suggested = download.suggested_filename
+                    download_path = os.path.join(output_dir, suggested)
+                    download.save_as(download_path)
+                    print(f"[SCRIPT] Downloaded single file: {{download_path}}")
+                    print(f"OUTPUT_FILE:{{download_path}}")
+                except Exception as dl_err:
+                    print(f"[SCRIPT] Single file download failed: {{dl_err}}")
+            else:
+                print("[SCRIPT] No download button found")
+
+            # Fallback: extract images directly from page
             if not download_path:
                 print("[SCRIPT] Extracting converted images from page...")
                 page.screenshot(path=os.path.join(debug_dir, "06_image_extraction.png"))
