@@ -12,17 +12,25 @@ logger = get_logger(__name__)
 class PolarisService:
     def __init__(self):
         self.url = "https://www.polarisofficetools.com/hwpx/convert/image"
+        # Circuit breaker: once a conversion fails (timeout, network, etc.) we
+        # stop attempting subsequent files within the same scrape run to avoid
+        # repeatedly burning 120s on a service that is currently down.
+        self._circuit_open = False
 
     def convert_to_jpg(self, file_path: str, output_dir: str) -> List[str]:
         """
         Converts HWP/HWPX file to JPG using Polaris Office Tools via a separate subprocess.
         Returns a list of paths to the downloaded JPG files.
         """
+        if self._circuit_open:
+            logger.warning("[POLARIS] Circuit breaker activated, skipping remaining files")
+            return []
+
         # Create debug directory
         debug_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "debug_screenshots"))
         if not os.path.exists(debug_dir):
             os.makedirs(debug_dir)
-            
+
         try:
             logger.info(f"[POLARIS] Starting conversion for {file_path}")
 
@@ -55,7 +63,7 @@ def run_conversion():
 
             # Phase 1: Navigate and wait for page load
             print(f"[SCRIPT] Navigating to {{url}}...")
-            page.goto(url, wait_until="domcontentloaded")
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
             page.wait_for_timeout(3000)
 
             # Wait for desktop loading indicator to disappear
@@ -350,6 +358,7 @@ if __name__ == "__main__":
                 
             if result.returncode != 0:
                 logger.error(f"[POLARIS] Worker failed with exit code {result.returncode}")
+                self._circuit_open = True
                 return []
 
             # Parse output for downloaded files (supports multiple OUTPUT_FILE lines from fallback)
@@ -362,6 +371,7 @@ if __name__ == "__main__":
 
             if not downloaded_files:
                 logger.error("[POLARIS] No output file found from worker")
+                self._circuit_open = True
                 return []
 
             # Process downloaded files (ZIP or individual images)
@@ -376,10 +386,11 @@ if __name__ == "__main__":
                                 extracted_files.append(os.path.join(output_dir, name))
                 elif downloaded_file.lower().endswith(('.jpg', '.jpeg', '.png')):
                     extracted_files.append(downloaded_file)
-            
+
             logger.info(f"[POLARIS] Extracted {len(extracted_files)} images")
             return extracted_files
 
         except Exception as e:
             logger.error(f"[POLARIS] Conversion error: {e}")
+            self._circuit_open = True
             return []
