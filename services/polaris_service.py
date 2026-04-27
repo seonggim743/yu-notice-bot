@@ -1,4 +1,5 @@
 import os
+import json
 import zipfile
 import subprocess
 import sys
@@ -24,6 +25,11 @@ class PolarisService:
             
         try:
             logger.info(f"[POLARIS] Starting conversion for {file_path}")
+
+            script_file_path = json.dumps(os.path.abspath(file_path).replace(os.sep, "/"))
+            script_output_dir = json.dumps(os.path.abspath(output_dir).replace(os.sep, "/"))
+            script_debug_dir = json.dumps(debug_dir.replace(os.sep, "/"))
+            script_url = json.dumps(self.url)
             
             # Create a standalone script to run Playwright
             # This avoids "Sync API inside asyncio loop" errors
@@ -34,10 +40,10 @@ import sys
 from playwright.sync_api import sync_playwright
 
 def run_conversion():
-    file_path = r"{os.path.abspath(file_path).replace(os.sep, '/')}"
-    output_dir = r"{os.path.abspath(output_dir).replace(os.sep, '/')}"
-    debug_dir = r"{debug_dir.replace(os.sep, '/')}"
-    url = "{self.url}"
+    file_path = {script_file_path}
+    output_dir = {script_output_dir}
+    debug_dir = {script_debug_dir}
+    url = {script_url}
 
     print(f"[SCRIPT] Processing {{file_path}} -> {{output_dir}}")
 
