@@ -499,7 +499,8 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
         created_thread_id = None
         created_message_id = None
 
-        # Get tag IDs from AI-selected tags (for new threads only)
+        # Get tag IDs from AI-selected tags (for new threads only).
+        # Tag matching is optional; thread/message creation runs regardless.
         tag_ids = []
         if is_new and notice.tags:
             tag_ids = TagMatcher.get_tag_ids(notice.tags, notice.site_key)
@@ -512,173 +513,173 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                     f"[NOTIFIER] No tags matched for {notice.tags} (Site: {notice.site_key})"
                 )
 
-            # === SPLIT EMBED LOGIC ===
-            # Discord limit: 6000 chars total. We must split if it exceeds this.
-            embeds_to_send = self._split_embed(embed)
-            
-            main_embed = embeds_to_send[0]
-            followup_embeds = embeds_to_send[1:]
+        # === SPLIT EMBED LOGIC ===
+        # Discord limit: 6000 chars total. We must split if it exceeds this.
+        embeds_to_send = self._split_embed(embed)
 
-            # 1. Try Thread Creation (Forum)
-            try:
-                # Forum Thread Payload (First Embed)
-                payload = {
-                    "name": thread_name,
-                    "message": {"embeds": [main_embed]},
-                    "auto_archive_duration": 4320,
-                }  # 3 days
+        main_embed = embeds_to_send[0]
+        followup_embeds = embeds_to_send[1:]
 
-                # Apply matched tags if available
-                if tag_ids:
-                    payload["applied_tags"] = tag_ids
+        # 1. Try Thread Creation (Forum)
+        try:
+            # Forum Thread Payload (First Embed)
+            payload = {
+                "name": thread_name,
+                "message": {"embeds": [main_embed]},
+                "auto_archive_duration": 4320,
+            }  # 3 days
 
-                # Determine if we need Multipart (Files) or JSON
-                # Files generally go with the FIRST message (Thread Starter) if possible
-                has_files_now = bool(embed_image_data or files_for_thread_starter)
+            # Apply matched tags if available
+            if tag_ids:
+                payload["applied_tags"] = tag_ids
 
-                if has_files_now:
-                    form = MultipartWriter("form-data")
-                    self._add_text_part(form, "payload_json", json.dumps(payload))
+            # Determine if we need Multipart (Files) or JSON
+            # Files generally go with the FIRST message (Thread Starter) if possible
+            has_files_now = bool(embed_image_data or files_for_thread_starter)
 
-                    file_idx = 0
-                    # Add Embed Image (if any)
-                    if embed_image_data:
-                        self._add_file_part(form, f"files[{file_idx}]", embed_image_data, embed_image_filename)
-                        file_idx += 1
+            if has_files_now:
+                form = MultipartWriter("form-data")
+                self._add_text_part(form, "payload_json", json.dumps(payload))
 
-                    # Add Thread Starter Files (Multiple Content Images)
-                    for file_info in files_for_thread_starter:
-                        self._add_file_part(
-                            form, f"files[{file_idx}]", file_info["data"], file_info["filename"]
-                        )
-                        file_idx += 1
+                file_idx = 0
+                # Add Embed Image (if any)
+                if embed_image_data:
+                    self._add_file_part(form, f"files[{file_idx}]", embed_image_data, embed_image_filename)
+                    file_idx += 1
 
-                    kwargs = {"data": form}
-                else:
-                    kwargs = {"json": payload}
+                # Add Thread Starter Files (Multiple Content Images)
+                for file_info in files_for_thread_starter:
+                    self._add_file_part(
+                        form, f"files[{file_idx}]", file_info["data"], file_info["filename"]
+                    )
+                    file_idx += 1
 
-                logger.info(f"[NOTIFIER] Sending Discord request to {thread_url}")
-                async with session.post(thread_url, headers=headers, **kwargs) as resp:
-                    logger.info(f"[NOTIFIER] Discord response status: {resp.status}")
-                    if resp.status in [200, 201]:
-                        logger.info(
-                            f"[NOTIFIER] Discord Forum Thread created: {thread_name}"
-                        )
-                        resp_data = await resp.json()
-                        created_thread_id = resp_data.get("id")
-                        created_message_id = resp_data.get("id")
-                        logger.info(f"[NOTIFIER] Created Thread ID: {created_thread_id}")
+                kwargs = {"data": form}
+            else:
+                kwargs = {"json": payload}
 
-                        # --- Send Follow-up Embeds (Split Parts) ---
-                        if hasattr(self, "_send_discord_reply") and created_thread_id and followup_embeds:
-                            for idx, f_embed in enumerate(followup_embeds):
-                                try:
-                                    # Send as simple message with embed
-                                    f_payload = {"embeds": [f_embed]}
-                                    f_url = f"https://discord.com/api/v10/channels/{created_thread_id}/messages"
-                                    async with session.post(f_url, headers=headers, json=f_payload) as f_resp:
-                                        if f_resp.status not in [200, 201]:
-                                            logger.error(f"[NOTIFIER] Failed to send followup embed {idx+1}: {await f_resp.text()}")
-                                    await asyncio.sleep(0.5) # Rate limit safety
-                                except Exception as e:
-                                    logger.error(f"[NOTIFIER] Error sending followup embed: {e}")
-                        # ------------------------------------------
+            logger.info(f"[NOTIFIER] Sending Discord request to {thread_url}")
+            async with session.post(thread_url, headers=headers, **kwargs) as resp:
+                logger.info(f"[NOTIFIER] Discord response status: {resp.status}")
+                if resp.status in [200, 201]:
+                    logger.info(
+                        f"[NOTIFIER] Discord Forum Thread created: {thread_name}"
+                    )
+                    resp_data = await resp.json()
+                    created_thread_id = resp_data.get("id")
+                    created_message_id = resp_data.get("id")
+                    logger.info(f"[NOTIFIER] Created Thread ID: {created_thread_id}")
 
-                        # Send PDF previews as grouped messages
-                        if created_thread_id and pdf_previews:
-                            for group in pdf_previews:
-                                await self._send_discord_pdf_preview_group(
-                                    session, created_thread_id, group, headers
-                                )
+                    # --- Send Follow-up Embeds (Split Parts) ---
+                    if hasattr(self, "_send_discord_reply") and created_thread_id and followup_embeds:
+                        for idx, f_embed in enumerate(followup_embeds):
+                            try:
+                                # Send as simple message with embed
+                                f_payload = {"embeds": [f_embed]}
+                                f_url = f"https://discord.com/api/v10/channels/{created_thread_id}/messages"
+                                async with session.post(f_url, headers=headers, json=f_payload) as f_resp:
+                                    if f_resp.status not in [200, 201]:
+                                        logger.error(f"[NOTIFIER] Failed to send followup embed {idx+1}: {await f_resp.text()}")
+                                await asyncio.sleep(0.5) # Rate limit safety
+                            except Exception as e:
+                                logger.error(f"[NOTIFIER] Error sending followup embed: {e}")
+                    # ------------------------------------------
 
-                        # If we have attachments, send them to the thread (AFTER previews)
-                        if files_for_attachments and created_thread_id:
-                            await self._send_discord_reply(
-                                session,
-                                created_thread_id,
-                                files_for_attachments,
-                                headers,
-                                is_thread=True,
+                    # Send PDF previews as grouped messages
+                    if created_thread_id and pdf_previews:
+                        for group in pdf_previews:
+                            await self._send_discord_pdf_preview_group(
+                                session, created_thread_id, group, headers
                             )
 
-                        return created_thread_id
-                    elif resp.status == 400 or resp.status == 404:
-                        resp_text = await resp.text()
-                        logger.warning(
-                            f"[NOTIFIER] Failed to create thread (Status {resp.status}): {resp_text}. Fallback to normal message."
+                    # If we have attachments, send them to the thread (AFTER previews)
+                    if files_for_attachments and created_thread_id:
+                        await self._send_discord_reply(
+                            session,
+                            created_thread_id,
+                            files_for_attachments,
+                            headers,
+                            is_thread=True,
                         )
-                    else:
-                        resp_text = await resp.text()
-                        logger.error(
-                            f"[NOTIFIER] Discord Thread creation failed: {resp_text}"
-                        )
-                        pass
 
-            except Exception as e:
-                logger.error(f"[NOTIFIER] Discord Thread error: {e}", exc_info=True)
-
-            # 2. Fallback: Normal Message (Text Channel)
-            try:
-                # Use main_embed for first message
-                payload = {"embeds": [main_embed]}
-
-                has_files_now = bool(embed_image_data or files_for_thread_starter)
-
-                if has_files_now:
-                    form = MultipartWriter("form-data")
-                    self._add_text_part(form, "payload_json", json.dumps(payload))
-
-                    file_idx = 0
-                    if embed_image_data:
-                        self._add_file_part(form, f"files[{file_idx}]", embed_image_data, embed_image_filename)
-                        file_idx += 1
-
-                    for file_info in files_for_thread_starter:
-                        self._add_file_part(
-                            form, f"files[{file_idx}]", file_info["data"], file_info["filename"]
-                        )
-                        file_idx += 1
-
-                    kwargs = {"data": form}
+                    return created_thread_id
+                elif resp.status == 400 or resp.status == 404:
+                    resp_text = await resp.text()
+                    logger.warning(
+                        f"[NOTIFIER] Failed to create thread (Status {resp.status}): {resp_text}. Fallback to normal message."
+                    )
                 else:
-                    kwargs = {"json": payload}
+                    resp_text = await resp.text()
+                    logger.error(
+                        f"[NOTIFIER] Discord Thread creation failed: {resp_text}"
+                    )
+                    pass
 
-                async with session.post(message_url, headers=headers, **kwargs) as resp:
-                    if resp.status in [200, 204]:
-                        logger.info(f"[NOTIFIER] Discord Message sent: {notice.title}")
-                        resp_data = await resp.json()
-                        created_message_id = resp_data.get("id")
-                        channel_id = message_url.split("/")[
-                            -2
-                        ]  # Extract channel ID from URL
+        except Exception as e:
+            logger.error(f"[NOTIFIER] Discord Thread error: {e}", exc_info=True)
 
-                        # --- Send Follow-up Embeds (Split Parts) ---
-                        if created_message_id and followup_embeds:
-                            # Reply to the first message
-                            for idx, f_embed in enumerate(followup_embeds):
-                                await self._send_discord_reply_embed(session, channel_id, f_embed, headers, created_message_id)
-                        # ------------------------------------------
+        # 2. Fallback: Normal Message (Text Channel)
+        try:
+            # Use main_embed for first message
+            payload = {"embeds": [main_embed]}
 
-                        # If we have attachments, reply to the message
-                        if files_for_attachments and created_message_id:
-                            await self._send_discord_reply(
-                                session,
-                                channel_id,
-                                files_for_attachments,
-                                headers,
-                                is_thread=False,
-                                reply_to_id=created_message_id,
-                            )
+            has_files_now = bool(embed_image_data or files_for_thread_starter)
 
-                        return created_message_id
-                    else:
-                        logger.error(
-                            f"[NOTIFIER] Discord Message failed: {await resp.text()}"
+            if has_files_now:
+                form = MultipartWriter("form-data")
+                self._add_text_part(form, "payload_json", json.dumps(payload))
+
+                file_idx = 0
+                if embed_image_data:
+                    self._add_file_part(form, f"files[{file_idx}]", embed_image_data, embed_image_filename)
+                    file_idx += 1
+
+                for file_info in files_for_thread_starter:
+                    self._add_file_part(
+                        form, f"files[{file_idx}]", file_info["data"], file_info["filename"]
+                    )
+                    file_idx += 1
+
+                kwargs = {"data": form}
+            else:
+                kwargs = {"json": payload}
+
+            async with session.post(message_url, headers=headers, **kwargs) as resp:
+                if resp.status in [200, 204]:
+                    logger.info(f"[NOTIFIER] Discord Message sent: {notice.title}")
+                    resp_data = await resp.json()
+                    created_message_id = resp_data.get("id")
+                    channel_id = message_url.split("/")[
+                        -2
+                    ]  # Extract channel ID from URL
+
+                    # --- Send Follow-up Embeds (Split Parts) ---
+                    if created_message_id and followup_embeds:
+                        # Reply to the first message
+                        for idx, f_embed in enumerate(followup_embeds):
+                            await self._send_discord_reply_embed(session, channel_id, f_embed, headers, created_message_id)
+                    # ------------------------------------------
+
+                    # If we have attachments, reply to the message
+                    if files_for_attachments and created_message_id:
+                        await self._send_discord_reply(
+                            session,
+                            channel_id,
+                            files_for_attachments,
+                            headers,
+                            is_thread=False,
+                            reply_to_id=created_message_id,
                         )
-                        return None
-            except Exception as e:
-                logger.error(f"[NOTIFIER] Discord Message error: {e}")
-                return None
+
+                    return created_message_id
+                else:
+                    logger.error(
+                        f"[NOTIFIER] Discord Message failed: {await resp.text()}"
+                    )
+                    return None
+        except Exception as e:
+            logger.error(f"[NOTIFIER] Discord Message error: {e}")
+            return None
 
     def _get_embed_length(self, embed: Dict) -> int:
         """Calculate total number of characters in an embed structure."""
