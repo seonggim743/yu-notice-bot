@@ -94,9 +94,13 @@ CREATE TABLE IF NOT EXISTS token_usage (
 CREATE TABLE IF NOT EXISTS ai_models (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     model_name TEXT NOT NULL UNIQUE,
+    api_key_alias VARCHAR DEFAULT 'default',
+    priority INTEGER DEFAULT 99,
+    is_active BOOLEAN DEFAULT TRUE,
     daily_limit INTEGER DEFAULT 1500,
     current_usage INTEGER DEFAULT 0,
     reset_at TIMESTAMPTZ,
+    blocked_until TIMESTAMPTZ,
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
