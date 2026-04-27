@@ -2,7 +2,6 @@
 HWP/HWPX file handling.
 """
 import io
-import logging
 import os
 import re
 import shutil
@@ -15,7 +14,9 @@ from typing import Optional, List
 
 import olefile
 
-logger = logging.getLogger(__name__)
+from core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class HWPHandler:

@@ -2,12 +2,13 @@
 Image processing utilities.
 """
 import io
-import logging
 from typing import List
 
 import fitz  # PyMuPDF
 
-logger = logging.getLogger(__name__)
+from core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class ImageHandler:

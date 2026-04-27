@@ -1,11 +1,12 @@
 import os
 import zipfile
-import logging
 import subprocess
 import sys
 from typing import List
 
-logger = logging.getLogger(__name__)
+from core.logger import get_logger
+
+logger = get_logger(__name__)
 
 class PolarisService:
     def __init__(self):
