@@ -5,6 +5,7 @@ Implements NotificationChannel interface for Strategy Pattern.
 import aiohttp
 import json
 import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
@@ -33,12 +34,42 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
     Implements NotificationChannel interface for Strategy Pattern compatibility.
     """
 
+    MAX_RATE_LIMIT_RETRIES = 2
+
     def __init__(self):
         self.downloader = AttachmentDownloader()
 
     @property
     def channel_name(self) -> str:
         return "discord"
+
+    @asynccontextmanager
+    async def _discord_request(
+        self,
+        session: aiohttp.ClientSession,
+        method: str,
+        url: str,
+        **kwargs,
+    ):
+        """Issue a Discord API request, transparently retrying on HTTP 429.
+
+        Honors the Retry-After response header (seconds) and retries up to
+        MAX_RATE_LIMIT_RETRIES times. On the final attempt the response is
+        yielded regardless of status so callers can handle the failure.
+        """
+        for attempt in range(self.MAX_RATE_LIMIT_RETRIES + 1):
+            is_last = attempt >= self.MAX_RATE_LIMIT_RETRIES
+            async with session.request(method, url, **kwargs) as resp:
+                if resp.status == 429 and not is_last:
+                    retry_after = float(resp.headers.get("Retry-After", "1") or 1)
+                    logger.warning(
+                        f"[NOTIFIER] Discord rate limited (429). "
+                        f"Sleeping {retry_after}s before retry {attempt + 1}/{self.MAX_RATE_LIMIT_RETRIES}."
+                    )
+                    await asyncio.sleep(retry_after)
+                    continue
+                yield resp
+                return
 
     def is_enabled(self) -> bool:
         """Check if Discord is configured and enabled."""
@@ -381,7 +412,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
             )
 
             try:
-                async with session.post(reply_url, headers=headers, **kwargs) as resp:
+                async with self._discord_request(session, "POST", reply_url, headers=headers, **kwargs) as resp:
                     if resp.status in [200, 201]:
                         logger.info("[NOTIFIER] Discord update reply sent.")
 
@@ -492,7 +523,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                 kwargs = {"json": payload}
 
             logger.info(f"[NOTIFIER] Sending Discord request to {thread_url}")
-            async with session.post(thread_url, headers=headers, **kwargs) as resp:
+            async with self._discord_request(session, "POST", thread_url, headers=headers, **kwargs) as resp:
                 logger.info(f"[NOTIFIER] Discord response status: {resp.status}")
                 if resp.status in [200, 201]:
                     logger.info(
@@ -510,7 +541,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                                 # Send as simple message with embed
                                 f_payload = {"embeds": [f_embed]}
                                 f_url = f"https://discord.com/api/v10/channels/{created_thread_id}/messages"
-                                async with session.post(f_url, headers=headers, json=f_payload) as f_resp:
+                                async with self._discord_request(session, "POST", f_url, headers=headers, json=f_payload) as f_resp:
                                     if f_resp.status not in [200, 201]:
                                         logger.error(f"[NOTIFIER] Failed to send followup embed {idx+1}: {await f_resp.text()}")
                                 await asyncio.sleep(0.5) # Rate limit safety
@@ -577,7 +608,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
             else:
                 kwargs = {"json": payload}
 
-            async with session.post(message_url, headers=headers, **kwargs) as resp:
+            async with self._discord_request(session, "POST", message_url, headers=headers, **kwargs) as resp:
                 if resp.status in [200, 204]:
                     logger.info(f"[NOTIFIER] Discord Message sent: {notice.title}")
                     resp_data = await resp.json()
@@ -704,7 +735,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
         if reply_to_id:
             payload["message_reference"] = {"message_id": reply_to_id}
             
-        async with session.post(url, headers=headers, json=payload) as resp:
+        async with self._discord_request(session, "POST", url, headers=headers, json=payload) as resp:
             if resp.status not in [200, 201]:
                  logger.error(f"[NOTIFIER] Failed to send reply embed: {await resp.text()}")
 
@@ -740,7 +771,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                 )
 
             try:
-                async with session.post(url, headers=headers, data=form) as resp:
+                async with self._discord_request(session, "POST", url, headers=headers, data=form) as resp:
                     if resp.status not in [200, 201, 204]:
                         logger.error(
                             f"[NOTIFIER] Failed to send reply attachments: {await resp.text()}"
@@ -766,7 +797,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
             for idx, img in enumerate(group["images"]):
                 self._add_file_part(form, f"files[{idx}]", img["data"], img["filename"])
 
-            async with session.post(message_url, headers=headers, data=form) as resp:
+            async with self._discord_request(session, "POST", message_url, headers=headers, data=form) as resp:
                 if resp.status in [200, 201]:
                     logger.info(
                         f"[NOTIFIER] Sent Discord PDF preview group: {caption} ({len(group['images'])} pages)"
