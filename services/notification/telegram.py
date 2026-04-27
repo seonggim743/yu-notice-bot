@@ -162,6 +162,13 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
 
         # Create message using formatter
         msg = create_telegram_message(notice, is_new, modified_reason, changes)
+        truncate_suffix = "\n\n...전체 내용은 원문 링크를 확인해주세요."
+        max_message_length = constants.TELEGRAM_MAX_MESSAGE_LENGTH
+        if len(msg) > max_message_length:
+            logger.warning(
+                f"[NOTIFIER] Telegram message too long ({len(msg)} chars). Truncating."
+            )
+            msg = msg[: max_message_length - len(truncate_suffix)] + truncate_suffix
 
         # Buttons (Download Links)
         buttons = []
