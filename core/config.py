@@ -2,7 +2,6 @@ from pydantic_settings import BaseSettings
 from typing import Dict, List, Optional, Union
 from pydantic import Field, field_validator
 import json
-import os
 from core import constants
 
 
@@ -30,8 +29,8 @@ class Settings(BaseSettings):
 
     # --- Discord ---
     # Dev/Admin Notification
-    DEV_PLATFORM: str = os.getenv("DEV_PLATFORM", "telegram") # telegram or discord
-    DEV_CHANNEL_ID: str = os.getenv("DEV_CHANNEL_ID", "")
+    DEV_PLATFORM: str = Field("telegram", description="Dev notification platform (telegram or discord)")
+    DEV_CHANNEL_ID: str = Field("", description="Dev notification channel ID")
     # Bot API (recommended)
     DISCORD_BOT_TOKEN: Optional[str] = None
     DISCORD_CHANNEL_MAP: Union[Dict[str, str], str] = Field(default_factory=dict)
@@ -69,6 +68,12 @@ class Settings(BaseSettings):
     USER_AGENT: str = Field(
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     )
+
+    # --- Tunable runtime limits (per-process; safe to override via env) ---
+    MAX_AI_SUMMARIES: int = Field(50, description="Max AI summaries per scrape run")
+    AI_CALL_DELAY: float = Field(7.0, description="Seconds between AI API calls (rate limit smoothing)")
+    NOTICE_PROCESS_DELAY: float = Field(0.5, description="Seconds between processing individual notices")
+    MAX_PREVIEWS: int = Field(10, description="Max PDF preview images generated per scrape run")
 
     # --- Eoullim Login ---
     YU_EOULLIM_ID: Optional[str] = Field(None, description="Eoullim ID")

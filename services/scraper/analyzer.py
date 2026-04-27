@@ -4,6 +4,7 @@ import json
 from typing import Optional, Dict
 from models.notice import Notice
 from services.ai_service import AIService
+from core.config import settings
 from core.logger import get_logger
 from core.interfaces import IAIService
 from core import constants
@@ -27,8 +28,8 @@ class ContentAnalyzer:
         self.ai = ai_service or AIService()
         self.no_ai_mode = no_ai_mode
         self.ai_summary_count = 0
-        self.MAX_AI_SUMMARIES = constants.MAX_AI_SUMMARIES
-        self.AI_CALL_DELAY = constants.AI_CALL_DELAY
+        self.MAX_AI_SUMMARIES = settings.MAX_AI_SUMMARIES
+        self.AI_CALL_DELAY = settings.AI_CALL_DELAY
 
     async def analyze_notice(self, notice: Notice) -> Notice:
         """

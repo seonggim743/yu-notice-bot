@@ -49,7 +49,7 @@ class ScraperService:
     Supports dependency injection for easier testing and extensibility.
     """
     
-    NOTICE_PROCESS_DELAY = constants.NOTICE_PROCESS_DELAY
+    NOTICE_PROCESS_DELAY = settings.NOTICE_PROCESS_DELAY
     
     def __init__(
         self,

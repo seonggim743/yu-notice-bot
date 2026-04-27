@@ -6,9 +6,9 @@ import asyncio
 import aiohttp
 from typing import List, Optional, Tuple
 
+from core.config import settings
 from core.logger import get_logger
 from core.interfaces import IFileService
-from core import constants
 from models.notice import Notice, Attachment
 from services.scraper.fetcher import NoticeFetcher
 
@@ -37,7 +37,7 @@ class AttachmentProcessor:
         self,
         file_service: Optional[IFileService] = None,
         fetcher: Optional[NoticeFetcher] = None,
-        max_previews: int = constants.MAX_PREVIEWS,
+        max_previews: Optional[int] = None,
     ):
         """
         Initialize AttachmentProcessor.
@@ -49,7 +49,7 @@ class AttachmentProcessor:
         """
         self.file_service = file_service
         self.fetcher = fetcher or NoticeFetcher()
-        self.max_previews = max_previews
+        self.max_previews = max_previews if max_previews is not None else settings.MAX_PREVIEWS
     
     async def process_attachments(
         self,
