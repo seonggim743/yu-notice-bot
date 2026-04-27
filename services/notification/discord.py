@@ -16,8 +16,12 @@ from core import constants
 from core.utils import parse_content_disposition, get_utc_now
 from models.notice import Notice
 from services.notification.base import BaseNotifier, NotificationChannel
+from services.notification.diff_chunker import split_diff
 from services.notification.formatters import create_discord_embed, format_change_summary
 from services.tag_matcher import TagMatcher
+
+# Discord embed field max is 1024; reserve room for the ```diff\n...\n``` wrapper.
+_DISCORD_DIFF_CHUNK_LIMIT = constants.DISCORD_MAX_EMBED_LENGTH - 74
 
 logger = get_logger(__name__)
 
@@ -192,26 +196,17 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                 diff_text = self.generate_clean_diff(old_content, new_content)
 
                 if diff_text:
-                    # Split if too long (Discord Field Limit 1024)
-                    # Use 950 to allow for markdown wrapper
-                    if len(diff_text) > constants.DISCORD_MAX_EMBED_LENGTH - 74:
-                        chunks = [
-                            diff_text[i : i + (constants.DISCORD_MAX_EMBED_LENGTH - 74)]
-                            for i in range(0, len(diff_text), (constants.DISCORD_MAX_EMBED_LENGTH - 74))
-                        ]
-                        for idx, chunk in enumerate(chunks):
-                            embed["fields"].append(
-                                {
-                                    "name": f"🔍 상세 변경 내용 ({idx + 1}/{len(chunks)})",
-                                    "value": f"```diff\n{chunk}\n```",
-                                    "inline": False,
-                                }
-                            )
-                    else:
+                    chunks = split_diff(diff_text, _DISCORD_DIFF_CHUNK_LIMIT)
+                    for idx, chunk in enumerate(chunks):
+                        name = (
+                            "🔍 상세 변경 내용"
+                            if len(chunks) == 1
+                            else f"🔍 상세 변경 내용 ({idx + 1}/{len(chunks)})"
+                        )
                         embed["fields"].append(
                             {
-                                "name": "🔍 상세 변경 내용",
-                                "value": f"```diff\n{diff_text}\n```",
+                                "name": name,
+                                "value": f"```diff\n{chunk}\n```",
                                 "inline": False,
                             }
                         )
@@ -401,26 +396,17 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                     diff_text = self.generate_clean_diff(old_content, new_content)
 
                     if diff_text:
-                        # Split if too long (Discord Field Limit 1024)
-                        # Use 950 to allow for markdown wrapper
-                        if len(diff_text) > 950:
-                            chunks = [
-                                diff_text[i : i + 950]
-                                for i in range(0, len(diff_text), 950)
-                            ]
-                            for idx, chunk in enumerate(chunks):
-                                update_embed["fields"].append(
-                                    {
-                                        "name": f"🔍 상세 변경 내용 ({idx + 1}/{len(chunks)})",
-                                        "value": f"```diff\n{chunk}\n```",
-                                        "inline": False,
-                                    }
-                                )
-                        else:
+                        chunks = split_diff(diff_text, _DISCORD_DIFF_CHUNK_LIMIT)
+                        for idx, chunk in enumerate(chunks):
+                            name = (
+                                "🔍 상세 변경 내용"
+                                if len(chunks) == 1
+                                else f"🔍 상세 변경 내용 ({idx + 1}/{len(chunks)})"
+                            )
                             update_embed["fields"].append(
                                 {
-                                    "name": "🔍 상세 변경 내용",
-                                    "value": f"```diff\n{diff_text}\n```",
+                                    "name": name,
+                                    "value": f"```diff\n{chunk}\n```",
                                     "inline": False,
                                 }
                             )

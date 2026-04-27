@@ -16,10 +16,14 @@ from core import constants
 from core.utils import parse_content_disposition
 from models.notice import Notice
 from services.notification.base import BaseNotifier, NotificationChannel
+from services.notification.diff_chunker import split_diff
 from services.notification.formatters import create_telegram_message
 from services.file.image import ImageHandler
 
 from services.notification.dev_notifier import DevNotifier
+
+# Telegram messages cap at 4096; reserve room for the header/code wrapper.
+_TELEGRAM_DIFF_CHUNK_LIMIT = constants.TELEGRAM_MAX_MESSAGE_LENGTH - 96
 
 logger = get_logger(__name__)
 
@@ -582,35 +586,14 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                     diff_text = self.generate_clean_diff(old_content, new_content)
 
                     if diff_text:
-                        # Split if too long for Telegram (Limit ~4096)
-                        # We use 4000 to be safe with headers
-                        if len(diff_text) > constants.TELEGRAM_MAX_MESSAGE_LENGTH - 96:
-                            chunks = [
-                                diff_text[i : i + (constants.TELEGRAM_MAX_MESSAGE_LENGTH - 96)]
-                                for i in range(0, len(diff_text), (constants.TELEGRAM_MAX_MESSAGE_LENGTH - 96))
-                            ]
-                            for idx, chunk in enumerate(chunks):
-                                detail_msg = (
-                                    f"🔍 <b>상세 변경 내용 ({idx + 1}/{len(chunks)})</b>\n"
-                                    f"<pre>{html.escape(chunk)}</pre>"
-                                )
-                                reply_payload = {
-                                    "chat_id": self.chat_id,
-                                    "text": detail_msg,
-                                    "reply_to_message_id": main_msg_id,
-                                    "parse_mode": "HTML",
-                                }
-                                if topic_id:
-                                    reply_payload["message_thread_id"] = topic_id
-
-                                result = await self._send_telegram_api(session, "sendMessage", payload=reply_payload)
-                                if result:
-                                    await asyncio.sleep(0.2)
-                        else:
-                            detail_msg = (
-                                f"🔍 <b>상세 변경 내용</b>\n"
-                                f"<pre>{html.escape(diff_text)}</pre>"
+                        chunks = split_diff(diff_text, _TELEGRAM_DIFF_CHUNK_LIMIT)
+                        for idx, chunk in enumerate(chunks):
+                            header = (
+                                "🔍 <b>상세 변경 내용</b>"
+                                if len(chunks) == 1
+                                else f"🔍 <b>상세 변경 내용 ({idx + 1}/{len(chunks)})</b>"
                             )
+                            detail_msg = f"{header}\n<pre>{html.escape(chunk)}</pre>"
                             reply_payload = {
                                 "chat_id": self.chat_id,
                                 "text": detail_msg,
@@ -621,8 +604,11 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                                 reply_payload["message_thread_id"] = topic_id
 
                             result = await self._send_telegram_api(session, "sendMessage", payload=reply_payload)
-                            if not result:
-                                # Fallback message
+                            if result:
+                                if idx < len(chunks) - 1:
+                                    await asyncio.sleep(0.2)
+                            elif len(chunks) == 1:
+                                # Single-chunk path: fall back to a short notice
                                 fallback_msg = (
                                     "⚠️ 상세 변경 내용을 불러올 수 없습니다. <b>원본 공지 링크</b>를 확인해주세요."
                                 )
