@@ -78,6 +78,7 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
         Helper to send Telegram API requests with rate limit handling (429).
         """
         url = f"https://api.telegram.org/bot{self.telegram_token}/{method}"
+        reply_fallback_used = False
         
         for attempt in range(retries):
             try:
@@ -95,8 +96,25 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                             await asyncio.sleep(retry_after + 1)
                             continue
                         else:
+                            resp_text = await resp.text()
+                            if (
+                                method == "sendMessage"
+                                and resp.status == 400
+                                and payload
+                                and payload.get("reply_to_message_id")
+                                and not reply_fallback_used
+                            ):
+                                logger.warning(
+                                    "[NOTIFIER] Telegram reply target unavailable. "
+                                    "Retrying sendMessage as a new message."
+                                )
+                                payload = dict(payload)
+                                payload.pop("reply_to_message_id", None)
+                                reply_fallback_used = True
+                                continue
+
                             logger.error(
-                                f"[NOTIFIER] Telegram API {method} failed (Status {resp.status}): {await resp.text()}"
+                                f"[NOTIFIER] Telegram API {method} failed (Status {resp.status}): {resp_text}"
                             )
                             return None
                 else:
