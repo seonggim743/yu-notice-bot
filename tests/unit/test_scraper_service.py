@@ -56,7 +56,7 @@ class TestScraperService:
             site_key="yu_news",
         )
 
-        hash1 = scraper_service.calculate_hash(notice)
+        hash1 = scraper_service.hash_calculator.calculate_hash(notice)
         assert len(hash1) == 64  # SHA-256 hex length
 
         # Same content should produce same hash
@@ -68,7 +68,7 @@ class TestScraperService:
             published_at="2024-12-01",
             site_key="yu_news",
         )
-        hash2 = scraper_service.calculate_hash(notice2)
+        hash2 = scraper_service.hash_calculator.calculate_hash(notice2)
         assert hash1 == hash2
 
     def test_calculate_hash_changes_with_content(self, scraper_service):
@@ -91,8 +91,8 @@ class TestScraperService:
             site_key="yu_news",
         )
 
-        hash1 = scraper_service.calculate_hash(notice1)
-        hash2 = scraper_service.calculate_hash(notice2)
+        hash1 = scraper_service.hash_calculator.calculate_hash(notice1)
+        hash2 = scraper_service.hash_calculator.calculate_hash(notice2)
 
         assert hash1 != hash2
 
@@ -118,8 +118,8 @@ class TestScraperService:
             image_urls=["https://example.com/img2.jpg"],
         )
 
-        hash1 = scraper_service.calculate_hash(notice1)
-        hash2 = scraper_service.calculate_hash(notice2)
+        hash1 = scraper_service.hash_calculator.calculate_hash(notice1)
+        hash2 = scraper_service.hash_calculator.calculate_hash(notice2)
 
         assert hash1 != hash2
 
@@ -196,7 +196,7 @@ class TestScraperService:
         with patch.object(
             scraper_service.analyzer.ai, "get_diff_summary", return_value="Content changed"
         ):
-            changes = await scraper_service.detect_modifications(new_notice, old_notice)
+            changes = await scraper_service.change_detector.detect_modifications(new_notice, old_notice)
 
             assert "title" in changes
             assert "content" in changes

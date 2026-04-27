@@ -4,7 +4,7 @@ Refactored to use component-based architecture with dependency injection.
 """
 import asyncio
 import aiohttp
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional
 
 from core.config import settings
 from core.logger import get_logger
@@ -132,39 +132,7 @@ class ScraperService:
     def filter_targets(self, target_key: str) -> None:
         """Filters targets to only include the specified key."""
         self.target_manager.filter_targets(target_key)
-    
-    def calculate_hash(self, notice: Notice) -> str:
-        """Calculates content hash for a notice."""
-        return self.hash_calculator.calculate_hash(notice)
-    
-    # ==========================================================================
-    # Backward-compatible delegation methods
-    # These forward to ChangeDetector for API compatibility with existing code
-    # ==========================================================================
-    
-    async def should_process_article(
-        self,
-        session: aiohttp.ClientSession,
-        new_item: Notice,
-        old_item: Notice
-    ) -> bool:
-        """
-        Determines if an article should be processed (has changes).
-        
-        Delegates to ChangeDetector.should_process_article.
-        Maintained for backward compatibility.
-        """
-        return await self.change_detector.should_process_article(session, new_item, old_item)
-    
-    async def detect_modifications(self, item: Notice, old_notice: Notice) -> Dict:
-        """
-        Detects specific modifications between old and new notice versions.
-        
-        Delegates to ChangeDetector.detect_modifications.
-        Maintained for backward compatibility.
-        """
-        return await self.change_detector.detect_modifications(item, old_notice)
-    
+
     async def run(self) -> bool:
         """
         Runs the scraper for all loaded targets.
@@ -399,7 +367,7 @@ class ScraperService:
             await self.attachment_processor.process_attachments(session, item)
         
         # Calculate Hash
-        current_hash = self.calculate_hash(item)
+        current_hash = self.hash_calculator.calculate_hash(item)
         item.content_hash = current_hash
         
         # Check for modifications
