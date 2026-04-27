@@ -93,7 +93,12 @@ class ScraperService:
         self.no_ai_mode = no_ai_mode
         
         # Core dependencies
-        self.notifier = notifier or NotificationService()
+        if notifier is not None:
+            self.notifier = notifier
+            logger.debug("[SCRAPER] NotificationService injected via DI")
+        else:
+            self.notifier = NotificationService()
+            logger.debug("[SCRAPER] NotificationService created as fallback (no DI)")
         self.file_service = file_service or FileService()
         self.repo = repo or NoticeRepository()
         self.error_notifier = error_notifier or get_error_notifier()
