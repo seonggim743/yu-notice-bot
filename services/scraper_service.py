@@ -320,7 +320,26 @@ class ScraperService:
         # Parse notice list
         items = self.parser.parse_list(target["parser"], html, key, target["base_url"])
         processed_ids = self.repo.get_last_processed_ids(key, limit=1000)
-        
+
+        # Empty parse result is suspicious if we have previously seen notices for
+        # this target — likely indicates a selector change on the source site.
+        # Init mode and genuinely-new targets (no processed_ids yet) are excluded.
+        if not items and processed_ids and not self.init_mode:
+            logger.warning(
+                f"[SCRAPER] Parser returned 0 items for '{key}' but DB has "
+                f"{len(processed_ids)} prior records. Possible selector breakage."
+            )
+            await self.error_notifier.send_critical_error(
+                f"Parser returned empty list for target '{key}'",
+                context={
+                    "key": key,
+                    "url": target["url"],
+                    "parser": target["parser"],
+                    "prior_record_count": len(processed_ids),
+                },
+                severity=ErrorSeverity.WARNING,
+            )
+
         for item in items:
             await self._process_single_notice(session, target, item, processed_ids)
     
