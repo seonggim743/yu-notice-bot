@@ -1,11 +1,13 @@
 import os
+import json
 import zipfile
-import logging
 import subprocess
 import sys
 from typing import List
 
-logger = logging.getLogger(__name__)
+from core.logger import get_logger
+
+logger = get_logger(__name__)
 
 class PolarisService:
     def __init__(self):
@@ -23,6 +25,11 @@ class PolarisService:
             
         try:
             logger.info(f"[POLARIS] Starting conversion for {file_path}")
+
+            script_file_path = json.dumps(os.path.abspath(file_path).replace(os.sep, "/"))
+            script_output_dir = json.dumps(os.path.abspath(output_dir).replace(os.sep, "/"))
+            script_debug_dir = json.dumps(debug_dir.replace(os.sep, "/"))
+            script_url = json.dumps(self.url)
             
             # Create a standalone script to run Playwright
             # This avoids "Sync API inside asyncio loop" errors
@@ -33,10 +40,10 @@ import sys
 from playwright.sync_api import sync_playwright
 
 def run_conversion():
-    file_path = r"{os.path.abspath(file_path).replace(os.sep, '/')}"
-    output_dir = r"{os.path.abspath(output_dir).replace(os.sep, '/')}"
-    debug_dir = r"{debug_dir.replace(os.sep, '/')}"
-    url = "{self.url}"
+    file_path = {script_file_path}
+    output_dir = {script_output_dir}
+    debug_dir = {script_debug_dir}
+    url = {script_url}
 
     print(f"[SCRIPT] Processing {{file_path}} -> {{output_dir}}")
 
@@ -56,8 +63,8 @@ def run_conversion():
                 loading = page.get_by_text("데스크탑 레이아웃 준비 중")
                 loading.wait_for(state="hidden", timeout=30000)
                 print("[SCRIPT] Desktop loading completed")
-            except:
-                print("[SCRIPT] No loading indicator found or already loaded")
+            except Exception as e:
+                print(f"[SCRIPT] No loading indicator found or already loaded: {{e}}")
 
             # Debug: Dump HTML + screenshot
             try:
@@ -86,10 +93,10 @@ def run_conversion():
                                 page.wait_for_timeout(500)
                                 print("[SCRIPT] Dialog closed")
                                 break
-                        except:
+                        except Exception:
                             continue
-            except:
-                pass
+            except Exception as e:
+                print(f"[SCRIPT] Dialog dismiss skipped: {{e}}")
 
             # Phase 3: Upload file
             print("[SCRIPT] Attempting file upload...")
@@ -164,8 +171,8 @@ def run_conversion():
                 try:
                     with open(os.path.join(debug_dir, "page_dump_no_convert.html"), "w", encoding="utf-8") as f:
                         f.write(page.content())
-                except:
-                    pass
+                except Exception as e:
+                    print(f"[SCRIPT] Page dump (no convert) failed: {{e}}", file=sys.stderr)
                 raise Exception("Convert button never appeared or remained disabled")
 
             page.wait_for_timeout(1000)
@@ -180,7 +187,7 @@ def run_conversion():
                     download_area.wait_for(state="visible", timeout=5000)
                     conversion_done = True
                     break
-                except:
+                except Exception:
                     elapsed = (wait_round + 1) * 5
                     print(f"[SCRIPT] Still waiting for conversion... ({{elapsed}}s)")
                     if wait_round in (2, 5, 8):  # Screenshots at 15s, 30s, 45s
@@ -192,8 +199,8 @@ def run_conversion():
                 try:
                     with open(os.path.join(debug_dir, "page_dump_timeout.html"), "w", encoding="utf-8") as f:
                         f.write(page.content())
-                except:
-                    pass
+                except Exception as e:
+                    print(f"[SCRIPT] Page dump (timeout) failed: {{e}}", file=sys.stderr)
                 raise Exception("Conversion timed out - download button never appeared")
 
             page.screenshot(path=os.path.join(debug_dir, "04_conversion_done.png"))
@@ -315,8 +322,8 @@ def run_conversion():
             error_shot = os.path.join(debug_dir, "polaris_worker_error.png")
             page.screenshot(path=error_shot)
             print(f"[SCRIPT] Saved error screenshot to {{error_shot}}", file=sys.stderr)
-        except:
-            pass
+        except Exception as shot_err:
+            print(f"[SCRIPT] Could not save error screenshot: {{shot_err}}", file=sys.stderr)
         sys.exit(1)
 
 if __name__ == "__main__":

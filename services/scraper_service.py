@@ -4,7 +4,7 @@ Refactored to use component-based architecture with dependency injection.
 """
 import asyncio
 import aiohttp
-from typing import Dict, List, Optional, TYPE_CHECKING
+from typing import Dict, List, Optional
 
 from core.config import settings
 from core.logger import get_logger
@@ -49,7 +49,7 @@ class ScraperService:
     Supports dependency injection for easier testing and extensibility.
     """
     
-    NOTICE_PROCESS_DELAY = constants.NOTICE_PROCESS_DELAY
+    NOTICE_PROCESS_DELAY = settings.NOTICE_PROCESS_DELAY
     
     def __init__(
         self,
@@ -93,7 +93,12 @@ class ScraperService:
         self.no_ai_mode = no_ai_mode
         
         # Core dependencies
-        self.notifier = notifier or NotificationService()
+        if notifier is not None:
+            self.notifier = notifier
+            logger.debug("[SCRAPER] NotificationService injected via DI")
+        else:
+            self.notifier = NotificationService()
+            logger.debug("[SCRAPER] NotificationService created as fallback (no DI)")
         self.file_service = file_service or FileService()
         self.repo = repo or NoticeRepository()
         self.error_notifier = error_notifier or get_error_notifier()
@@ -127,39 +132,7 @@ class ScraperService:
     def filter_targets(self, target_key: str) -> None:
         """Filters targets to only include the specified key."""
         self.target_manager.filter_targets(target_key)
-    
-    def calculate_hash(self, notice: Notice) -> str:
-        """Calculates content hash for a notice."""
-        return self.hash_calculator.calculate_hash(notice)
-    
-    # ==========================================================================
-    # Backward-compatible delegation methods
-    # These forward to ChangeDetector for API compatibility with existing code
-    # ==========================================================================
-    
-    async def should_process_article(
-        self,
-        session: aiohttp.ClientSession,
-        new_item: Notice,
-        old_item: Notice
-    ) -> bool:
-        """
-        Determines if an article should be processed (has changes).
-        
-        Delegates to ChangeDetector.should_process_article.
-        Maintained for backward compatibility.
-        """
-        return await self.change_detector.should_process_article(session, new_item, old_item)
-    
-    async def detect_modifications(self, item: Notice, old_notice: Notice) -> Dict:
-        """
-        Detects specific modifications between old and new notice versions.
-        
-        Delegates to ChangeDetector.detect_modifications.
-        Maintained for backward compatibility.
-        """
-        return await self.change_detector.detect_modifications(item, old_notice)
-    
+
     async def run(self) -> bool:
         """
         Runs the scraper for all loaded targets.
@@ -315,7 +288,26 @@ class ScraperService:
         # Parse notice list
         items = self.parser.parse_list(target["parser"], html, key, target["base_url"])
         processed_ids = self.repo.get_last_processed_ids(key, limit=1000)
-        
+
+        # Empty parse result is suspicious if we have previously seen notices for
+        # this target — likely indicates a selector change on the source site.
+        # Init mode and genuinely-new targets (no processed_ids yet) are excluded.
+        if not items and processed_ids and not self.init_mode:
+            logger.warning(
+                f"[SCRAPER] Parser returned 0 items for '{key}' but DB has "
+                f"{len(processed_ids)} prior records. Possible selector breakage."
+            )
+            await self.error_notifier.send_critical_error(
+                f"Parser returned empty list for target '{key}'",
+                context={
+                    "key": key,
+                    "url": target["url"],
+                    "parser": target["parser"],
+                    "prior_record_count": len(processed_ids),
+                },
+                severity=ErrorSeverity.WARNING,
+            )
+
         for item in items:
             await self._process_single_notice(session, target, item, processed_ids)
     
@@ -375,7 +367,7 @@ class ScraperService:
             await self.attachment_processor.process_attachments(session, item)
         
         # Calculate Hash
-        current_hash = self.calculate_hash(item)
+        current_hash = self.hash_calculator.calculate_hash(item)
         item.content_hash = current_hash
         
         # Check for modifications

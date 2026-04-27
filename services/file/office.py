@@ -2,14 +2,15 @@
 Office document handling (DOCX, XLSX, PPTX).
 """
 import io
-import logging
 import os
 import subprocess
 import zipfile
 import xml.etree.ElementTree as ET
 from typing import Optional, List
 
-logger = logging.getLogger(__name__)
+from core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class OfficeHandler:

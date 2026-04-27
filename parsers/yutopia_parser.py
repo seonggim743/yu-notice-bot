@@ -120,8 +120,8 @@ class YutopiaParser(BaseParser):
                             try:
                                 # Simple parse if format is YYYY-MM-DD
                                 notice.deadline = end_str.split(" ")[0]
-                            except:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"[YUTOPIA] Deadline parse failed for '{end_str}': {e}")
 
                 items.append(notice)
 

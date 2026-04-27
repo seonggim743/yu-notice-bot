@@ -2,14 +2,15 @@
 Base file handling utilities shared across file service modules.
 """
 import aiohttp
-import logging
 import os
 import re
 import shutil
 import urllib.parse
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+from core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class BaseFileHandler:

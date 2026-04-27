@@ -4,6 +4,7 @@ import json
 from typing import Optional, Dict
 from models.notice import Notice
 from services.ai_service import AIService
+from core.config import settings
 from core.logger import get_logger
 from core.interfaces import IAIService
 from core import constants
@@ -27,8 +28,8 @@ class ContentAnalyzer:
         self.ai = ai_service or AIService()
         self.no_ai_mode = no_ai_mode
         self.ai_summary_count = 0
-        self.MAX_AI_SUMMARIES = constants.MAX_AI_SUMMARIES
-        self.AI_CALL_DELAY = constants.AI_CALL_DELAY
+        self.MAX_AI_SUMMARIES = settings.MAX_AI_SUMMARIES
+        self.AI_CALL_DELAY = settings.AI_CALL_DELAY
 
     async def analyze_notice(self, notice: Notice) -> Notice:
         """
@@ -136,34 +137,4 @@ class ContentAnalyzer:
             logger.error(f"[ANALYZER] Diff summary failed: {e}")
             return "내용 변경됨 (AI 오류)"
 
-    async def extract_menu(self, image_url: str, image_data: bytes = None) -> Optional[Dict]:
-        """
-        Extracts menu data from an image URL with exponential backoff retry.
-        """
-        max_retries = 3
-        attempt = 0
-        
-        while attempt < max_retries:
-            try:
-                return await self.ai.extract_menu_from_image(image_url, image_data)
-            except Exception as e:
-                attempt += 1
-                error_msg = str(e)
-                
-                # Fail fast on client errors (4xx) if possible to detect
-                # Assuming standard HTTP exceptions, but catching generic Exception for safety
-                if "400" in error_msg or "404" in error_msg or "Bad Request" in error_msg:
-                    logger.error(f"[ANALYZER] Menu extraction failed (Client Error): {e}")
-                    return None
-
-                if attempt >= max_retries:
-                    logger.error(f"[ANALYZER] Menu extraction failed after {max_retries} retries: {e}")
-                    return None
-                
-                # Exponential Backoff: 1s -> 2s -> 4s
-                wait_time = 2 ** (attempt - 1)
-                logger.warning(f"[ANALYZER] Menu extraction error (Attempt {attempt}/{max_retries}). Retrying in {wait_time}s... Error: {e}")
-                await asyncio.sleep(wait_time)
-        
-        return None
 

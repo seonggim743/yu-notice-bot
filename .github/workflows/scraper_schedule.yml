@@ -5,12 +5,17 @@ on:
     - cron: '*/30 * * * *' # Every 30 minutes
   workflow_dispatch:
 
+concurrency:
+  group: yu-notice-bot-scrape
+  cancel-in-progress: false
+
 permissions:
   packages: read
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@v4

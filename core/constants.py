@@ -71,10 +71,8 @@ CATEGORY_COLORS = {
 # =============================================================================
 # Scraper Settings
 # =============================================================================
-MAX_AI_SUMMARIES = 50
-AI_CALL_DELAY = 7.0  # Seconds between AI calls
-NOTICE_PROCESS_DELAY = 0.5  # Seconds between processing notices
-MAX_PREVIEWS = 10  # Maximum number of previews to generate per run
+# NOTE: MAX_AI_SUMMARIES, AI_CALL_DELAY, NOTICE_PROCESS_DELAY, MAX_PREVIEWS
+# moved to core.config.Settings so operators can override via env vars.
 
 # Short Notice Thresholds
 SHORT_NOTICE_CONTENT_LENGTH = 100

@@ -35,41 +35,46 @@ from core.exceptions import (
     NotificationException,
     DatabaseException,
 )
+from core.interfaces import INotificationService
 from services.scraper_service import ScraperService
 
 
 class Bot:
     """
     Main Bot class that orchestrates the scraping loop.
-    
+
     The Bot uses ScraperService which internally manages:
     - TargetManager: Target loading and filtering
     - HashCalculator: Content hashing for change detection
     - ChangeDetector: Modification detection with AI diff summaries
     - AttachmentProcessor: File download, text extraction, preview generation
-    
+
     Supports dependency injection for testability.
     """
-    
+
     def __init__(
         self,
         init_mode: bool = False,
         no_ai_mode: bool = False,
         scraper: ScraperService = None,
         error_notifier: ErrorNotifier = None,
+        notification_service: INotificationService = None,
     ):
         """
         Initialize the Bot.
-        
+
         Args:
             init_mode: If True, seeds database without notifications
             no_ai_mode: If True, skips AI analysis
             scraper: Optional custom ScraperService instance (for DI/testing)
             error_notifier: Optional ErrorNotifier instance (for DI/testing)
+            notification_service: Optional NotificationService to inject into ScraperService.
+                Ignored if `scraper` is provided.
         """
         self.scraper = scraper or ScraperService(
             init_mode=init_mode,
-            no_ai_mode=no_ai_mode
+            no_ai_mode=no_ai_mode,
+            notifier=notification_service,
         )
         self.error_notifier = error_notifier or get_error_notifier()
         self.running = True
@@ -331,12 +336,14 @@ if __name__ == "__main__":
     # ==========================================================================
     deps = create_dependencies()
     error_notifier = deps["error_notifier"]
-    
+    notification_service = deps["notification_service"]
+
     # Create Bot with injected dependencies
     bot = Bot(
         init_mode=args.init,
         no_ai_mode=args.no_ai,
         error_notifier=error_notifier,
+        notification_service=notification_service,
     )
     
     # Apply target filter if specified

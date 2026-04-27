@@ -2,7 +2,6 @@
 PDF file handling.
 """
 import io
-import logging
 import tempfile
 import os
 from typing import Optional, List
@@ -10,7 +9,9 @@ from typing import Optional, List
 import fitz  # PyMuPDF
 from pypdf import PdfReader
 
-logger = logging.getLogger(__name__)
+from core.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class PDFHandler:

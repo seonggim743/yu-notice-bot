@@ -5,7 +5,6 @@ Supports dependency injection for easier testing.
 """
 import aiohttp
 import io
-import logging
 import os
 import subprocess
 import tempfile
@@ -15,6 +14,7 @@ from typing import Optional, List
 import fitz  # PyMuPDF
 from PIL import Image
 
+from core.logger import get_logger
 from services.polaris_service import PolarisService
 from services.file.base import BaseFileHandler
 from services.file.pdf import PDFHandler
@@ -22,7 +22,7 @@ from services.file.hwp import HWPHandler
 from services.file.office import OfficeHandler
 from services.file.image import ImageHandler
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class FileService(BaseFileHandler):

@@ -13,11 +13,16 @@ from aiohttp import MultipartWriter
 from core.config import settings
 from core.logger import get_logger
 from core import constants
-from core.utils import parse_content_disposition, get_utc_now
+from core.utils import get_utc_now
 from models.notice import Notice
+from services.file.attachment_downloader import AttachmentDownloader
 from services.notification.base import BaseNotifier, NotificationChannel
+from services.notification.diff_chunker import split_diff
 from services.notification.formatters import create_discord_embed, format_change_summary
 from services.tag_matcher import TagMatcher
+
+# Discord embed field max is 1024; reserve room for the ```diff\n...\n``` wrapper.
+_DISCORD_DIFF_CHUNK_LIMIT = constants.DISCORD_MAX_EMBED_LENGTH - 74
 
 logger = get_logger(__name__)
 
@@ -27,11 +32,14 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
     Handles all Discord-specific notification logic.
     Implements NotificationChannel interface for Strategy Pattern compatibility.
     """
-    
+
+    def __init__(self):
+        self.downloader = AttachmentDownloader()
+
     @property
     def channel_name(self) -> str:
         return "discord"
-    
+
     def is_enabled(self) -> bool:
         """Check if Discord is configured and enabled."""
         return bool(settings.DISCORD_BOT_TOKEN and settings.DISCORD_CHANNEL_MAP)
@@ -192,26 +200,17 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                 diff_text = self.generate_clean_diff(old_content, new_content)
 
                 if diff_text:
-                    # Split if too long (Discord Field Limit 1024)
-                    # Use 950 to allow for markdown wrapper
-                    if len(diff_text) > constants.DISCORD_MAX_EMBED_LENGTH - 74:
-                        chunks = [
-                            diff_text[i : i + (constants.DISCORD_MAX_EMBED_LENGTH - 74)]
-                            for i in range(0, len(diff_text), (constants.DISCORD_MAX_EMBED_LENGTH - 74))
-                        ]
-                        for idx, chunk in enumerate(chunks):
-                            embed["fields"].append(
-                                {
-                                    "name": f"🔍 상세 변경 내용 ({idx + 1}/{len(chunks)})",
-                                    "value": f"```diff\n{chunk}\n```",
-                                    "inline": False,
-                                }
-                            )
-                    else:
+                    chunks = split_diff(diff_text, _DISCORD_DIFF_CHUNK_LIMIT)
+                    for idx, chunk in enumerate(chunks):
+                        name = (
+                            "🔍 상세 변경 내용"
+                            if len(chunks) == 1
+                            else f"🔍 상세 변경 내용 ({idx + 1}/{len(chunks)})"
+                        )
                         embed["fields"].append(
                             {
-                                "name": "🔍 상세 변경 내용",
-                                "value": f"```diff\n{diff_text}\n```",
+                                "name": name,
+                                "value": f"```diff\n{chunk}\n```",
                                 "inline": False,
                             }
                         )
@@ -234,7 +233,6 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
             )
 
         # Download attachments using the SHARED session (to handle hotlink protection/cookies)
-        attachment_files = []
         content_images = []
 
         # === 1. Content Images (from Body) ===
@@ -242,85 +240,29 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
         should_send_content_images = is_new or (changes and "image" in changes)
 
         if notice.image_urls and should_send_content_images:
-            for idx, image_url in enumerate(notice.image_urls):
-                try:
-                    async with session.get(
-                        image_url,
-                        headers={"Referer": notice.url},
-                        timeout=aiohttp.ClientTimeout(total=10),
-                    ) as img_resp:
-                        if img_resp.status == 200:
-                            image_data = await img_resp.read()
-                            content_images.append(
-                                {
-                                    "data": image_data,
-                                    "filename": f"image_{idx}.jpg",
-                                    "type": "content",
-                                }
-                            )
-                            logger.info(
-                                f"[NOTIFIER] Added Discord content image {idx + 1}/{len(notice.image_urls)}"
-                            )
-                except Exception as e:
-                    logger.error(
-                        f"[NOTIFIER] Failed to download image {idx} for Discord: {e}"
-                    )
+            downloaded_images = await self.downloader.download_content_images(
+                session, notice.image_urls, referer=notice.url
+            )
+            for idx, image_data in downloaded_images:
+                content_images.append(
+                    {
+                        "data": image_data,
+                        "filename": f"image_{idx}.jpg",
+                        "type": "content",
+                    }
+                )
 
         # === 2. Attachments (Files) ===
-        if notice.attachments:
-            for idx, att in enumerate(notice.attachments[:10], 1):
-                max_retries = 2
-                for attempt in range(1, max_retries + 1):
-                    try:
-                        download_headers = {
-                            "Referer": notice.url,
-                            "User-Agent": settings.USER_AGENT,
-                            "Accept": "*/*",
-                            "Connection": "keep-alive",
-                        }
-                        # Use shared session for download
-                        async with session.get(
-                            att.url,
-                            headers=download_headers,
-                            timeout=aiohttp.ClientTimeout(total=30),
-                        ) as file_resp:
-                            if file_resp.status == 200:
-                                file_data = await file_resp.read()
-                                file_size = len(file_data)
-                                if file_size > constants.DISCORD_FILE_SIZE_LIMIT:
-                                    break  # Skip > 25MB
-
-                                # Parse filename from Content-Disposition header
-                                actual_filename = parse_content_disposition(
-                                    file_resp.headers.get("Content-Disposition", ""),
-                                    fallback_name=att.name
-                                )
-
-                                logger.info(
-                                    f"[NOTIFIER] Downloaded attachment: '{actual_filename}' ({file_size} bytes)"
-                                )
-
-                                attachment_files.append(
-                                    {
-                                        "data": file_data,
-                                        "filename": actual_filename,
-                                        "safe_filename": actual_filename,
-                                        "url": att.url,
-                                    }
-                                )
-                                break  # Success, exit retry loop
-                            elif file_resp.status in [404, 403]:
-                                logger.warning(
-                                    f"[NOTIFIER] Failed to download {att.name}: Status {file_resp.status}"
-                                )
-                                break  # Don't retry for 404/403
-                            else:
-                                if attempt < max_retries:
-                                    await asyncio.sleep(1)
-                    except Exception as e:
-                        logger.error(f"[NOTIFIER] Error downloading {att.name}: {e}")
-                        if attempt < max_retries:
-                            await asyncio.sleep(1)
+        downloaded_attachments = await self.downloader.download_attachments(
+            session,
+            notice.attachments,
+            file_size_limit=constants.DISCORD_FILE_SIZE_LIMIT,
+            referer=notice.url,
+        )
+        attachment_files = [
+            {"data": data, "filename": filename}
+            for filename, data in downloaded_attachments
+        ]
 
         # === 3. Prepare Files for Thread Starter vs Replies ===
         # Priority: Content Images > Embed > Previews > Attachments
@@ -401,26 +343,17 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                     diff_text = self.generate_clean_diff(old_content, new_content)
 
                     if diff_text:
-                        # Split if too long (Discord Field Limit 1024)
-                        # Use 950 to allow for markdown wrapper
-                        if len(diff_text) > 950:
-                            chunks = [
-                                diff_text[i : i + 950]
-                                for i in range(0, len(diff_text), 950)
-                            ]
-                            for idx, chunk in enumerate(chunks):
-                                update_embed["fields"].append(
-                                    {
-                                        "name": f"🔍 상세 변경 내용 ({idx + 1}/{len(chunks)})",
-                                        "value": f"```diff\n{chunk}\n```",
-                                        "inline": False,
-                                    }
-                                )
-                        else:
+                        chunks = split_diff(diff_text, _DISCORD_DIFF_CHUNK_LIMIT)
+                        for idx, chunk in enumerate(chunks):
+                            name = (
+                                "🔍 상세 변경 내용"
+                                if len(chunks) == 1
+                                else f"🔍 상세 변경 내용 ({idx + 1}/{len(chunks)})"
+                            )
                             update_embed["fields"].append(
                                 {
-                                    "name": "🔍 상세 변경 내용",
-                                    "value": f"```diff\n{diff_text}\n```",
+                                    "name": name,
+                                    "value": f"```diff\n{chunk}\n```",
                                     "inline": False,
                                 }
                             )
@@ -499,7 +432,8 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
         created_thread_id = None
         created_message_id = None
 
-        # Get tag IDs from AI-selected tags (for new threads only)
+        # Get tag IDs from AI-selected tags (for new threads only).
+        # Tag matching is optional; thread/message creation runs regardless.
         tag_ids = []
         if is_new and notice.tags:
             tag_ids = TagMatcher.get_tag_ids(notice.tags, notice.site_key)
@@ -512,173 +446,173 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                     f"[NOTIFIER] No tags matched for {notice.tags} (Site: {notice.site_key})"
                 )
 
-            # === SPLIT EMBED LOGIC ===
-            # Discord limit: 6000 chars total. We must split if it exceeds this.
-            embeds_to_send = self._split_embed(embed)
-            
-            main_embed = embeds_to_send[0]
-            followup_embeds = embeds_to_send[1:]
+        # === SPLIT EMBED LOGIC ===
+        # Discord limit: 6000 chars total. We must split if it exceeds this.
+        embeds_to_send = self._split_embed(embed)
 
-            # 1. Try Thread Creation (Forum)
-            try:
-                # Forum Thread Payload (First Embed)
-                payload = {
-                    "name": thread_name,
-                    "message": {"embeds": [main_embed]},
-                    "auto_archive_duration": 4320,
-                }  # 3 days
+        main_embed = embeds_to_send[0]
+        followup_embeds = embeds_to_send[1:]
 
-                # Apply matched tags if available
-                if tag_ids:
-                    payload["applied_tags"] = tag_ids
+        # 1. Try Thread Creation (Forum)
+        try:
+            # Forum Thread Payload (First Embed)
+            payload = {
+                "name": thread_name,
+                "message": {"embeds": [main_embed]},
+                "auto_archive_duration": 4320,
+            }  # 3 days
 
-                # Determine if we need Multipart (Files) or JSON
-                # Files generally go with the FIRST message (Thread Starter) if possible
-                has_files_now = bool(embed_image_data or files_for_thread_starter)
+            # Apply matched tags if available
+            if tag_ids:
+                payload["applied_tags"] = tag_ids
 
-                if has_files_now:
-                    form = MultipartWriter("form-data")
-                    self._add_text_part(form, "payload_json", json.dumps(payload))
+            # Determine if we need Multipart (Files) or JSON
+            # Files generally go with the FIRST message (Thread Starter) if possible
+            has_files_now = bool(embed_image_data or files_for_thread_starter)
 
-                    file_idx = 0
-                    # Add Embed Image (if any)
-                    if embed_image_data:
-                        self._add_file_part(form, f"files[{file_idx}]", embed_image_data, embed_image_filename)
-                        file_idx += 1
+            if has_files_now:
+                form = MultipartWriter("form-data")
+                self._add_text_part(form, "payload_json", json.dumps(payload))
 
-                    # Add Thread Starter Files (Multiple Content Images)
-                    for file_info in files_for_thread_starter:
-                        self._add_file_part(
-                            form, f"files[{file_idx}]", file_info["data"], file_info["filename"]
-                        )
-                        file_idx += 1
+                file_idx = 0
+                # Add Embed Image (if any)
+                if embed_image_data:
+                    self._add_file_part(form, f"files[{file_idx}]", embed_image_data, embed_image_filename)
+                    file_idx += 1
 
-                    kwargs = {"data": form}
-                else:
-                    kwargs = {"json": payload}
+                # Add Thread Starter Files (Multiple Content Images)
+                for file_info in files_for_thread_starter:
+                    self._add_file_part(
+                        form, f"files[{file_idx}]", file_info["data"], file_info["filename"]
+                    )
+                    file_idx += 1
 
-                logger.info(f"[NOTIFIER] Sending Discord request to {thread_url}")
-                async with session.post(thread_url, headers=headers, **kwargs) as resp:
-                    logger.info(f"[NOTIFIER] Discord response status: {resp.status}")
-                    if resp.status in [200, 201]:
-                        logger.info(
-                            f"[NOTIFIER] Discord Forum Thread created: {thread_name}"
-                        )
-                        resp_data = await resp.json()
-                        created_thread_id = resp_data.get("id")
-                        created_message_id = resp_data.get("id")
-                        logger.info(f"[NOTIFIER] Created Thread ID: {created_thread_id}")
+                kwargs = {"data": form}
+            else:
+                kwargs = {"json": payload}
 
-                        # --- Send Follow-up Embeds (Split Parts) ---
-                        if hasattr(self, "_send_discord_reply") and created_thread_id and followup_embeds:
-                            for idx, f_embed in enumerate(followup_embeds):
-                                try:
-                                    # Send as simple message with embed
-                                    f_payload = {"embeds": [f_embed]}
-                                    f_url = f"https://discord.com/api/v10/channels/{created_thread_id}/messages"
-                                    async with session.post(f_url, headers=headers, json=f_payload) as f_resp:
-                                        if f_resp.status not in [200, 201]:
-                                            logger.error(f"[NOTIFIER] Failed to send followup embed {idx+1}: {await f_resp.text()}")
-                                    await asyncio.sleep(0.5) # Rate limit safety
-                                except Exception as e:
-                                    logger.error(f"[NOTIFIER] Error sending followup embed: {e}")
-                        # ------------------------------------------
+            logger.info(f"[NOTIFIER] Sending Discord request to {thread_url}")
+            async with session.post(thread_url, headers=headers, **kwargs) as resp:
+                logger.info(f"[NOTIFIER] Discord response status: {resp.status}")
+                if resp.status in [200, 201]:
+                    logger.info(
+                        f"[NOTIFIER] Discord Forum Thread created: {thread_name}"
+                    )
+                    resp_data = await resp.json()
+                    created_thread_id = resp_data.get("id")
+                    created_message_id = resp_data.get("id")
+                    logger.info(f"[NOTIFIER] Created Thread ID: {created_thread_id}")
 
-                        # Send PDF previews as grouped messages
-                        if created_thread_id and pdf_previews:
-                            for group in pdf_previews:
-                                await self._send_discord_pdf_preview_group(
-                                    session, created_thread_id, group, headers
-                                )
+                    # --- Send Follow-up Embeds (Split Parts) ---
+                    if hasattr(self, "_send_discord_reply") and created_thread_id and followup_embeds:
+                        for idx, f_embed in enumerate(followup_embeds):
+                            try:
+                                # Send as simple message with embed
+                                f_payload = {"embeds": [f_embed]}
+                                f_url = f"https://discord.com/api/v10/channels/{created_thread_id}/messages"
+                                async with session.post(f_url, headers=headers, json=f_payload) as f_resp:
+                                    if f_resp.status not in [200, 201]:
+                                        logger.error(f"[NOTIFIER] Failed to send followup embed {idx+1}: {await f_resp.text()}")
+                                await asyncio.sleep(0.5) # Rate limit safety
+                            except Exception as e:
+                                logger.error(f"[NOTIFIER] Error sending followup embed: {e}")
+                    # ------------------------------------------
 
-                        # If we have attachments, send them to the thread (AFTER previews)
-                        if files_for_attachments and created_thread_id:
-                            await self._send_discord_reply(
-                                session,
-                                created_thread_id,
-                                files_for_attachments,
-                                headers,
-                                is_thread=True,
+                    # Send PDF previews as grouped messages
+                    if created_thread_id and pdf_previews:
+                        for group in pdf_previews:
+                            await self._send_discord_pdf_preview_group(
+                                session, created_thread_id, group, headers
                             )
 
-                        return created_thread_id
-                    elif resp.status == 400 or resp.status == 404:
-                        resp_text = await resp.text()
-                        logger.warning(
-                            f"[NOTIFIER] Failed to create thread (Status {resp.status}): {resp_text}. Fallback to normal message."
+                    # If we have attachments, send them to the thread (AFTER previews)
+                    if files_for_attachments and created_thread_id:
+                        await self._send_discord_reply(
+                            session,
+                            created_thread_id,
+                            files_for_attachments,
+                            headers,
+                            is_thread=True,
                         )
-                    else:
-                        resp_text = await resp.text()
-                        logger.error(
-                            f"[NOTIFIER] Discord Thread creation failed: {resp_text}"
-                        )
-                        pass
 
-            except Exception as e:
-                logger.error(f"[NOTIFIER] Discord Thread error: {e}", exc_info=True)
-
-            # 2. Fallback: Normal Message (Text Channel)
-            try:
-                # Use main_embed for first message
-                payload = {"embeds": [main_embed]}
-
-                has_files_now = bool(embed_image_data or files_for_thread_starter)
-
-                if has_files_now:
-                    form = MultipartWriter("form-data")
-                    self._add_text_part(form, "payload_json", json.dumps(payload))
-
-                    file_idx = 0
-                    if embed_image_data:
-                        self._add_file_part(form, f"files[{file_idx}]", embed_image_data, embed_image_filename)
-                        file_idx += 1
-
-                    for file_info in files_for_thread_starter:
-                        self._add_file_part(
-                            form, f"files[{file_idx}]", file_info["data"], file_info["filename"]
-                        )
-                        file_idx += 1
-
-                    kwargs = {"data": form}
+                    return created_thread_id
+                elif resp.status == 400 or resp.status == 404:
+                    resp_text = await resp.text()
+                    logger.warning(
+                        f"[NOTIFIER] Failed to create thread (Status {resp.status}): {resp_text}. Fallback to normal message."
+                    )
                 else:
-                    kwargs = {"json": payload}
+                    resp_text = await resp.text()
+                    logger.error(
+                        f"[NOTIFIER] Discord Thread creation failed: {resp_text}"
+                    )
+                    pass
 
-                async with session.post(message_url, headers=headers, **kwargs) as resp:
-                    if resp.status in [200, 204]:
-                        logger.info(f"[NOTIFIER] Discord Message sent: {notice.title}")
-                        resp_data = await resp.json()
-                        created_message_id = resp_data.get("id")
-                        channel_id = message_url.split("/")[
-                            -2
-                        ]  # Extract channel ID from URL
+        except Exception as e:
+            logger.error(f"[NOTIFIER] Discord Thread error: {e}", exc_info=True)
 
-                        # --- Send Follow-up Embeds (Split Parts) ---
-                        if created_message_id and followup_embeds:
-                            # Reply to the first message
-                            for idx, f_embed in enumerate(followup_embeds):
-                                await self._send_discord_reply_embed(session, channel_id, f_embed, headers, created_message_id)
-                        # ------------------------------------------
+        # 2. Fallback: Normal Message (Text Channel)
+        try:
+            # Use main_embed for first message
+            payload = {"embeds": [main_embed]}
 
-                        # If we have attachments, reply to the message
-                        if files_for_attachments and created_message_id:
-                            await self._send_discord_reply(
-                                session,
-                                channel_id,
-                                files_for_attachments,
-                                headers,
-                                is_thread=False,
-                                reply_to_id=created_message_id,
-                            )
+            has_files_now = bool(embed_image_data or files_for_thread_starter)
 
-                        return created_message_id
-                    else:
-                        logger.error(
-                            f"[NOTIFIER] Discord Message failed: {await resp.text()}"
+            if has_files_now:
+                form = MultipartWriter("form-data")
+                self._add_text_part(form, "payload_json", json.dumps(payload))
+
+                file_idx = 0
+                if embed_image_data:
+                    self._add_file_part(form, f"files[{file_idx}]", embed_image_data, embed_image_filename)
+                    file_idx += 1
+
+                for file_info in files_for_thread_starter:
+                    self._add_file_part(
+                        form, f"files[{file_idx}]", file_info["data"], file_info["filename"]
+                    )
+                    file_idx += 1
+
+                kwargs = {"data": form}
+            else:
+                kwargs = {"json": payload}
+
+            async with session.post(message_url, headers=headers, **kwargs) as resp:
+                if resp.status in [200, 204]:
+                    logger.info(f"[NOTIFIER] Discord Message sent: {notice.title}")
+                    resp_data = await resp.json()
+                    created_message_id = resp_data.get("id")
+                    channel_id = message_url.split("/")[
+                        -2
+                    ]  # Extract channel ID from URL
+
+                    # --- Send Follow-up Embeds (Split Parts) ---
+                    if created_message_id and followup_embeds:
+                        # Reply to the first message
+                        for idx, f_embed in enumerate(followup_embeds):
+                            await self._send_discord_reply_embed(session, channel_id, f_embed, headers, created_message_id)
+                    # ------------------------------------------
+
+                    # If we have attachments, reply to the message
+                    if files_for_attachments and created_message_id:
+                        await self._send_discord_reply(
+                            session,
+                            channel_id,
+                            files_for_attachments,
+                            headers,
+                            is_thread=False,
+                            reply_to_id=created_message_id,
                         )
-                        return None
-            except Exception as e:
-                logger.error(f"[NOTIFIER] Discord Message error: {e}")
-                return None
+
+                    return created_message_id
+                else:
+                    logger.error(
+                        f"[NOTIFIER] Discord Message failed: {await resp.text()}"
+                    )
+                    return None
+        except Exception as e:
+            logger.error(f"[NOTIFIER] Discord Message error: {e}")
+            return None
 
     def _get_embed_length(self, embed: Dict) -> int:
         """Calculate total number of characters in an embed structure."""

@@ -60,22 +60,22 @@ async def main():
     # Try CHANNEL_MAP first (New standard)
     try:
         discord_map = json.loads(os.getenv("DISCORD_CHANNEL_MAP", "{}"))
-    except:
-        pass
+    except Exception as e:
+        print(f"Failed to parse DISCORD_CHANNEL_MAP: {e}")
 
     # Fallback to WEBHOOK_MAP (Legacy/User preference) if empty or dev key missing
     if not discord_map.get("dev"):
         try:
             webhook_map = json.loads(os.getenv("DISCORD_WEBHOOK_MAP", "{}"))
             discord_map.update(webhook_map)
-        except:
-            pass
+        except Exception as e:
+            print(f"Failed to parse DISCORD_WEBHOOK_MAP: {e}")
 
     telegram_map = {}
     try:
         telegram_map = json.loads(os.getenv("TELEGRAM_TOPIC_MAP", "{}"))
-    except:
-        pass
+    except Exception as e:
+        print(f"Failed to parse TELEGRAM_TOPIC_MAP: {e}")
 
     # Determine Targets (Map 'dev' key > Env Var)
     discord_channel_id = discord_map.get("dev") or os.getenv("DISCORD_DEV_CHANNEL_ID")

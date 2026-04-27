@@ -94,14 +94,22 @@ CREATE TABLE IF NOT EXISTS token_usage (
 CREATE TABLE IF NOT EXISTS ai_models (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     model_name TEXT NOT NULL UNIQUE,
+    api_key_alias VARCHAR DEFAULT 'default',
+    priority INTEGER DEFAULT 99,
+    is_active BOOLEAN DEFAULT TRUE,
     daily_limit INTEGER DEFAULT 1500,
     current_usage INTEGER DEFAULT 0,
     reset_at TIMESTAMPTZ,
+    blocked_until TIMESTAMPTZ,
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- =====================================================
 -- 5. Menus Table (Dormitory Meal Plans)
+-- DEPRECATED 2026-04: not used by application code. Dormitory meal
+-- plans are stored as regular rows in `notices` with category='식단'.
+-- The table is kept for now to avoid an unattended schema migration;
+-- drop manually after verifying no external readers exist.
 -- =====================================================
 CREATE TABLE IF NOT EXISTS menus (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
@@ -132,7 +140,7 @@ COMMENT ON TABLE notices IS 'University notices collected from various sources';
 COMMENT ON TABLE attachments IS 'File attachments associated with notices';
 COMMENT ON TABLE token_usage IS 'AI token usage tracking for cost monitoring';
 COMMENT ON TABLE ai_models IS 'AI model rate limit tracking';
-COMMENT ON TABLE menus IS 'Dormitory meal plans extracted from notices';
+COMMENT ON TABLE menus IS 'DEPRECATED — see schema comment above. Dormitory meal plans are stored in notices with category=식단.';
 
 COMMENT ON COLUMN notices.site_key IS 'Source identifier (e.g., yu_news, cse_notice)';
 COMMENT ON COLUMN notices.content_hash IS 'SHA256 hash for change detection';
