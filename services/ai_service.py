@@ -8,12 +8,15 @@ import asyncio
 import random
 import re
 from supabase import Client
+from pydantic import ValidationError
 from core.config import settings
 from core.logger import get_logger
 from core.database import Database
 from core import constants
 from datetime import datetime, timedelta
 import pytz
+
+from models.ai_result import AIAnalysisResult
 
 logger = get_logger(__name__)
 
@@ -175,12 +178,14 @@ class AIService:
             logger.error(f"[AI] Failed to load system prompt: {e}")
             return ""
 
-    async def _save_token_usage(self, prompt_tokens: int, completion_tokens: int):
+    async def _save_token_usage(
+        self, prompt_tokens: int, completion_tokens: int, model: str
+    ):
         if not self.db:
             return
         try:
             data = {
-                "model": settings.GEMINI_MODEL,
+                "model": model,
                 "prompt_tokens": prompt_tokens,
                 "completion_tokens": completion_tokens,
                 "total_tokens": prompt_tokens + completion_tokens,
@@ -326,11 +331,11 @@ class AIService:
             logger.error(f"[AI] All models failed. Last error: {last_error}")
             return {"summary": "AI 분석 실패 (All Models Failed)", "category": "일반", "tags": []}
 
-        # Token Tracking
+        # Token Tracking — record under the model that actually responded
         try:
             usage = response.usage_metadata
             await self._save_token_usage(
-                usage.prompt_token_count, usage.candidates_token_count
+                usage.prompt_token_count, usage.candidates_token_count, model_name
             )
         except Exception:
             pass
@@ -346,10 +351,24 @@ class AIService:
         logger.debug(f"[AI] Raw Response for {title}: {response_text}")
 
         try:
-            return json.loads(response_text)
+            raw = json.loads(response_text)
         except json.JSONDecodeError:
             logger.error(f"[AI] JSON parsing failed for {title}: {response_text[:100]}...")
             return {"summary": "AI Parsing Failed", "category": "일반", "tags": []}
+
+        try:
+            validated = AIAnalysisResult.model_validate(raw)
+        except ValidationError as e:
+            logger.warning(
+                f"[AI] AIAnalysisResult validation failed for {title}: {e}. "
+                f"Falling back to defaults with raw fields preserved."
+            )
+            validated = AIAnalysisResult(
+                summary=str(raw.get("summary", "")) or "AI 검증 실패",
+                category=str(raw.get("category", "일반")) or "일반",
+            )
+
+        return validated.model_dump()
 
     async def get_diff_summary(self, old_text: str, new_text: str) -> str:
         """
@@ -367,16 +386,17 @@ class AIService:
             f"--- NEW VERSION ---\n{new_text[:2000]}"
         )
 
+        diff_model = "gemini-2.5-flash-lite"
         try:
             response = await self.client.aio.models.generate_content(
-                model="gemini-2.5-flash-lite",
+                model=diff_model,
                 contents=prompt,
             )
 
             try:
                 usage = response.usage_metadata
                 await self._save_token_usage(
-                    usage.prompt_token_count, usage.candidates_token_count
+                    usage.prompt_token_count, usage.candidates_token_count, diff_model
                 )
             except Exception:
                 pass
@@ -417,8 +437,9 @@ class AIService:
             )
 
             # 3. Call Gemini Vision
+            menu_model = "gemini-2.5-flash"
             response = await self.client.aio.models.generate_content(
-                model="gemini-2.5-flash",
+                model=menu_model,
                 contents=[
                     prompt,
                     types.Part.from_bytes(data=image_data, mime_type="image/jpeg"),
@@ -432,7 +453,7 @@ class AIService:
             try:
                 usage = response.usage_metadata
                 await self._save_token_usage(
-                    usage.prompt_token_count, usage.candidates_token_count
+                    usage.prompt_token_count, usage.candidates_token_count, menu_model
                 )
             except Exception:
                 pass
