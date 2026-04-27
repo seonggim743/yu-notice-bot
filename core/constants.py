@@ -40,6 +40,8 @@ SITE_NAME_MAP = {
     "eoullim_external": "이음림대외활동",
     "eoullim_study": "이음림스터디",
     "yutopia": "유토피아",
+    "computer_notice": "컴퓨터학부공지",
+    "swedu_notice": "SW중심대학",
 }
 
 # Category Emoji Mappings
