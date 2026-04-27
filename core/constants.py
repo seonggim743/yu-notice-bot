@@ -40,6 +40,8 @@ SITE_NAME_MAP = {
     "eoullim_external": "이음림대외활동",
     "eoullim_study": "이음림스터디",
     "yutopia": "유토피아",
+    "computer_notice": "컴퓨터학부공지",
+    "swedu_notice": "SW중심대학",
 }
 
 # Category Emoji Mappings
@@ -137,6 +139,8 @@ DEFAULT_AVAILABLE_TAGS = {
     ],
     "dormitory_notice": ["입·퇴사", "시설", "일반", "긴급"],
     "yutopia": ["취업/진로", "비교과/활동", "행사/특강", "학습/교육", "공모전", "장학/혜택"],
+    "computer_notice": ["긴급", "과제/시험", "장학", "취업/진로", "학사", "행사"],
+    "swedu_notice": ["긴급", "과제/시험", "장학", "취업/진로", "학사", "행사"],
 }
 
 DEFAULT_CATEGORY_MAP = {
