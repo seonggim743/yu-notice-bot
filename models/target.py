@@ -8,3 +8,4 @@ class Target(BaseModel):
     title_selector: str = Field(..., description="CSS selector for the title within a list item")
     link_selector: str = Field(..., description="CSS selector for the link within a list item")
     content_selector: str = Field(..., description="CSS selector for the content area in detail page")
+    enabled: bool = Field(True, description="Whether this target is active in scrape runs")

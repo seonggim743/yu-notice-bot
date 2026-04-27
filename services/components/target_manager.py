@@ -66,8 +66,11 @@ class TargetManager:
             for item in data:
                 try:
                     target = Target(**item)
+                    if not target.enabled:
+                        logger.info(f"[TARGET] Skipping disabled target: {target.key}")
+                        continue
                     target_dict = target.model_dump()
-                    
+
                     # Use ParserFactory for OCP-compliant parser creation
                     target_dict["parser"] = self.parser_factory.get_parser(
                         site_key=target.key,
@@ -77,7 +80,7 @@ class TargetManager:
                         content_selector=target.content_selector,
                     )
                     valid_targets.append(target_dict)
-                    
+
                 except Exception as e:
                     logger.error(
                         f"[TARGET_MANAGER] Invalid target configuration: "

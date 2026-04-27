@@ -6,7 +6,8 @@
     "list_selector": "table tbody tr",
     "title_selector": "a",
     "link_selector": "a",
-    "content_selector": ".b-view-content"
+    "content_selector": ".b-view-content",
+    "enabled": true
   },
   {
     "key": "cse_notice",
@@ -15,7 +16,8 @@
     "list_selector": "table tbody tr",
     "title_selector": "a",
     "link_selector": "a",
-    "content_selector": ".b-view-content"
+    "content_selector": ".b-view-content",
+    "enabled": true
   },
   {
     "key": "bachelor_guide",
@@ -24,7 +26,8 @@
     "list_selector": "table tbody tr",
     "title_selector": "a",
     "link_selector": "a",
-    "content_selector": ".b-view-content"
+    "content_selector": ".b-view-content",
+    "enabled": true
   },
   {
     "key": "dormitory_notice",
@@ -33,7 +36,8 @@
     "list_selector": "table tbody tr",
     "title_selector": "a",
     "link_selector": "a",
-    "content_selector": ".b-view-content"
+    "content_selector": ".b-view-content",
+    "enabled": true
   },
   {
     "key": "dormitory_menu",
@@ -42,7 +46,8 @@
     "list_selector": "table tbody tr",
     "title_selector": "a",
     "link_selector": "a",
-    "content_selector": ".b-view-content"
+    "content_selector": ".b-view-content",
+    "enabled": true
   },
   {
     "key": "eoullim_career",
@@ -51,7 +56,8 @@
     "list_selector": "div.program_list div.program_con",
     "title_selector": "p.pro_title",
     "link_selector": "div.con > a",
-    "content_selector": "div.program_view"
+    "content_selector": "div.program_view",
+    "enabled": true
   },
   {
     "key": "eoullim_external",
@@ -60,7 +66,8 @@
     "list_selector": "table.responsive tbody tr",
     "title_selector": "td.subject a",
     "link_selector": "td.subject a",
-    "content_selector": "div.contents"
+    "content_selector": "div.contents",
+    "enabled": true
   },
   {
     "key": "eoullim_study",
@@ -69,7 +76,8 @@
     "list_selector": "table.responsive tbody tr",
     "title_selector": "td.subject a",
     "link_selector": "td.subject a",
-    "content_selector": "div.contents"
+    "content_selector": "div.contents",
+    "enabled": true
   },
   {
     "key": "yutopia",
@@ -78,6 +86,7 @@
     "list_selector": "ul.columns-4 > li",
     "title_selector": "b.title",
     "link_selector": "a",
-    "content_selector": "div.description div[data-role='wysiwyg-content']"
+    "content_selector": "div.description div[data-role='wysiwyg-content']",
+    "enabled": true
   }
 ]
