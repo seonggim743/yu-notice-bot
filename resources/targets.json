@@ -61,7 +61,7 @@
   },
   {
     "key": "eoullim_external",
-    "url": "https://join.yu.ac.kr/front_new/index.php?g_page=program&m_page=program04",
+    "url": "https://join.yu.ac.kr/front_new/index.php?g_page=program&m_page=program03",
     "base_url": "https://join.yu.ac.kr/front_new/",
     "list_selector": "table.responsive tbody tr",
     "title_selector": "td.subject a",
@@ -71,7 +71,7 @@
   },
   {
     "key": "eoullim_study",
-    "url": "https://join.yu.ac.kr/front_new/index.php?g_page=program&m_page=program06",
+    "url": "https://join.yu.ac.kr/front_new/index.php?g_page=program&m_page=program01_02",
     "base_url": "https://join.yu.ac.kr/front_new/",
     "list_selector": "table.responsive tbody tr",
     "title_selector": "td.subject a",
