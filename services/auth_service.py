@@ -86,7 +86,23 @@ class AuthService:
                              # If still on SSO, try to force go to target? No, that might break session.
                              logger.error(f"[AUTH] Failed to reach target domain. Current: {page.url}")
 
-                    # 5. Extract Cookies
+                    # 5. Verify destination and extract cookies
+                    target_domain = "join.yu.ac.kr"
+                    if target_domain not in page.url:
+                        logger.error(
+                            f"[AUTH] Eoullim login verification failed. "
+                            f"Expected {target_domain}, current: {page.url}"
+                        )
+                        return None
+
+                    target_cookies = await context.cookies(f"https://{target_domain}")
+                    if not target_cookies:
+                        logger.error(
+                            f"[AUTH] Eoullim login verification failed. "
+                            f"No cookies available for {target_domain}."
+                        )
+                        return None
+
                     cookies = await context.cookies()
                     cookie_dict = {c['name']: c['value'] for c in cookies}
                     
@@ -169,7 +185,23 @@ class AuthService:
                         else:
                              logger.error(f"[AUTH] Failed to reach target domain. Current: {page.url}")
 
-                    # 5. Extract Cookies
+                    # 5. Verify destination and extract cookies
+                    target_domain = "yutopia.yu.ac.kr"
+                    if target_domain not in page.url:
+                        logger.error(
+                            f"[AUTH] YUtopia login verification failed. "
+                            f"Expected {target_domain}, current: {page.url}"
+                        )
+                        return None
+
+                    target_cookies = await context.cookies(f"https://{target_domain}")
+                    if not target_cookies:
+                        logger.error(
+                            f"[AUTH] YUtopia login verification failed. "
+                            f"No cookies available for {target_domain}."
+                        )
+                        return None
+
                     cookies = await context.cookies()
                     cookie_dict = {c['name']: c['value'] for c in cookies}
                     
