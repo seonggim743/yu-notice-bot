@@ -13,8 +13,9 @@ from aiohttp import MultipartWriter
 from core.config import settings
 from core.logger import get_logger
 from core import constants
-from core.utils import parse_content_disposition, get_utc_now
+from core.utils import get_utc_now
 from models.notice import Notice
+from services.file.attachment_downloader import AttachmentDownloader
 from services.notification.base import BaseNotifier, NotificationChannel
 from services.notification.diff_chunker import split_diff
 from services.notification.formatters import create_discord_embed, format_change_summary
@@ -31,11 +32,14 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
     Handles all Discord-specific notification logic.
     Implements NotificationChannel interface for Strategy Pattern compatibility.
     """
-    
+
+    def __init__(self):
+        self.downloader = AttachmentDownloader()
+
     @property
     def channel_name(self) -> str:
         return "discord"
-    
+
     def is_enabled(self) -> bool:
         """Check if Discord is configured and enabled."""
         return bool(settings.DISCORD_BOT_TOKEN and settings.DISCORD_CHANNEL_MAP)
@@ -229,7 +233,6 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
             )
 
         # Download attachments using the SHARED session (to handle hotlink protection/cookies)
-        attachment_files = []
         content_images = []
 
         # === 1. Content Images (from Body) ===
@@ -237,85 +240,29 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
         should_send_content_images = is_new or (changes and "image" in changes)
 
         if notice.image_urls and should_send_content_images:
-            for idx, image_url in enumerate(notice.image_urls):
-                try:
-                    async with session.get(
-                        image_url,
-                        headers={"Referer": notice.url},
-                        timeout=aiohttp.ClientTimeout(total=10),
-                    ) as img_resp:
-                        if img_resp.status == 200:
-                            image_data = await img_resp.read()
-                            content_images.append(
-                                {
-                                    "data": image_data,
-                                    "filename": f"image_{idx}.jpg",
-                                    "type": "content",
-                                }
-                            )
-                            logger.info(
-                                f"[NOTIFIER] Added Discord content image {idx + 1}/{len(notice.image_urls)}"
-                            )
-                except Exception as e:
-                    logger.error(
-                        f"[NOTIFIER] Failed to download image {idx} for Discord: {e}"
-                    )
+            downloaded_images = await self.downloader.download_content_images(
+                session, notice.image_urls, referer=notice.url
+            )
+            for idx, image_data in downloaded_images:
+                content_images.append(
+                    {
+                        "data": image_data,
+                        "filename": f"image_{idx}.jpg",
+                        "type": "content",
+                    }
+                )
 
         # === 2. Attachments (Files) ===
-        if notice.attachments:
-            for idx, att in enumerate(notice.attachments[:10], 1):
-                max_retries = 2
-                for attempt in range(1, max_retries + 1):
-                    try:
-                        download_headers = {
-                            "Referer": notice.url,
-                            "User-Agent": settings.USER_AGENT,
-                            "Accept": "*/*",
-                            "Connection": "keep-alive",
-                        }
-                        # Use shared session for download
-                        async with session.get(
-                            att.url,
-                            headers=download_headers,
-                            timeout=aiohttp.ClientTimeout(total=30),
-                        ) as file_resp:
-                            if file_resp.status == 200:
-                                file_data = await file_resp.read()
-                                file_size = len(file_data)
-                                if file_size > constants.DISCORD_FILE_SIZE_LIMIT:
-                                    break  # Skip > 25MB
-
-                                # Parse filename from Content-Disposition header
-                                actual_filename = parse_content_disposition(
-                                    file_resp.headers.get("Content-Disposition", ""),
-                                    fallback_name=att.name
-                                )
-
-                                logger.info(
-                                    f"[NOTIFIER] Downloaded attachment: '{actual_filename}' ({file_size} bytes)"
-                                )
-
-                                attachment_files.append(
-                                    {
-                                        "data": file_data,
-                                        "filename": actual_filename,
-                                        "safe_filename": actual_filename,
-                                        "url": att.url,
-                                    }
-                                )
-                                break  # Success, exit retry loop
-                            elif file_resp.status in [404, 403]:
-                                logger.warning(
-                                    f"[NOTIFIER] Failed to download {att.name}: Status {file_resp.status}"
-                                )
-                                break  # Don't retry for 404/403
-                            else:
-                                if attempt < max_retries:
-                                    await asyncio.sleep(1)
-                    except Exception as e:
-                        logger.error(f"[NOTIFIER] Error downloading {att.name}: {e}")
-                        if attempt < max_retries:
-                            await asyncio.sleep(1)
+        downloaded_attachments = await self.downloader.download_attachments(
+            session,
+            notice.attachments,
+            file_size_limit=constants.DISCORD_FILE_SIZE_LIMIT,
+            referer=notice.url,
+        )
+        attachment_files = [
+            {"data": data, "filename": filename}
+            for filename, data in downloaded_attachments
+        ]
 
         # === 3. Prepare Files for Thread Starter vs Replies ===
         # Priority: Content Images > Embed > Previews > Attachments

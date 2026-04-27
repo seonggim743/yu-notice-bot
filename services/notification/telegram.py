@@ -13,8 +13,8 @@ from aiohttp import MultipartWriter
 from core.config import settings
 from core.logger import get_logger
 from core import constants
-from core.utils import parse_content_disposition
 from models.notice import Notice
+from services.file.attachment_downloader import AttachmentDownloader
 from services.notification.base import BaseNotifier, NotificationChannel
 from services.notification.diff_chunker import split_diff
 from services.notification.formatters import create_telegram_message
@@ -43,6 +43,7 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
         self.chat_id = settings.TELEGRAM_CHAT_ID
         self.image_handler = ImageHandler()
         self.dev_notifier = DevNotifier()
+        self.downloader = AttachmentDownloader()
     
     def is_enabled(self) -> bool:
         """Check if Telegram is configured and enabled."""
@@ -204,34 +205,24 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
         should_send_content_images = is_new or (changes and "image" in changes)
         
         if notice.image_urls and should_send_content_images:
-            for idx, image_url in enumerate(notice.image_urls):
-                try:
-                    headers = {"Referer": notice.url, "User-Agent": settings.USER_AGENT}
-                    async with session.get(image_url, headers=headers) as resp:
-                        if resp.status == 200:
-                            original_data = await resp.read()
-                            
-                            # Optimize for Telegram (Resize if too big)
-                            optimized_data = self.image_handler.optimize_for_telegram(original_data)
-                            
-                            # Only first image gets the main caption
-                            caption = msg if idx == 0 else None
-                            content_images_to_send.append(
-                                {
-                                    "type": "content",
-                                    "data": optimized_data,
-                                    "original_data": original_data,
-                                    "filename": f"image_{idx}.jpg", # Force jpg extension
-                                    "caption": caption,
-                                }
-                            )
-                            logger.info(
-                                f"[NOTIFIER] Added content image {idx + 1}/{len(notice.image_urls)}"
-                            )
-                except Exception as e:
-                    logger.error(
-                        f"[NOTIFIER] Failed to download content image {idx}: {e}"
-                    )
+            downloaded_images = await self.downloader.download_content_images(
+                session, notice.image_urls, referer=notice.url
+            )
+            for slot, (idx, original_data) in enumerate(downloaded_images):
+                # Optimize for Telegram (Resize if too big)
+                optimized_data = self.image_handler.optimize_for_telegram(original_data)
+
+                # Only first image gets the main caption
+                caption = msg if slot == 0 else None
+                content_images_to_send.append(
+                    {
+                        "type": "content",
+                        "data": optimized_data,
+                        "original_data": original_data,
+                        "filename": f"image_{idx}.jpg",  # Force jpg extension
+                        "caption": caption,
+                    }
+                )
 
         # B. PDF Previews (All previews as separate images)
         # Check attachments for preview_images
@@ -502,55 +493,12 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
 
         # 2.2 Send Attachments as MediaGroup (All Together)
         if main_msg_id and notice.attachments:
-            collected_files = []
-
-            # Download all files first
-            for idx, att in enumerate(notice.attachments[:10], 1):
-                max_retries = 2
-                for attempt in range(1, max_retries + 1):
-                    try:
-                        download_headers = {
-                            "Referer": notice.url,
-                            "User-Agent": settings.USER_AGENT,
-                            "Accept": "*/*",
-                            "Connection": "keep-alive",
-                        }
-                        async with session.get(
-                            att.url,
-                            headers=download_headers,
-                            timeout=aiohttp.ClientTimeout(total=30),
-                        ) as file_resp:
-                            if file_resp.status == 200:
-                                file_data = await file_resp.read()
-                                file_size = len(file_data)
-                                if file_size > constants.TELEGRAM_FILE_SIZE_LIMIT:
-                                    logger.warning(
-                                        f"[NOTIFIER] File {att.name} too large ({file_size} bytes), skipping"
-                                    )
-                                    break
-
-                                # Parse filename from Content-Disposition header
-                                actual_filename = parse_content_disposition(
-                                    file_resp.headers.get("Content-Disposition", ""),
-                                    fallback_name=att.name
-                                )
-                                collected_files.append((actual_filename, file_data))
-                                logger.info(
-                                    f"[NOTIFIER] Downloaded file {idx}/{len(notice.attachments)}: {actual_filename}"
-                                )
-                                break
-                            elif file_resp.status in [404, 403]:
-                                logger.warning(
-                                    f"[NOTIFIER] Failed to download {att.name}: Status {file_resp.status}"
-                                )
-                                break
-                            else:
-                                if attempt < max_retries:
-                                    await asyncio.sleep(1)
-                    except Exception as e:
-                        logger.error(f"[NOTIFIER] Error downloading {att.name}: {e}")
-                        if attempt < max_retries:
-                            await asyncio.sleep(1)
+            collected_files = await self.downloader.download_attachments(
+                session,
+                notice.attachments,
+                file_size_limit=constants.TELEGRAM_FILE_SIZE_LIMIT,
+                referer=notice.url,
+            )
 
             # Send all files as MediaGroup
             if collected_files:
