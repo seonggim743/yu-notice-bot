@@ -139,6 +139,8 @@ DEFAULT_AVAILABLE_TAGS = {
     ],
     "dormitory_notice": ["입·퇴사", "시설", "일반", "긴급"],
     "yutopia": ["취업/진로", "비교과/활동", "행사/특강", "학습/교육", "공모전", "장학/혜택"],
+    "computer_notice": ["긴급", "과제/시험", "장학", "취업/진로", "학사", "행사"],
+    "swedu_notice": ["긴급", "과제/시험", "장학", "취업/진로", "학사", "행사"],
 }
 
 DEFAULT_CATEGORY_MAP = {
