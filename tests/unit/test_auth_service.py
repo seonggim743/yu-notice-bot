@@ -1,13 +1,17 @@
 """Tests for AuthService SSO login flow.
 
-The real implementation drives Playwright against portal.yu.ac.kr; here we
-mock the Playwright async context-manager stack and exercise the four
-outcomes that matter:
+The real implementation drives Playwright against portal.yu.ac.kr. The
+verdict criterion is the presence of a `ssotoken` cookie on .yu.ac.kr —
+the SSO portal sets this the moment credentials are accepted, before
+the JS redirect chain (login_process → login_guide → target) finishes.
 
-- successful redirect to the protected domain with cookies
-- redirect failure (still on SSO domain) → returns None
-- redirect succeeded but no cookies for target domain → returns None
-- page.goto raises (timeout / network) → returns None
+Outcomes covered:
+
+- ssotoken cookie present → login succeeds, full cookie dict returned
+- ssotoken cookie absent → login fails, None returned
+- empty cookies → None
+- page.goto raises (timeout / network) → None
+- credentials missing → None (short-circuits before Playwright)
 """
 from unittest.mock import AsyncMock, MagicMock
 
@@ -32,9 +36,17 @@ def _build_playwright_stack(*, page_url: str, cookies):
     page.query_selector = AsyncMock(return_value=MagicMock())
     page.fill = AsyncMock()
     page.press = AsyncMock()
+    page.click = AsyncMock()
     page.wait_for_url = AsyncMock()
     page.wait_for_load_state = AsyncMock()
     page.screenshot = AsyncMock()
+
+    # expect_navigation is an async context manager; the click inside it
+    # triggers the mocked navigation so we just need a no-op cm.
+    nav_cm = MagicMock()
+    nav_cm.__aenter__ = AsyncMock(return_value=MagicMock())
+    nav_cm.__aexit__ = AsyncMock(return_value=None)
+    page.expect_navigation = MagicMock(return_value=nav_cm)
 
     context = MagicMock()
     context.new_page = AsyncMock(return_value=page)
@@ -67,12 +79,12 @@ def credentials_set(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_eoullim_login_success(monkeypatch, credentials_set):
-    """Redirect lands on join.yu.ac.kr and cookies are returned."""
+    """ssotoken cookie present → login succeeds and full cookie dict is returned."""
     factory, _ = _build_playwright_stack(
-        page_url="https://join.yu.ac.kr/main/index.do",
+        page_url="https://portal.yu.ac.kr/sso/login_process.jsp",
         cookies=[
-            {"name": "JSESSIONID", "value": "abc123", "domain": "join.yu.ac.kr"},
-            {"name": "SAML2", "value": "xyz", "domain": "join.yu.ac.kr"},
+            {"name": "ssotoken", "value": "tok-xyz", "domain": ".yu.ac.kr"},
+            {"name": "JSESSIONID", "value": "abc123", "domain": "portal.yu.ac.kr"},
         ],
     )
     monkeypatch.setattr("services.auth_service.async_playwright", factory)
@@ -80,15 +92,17 @@ async def test_eoullim_login_success(monkeypatch, credentials_set):
     svc = AuthService()
     cookies = await svc.get_eoullim_cookies()
 
-    assert cookies == {"JSESSIONID": "abc123", "SAML2": "xyz"}
+    assert cookies == {"ssotoken": "tok-xyz", "JSESSIONID": "abc123"}
 
 
 @pytest.mark.asyncio
-async def test_eoullim_login_redirect_failure(monkeypatch, credentials_set):
-    """Login form was submitted but URL is still on SSO domain → None."""
+async def test_eoullim_login_no_ssotoken(monkeypatch, credentials_set):
+    """Form submitted but ssotoken absent (e.g. wrong password) → None."""
     factory, _ = _build_playwright_stack(
         page_url="https://portal.yu.ac.kr/sso/login.jsp?error=1",
-        cookies=[],
+        cookies=[
+            {"name": "JSESSIONID", "value": "abc", "domain": "portal.yu.ac.kr"},
+        ],
     )
     monkeypatch.setattr("services.auth_service.async_playwright", factory)
 
@@ -100,7 +114,7 @@ async def test_eoullim_login_redirect_failure(monkeypatch, credentials_set):
 
 @pytest.mark.asyncio
 async def test_eoullim_login_no_cookies(monkeypatch, credentials_set):
-    """Reached target domain but no cookies registered → None."""
+    """Empty cookie jar (no ssotoken either) → None."""
     factory, _ = _build_playwright_stack(
         page_url="https://join.yu.ac.kr/main",
         cookies=[],
@@ -148,8 +162,8 @@ async def test_eoullim_login_skipped_without_credentials(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_yutopia_login_redirect_failure(monkeypatch, credentials_set):
-    """Sibling test for the YUtopia branch — same domain-check failure path."""
+async def test_yutopia_login_no_ssotoken(monkeypatch, credentials_set):
+    """Sibling test for the YUtopia branch — same ssotoken-check failure path."""
     factory, _ = _build_playwright_stack(
         page_url="https://portal.yu.ac.kr/sso/login.jsp?error=2",
         cookies=[],
