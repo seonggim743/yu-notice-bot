@@ -80,8 +80,10 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
         session: aiohttp.ClientSession,
         text: str,
         channel_id: Optional[str] = None,
+        event_kind: Optional[str] = None,
+        preview_images: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[str]:
-        """Send a plain-text Canvas notification. Returns Discord message id."""
+        """Send a Canvas notification embed. Returns Discord message id."""
         if not text or not channel_id:
             return None
         url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
@@ -89,7 +91,16 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
             "Authorization": f"Bot {settings.DISCORD_BOT_TOKEN}",
             "Content-Type": "application/json",
         }
-        payload = {"content": text}
+        description = self._truncate_canvas_description(text)
+        payload = {
+            "embeds": [
+                {
+                    "description": description,
+                    "color": self._canvas_embed_color(event_kind),
+                    "timestamp": get_utc_now().isoformat(),
+                }
+            ]
+        }
         async with self._discord_request(session, "POST", url, headers=headers, json=payload) as resp:
             if resp.status in (200, 201):
                 data = await resp.json()
@@ -99,6 +110,28 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                 f"{await resp.text()}"
             )
             return None
+
+    @staticmethod
+    def _canvas_embed_color(event_kind: Optional[str]) -> int:
+        """Map Canvas event kind to Discord embed color."""
+        if event_kind in {"new_assignment", "assignment_modified", "due_date_changed"}:
+            return 0x3B82F6
+        if event_kind == "new_announcement":
+            return 0x22C55E
+        if event_kind == "grade_registered":
+            return 0xF97316
+        if event_kind in {"deadline_reminder", "unsubmitted_warning"}:
+            return 0xEF4444
+        return 0x64748B
+
+    @staticmethod
+    def _truncate_canvas_description(text: str) -> str:
+        """Discord embed descriptions cap at 4096 characters."""
+        limit = 4096
+        suffix = "\n\n...open Canvas for the full content."
+        if len(text) <= limit:
+            return text
+        return text[: limit - len(suffix)].rstrip() + suffix
 
     async def send_notice(
         self,

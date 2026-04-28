@@ -349,7 +349,11 @@ class CanvasService:
         if not text or self.notifier is None:
             return
         try:
-            await self.notifier.send_canvas_message(self.client.session, text)
+            await self.notifier.send_canvas_message(
+                self.client.session,
+                text,
+                event_kind=event.kind,
+            )
         except Exception as e:
             logger.error(f"[CANVAS] notification send failed: {e}")
 
@@ -440,7 +444,11 @@ class CanvasService:
         if self.notifier is None or not text:
             return
         try:
-            await self.notifier.send_canvas_message(self.client.session, text)
+            await self.notifier.send_canvas_message(
+                self.client.session,
+                text,
+                event_kind="deadline_reminder",
+            )
         except Exception as e:
             logger.error(f"[CANVAS] reminder send failed: {e}")
 

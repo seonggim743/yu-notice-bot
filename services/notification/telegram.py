@@ -152,6 +152,7 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
         session: aiohttp.ClientSession,
         text: str,
         topic_id: Optional[int] = None,
+        preview_images: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[int]:
         """Send a plain-text Canvas notification. Returns Telegram message_id."""
         if not text:

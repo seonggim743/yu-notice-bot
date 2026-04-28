@@ -152,6 +152,8 @@ class NotificationService:
         session: aiohttp.ClientSession,
         text: str,
         routing_key: str = "canvas",
+        event_kind: Optional[str] = None,
+        preview_images: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Broadcast a Canvas notification text to all enabled channels.
 
@@ -170,7 +172,10 @@ class NotificationService:
             topic_id = settings.TELEGRAM_TOPIC_MAP.get(routing_key)
             try:
                 results["telegram"] = await telegram.send_canvas_message(
-                    session, text, topic_id=topic_id
+                    session,
+                    text,
+                    topic_id=topic_id,
+                    preview_images=preview_images,
                 )
             except Exception as e:
                 logger.error(f"[NOTIFICATION] Telegram canvas send failed: {e}")
@@ -188,7 +193,11 @@ class NotificationService:
             else:
                 try:
                     results["discord"] = await discord.send_canvas_message(
-                        session, text, channel_id=channel_id
+                        session,
+                        text,
+                        channel_id=channel_id,
+                        event_kind=event_kind,
+                        preview_images=preview_images,
                     )
                 except Exception as e:
                     logger.error(f"[NOTIFICATION] Discord canvas send failed: {e}")
