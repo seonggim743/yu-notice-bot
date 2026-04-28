@@ -6,6 +6,7 @@ events via `_dispatch`; and runs deadline reminders at the tiers
 configured in core.constants.CANVAS_REMINDER_HOURS.
 """
 import hashlib
+import json
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -171,7 +172,7 @@ class CanvasService:
                 )
                 continue
 
-            changes = self._diff_assignment(existing, assignment)
+            changes = await self._diff_assignment(existing, assignment)
             if not changes:
                 # Touch DB to refresh updated_at / has_submitted etc., but
                 # do not fire a notification.
@@ -200,32 +201,82 @@ class CanvasService:
                     )
                 )
 
-    def _diff_assignment(
+    async def _diff_assignment(
         self, existing: Dict[str, Any], item: CanvasAssignment
     ) -> Dict[str, Any]:
         """Return per-field {old, new} for fields that materially changed."""
         changes: Dict[str, Any] = {}
 
-        # canvas_updated_at: if Canvas's own timestamp moved, something changed.
-        old_updated = existing.get("canvas_updated_at")
-        if old_updated and item.updated_at and old_updated != item.updated_at:
-            # We still need to identify *what* changed
-            if (existing.get("title") or "") != item.name:
-                changes["title"] = {"old": existing.get("title"), "new": item.name}
+        if (existing.get("title") or "") != (item.name or ""):
+            changes["title"] = {"old": existing.get("title"), "new": item.name}
 
-            new_hash = self._content_hash(item.name, item.description)
-            if (existing.get("content_hash") or "") != new_hash:
-                changes["body"] = {
-                    "old": existing.get("content_hash"),
-                    "new": new_hash,
-                }
+        old_body = existing.get("body") or ""
+        new_body = item.description or ""
+        if old_body != new_body:
+            changes["body"] = {
+                "old": old_body,
+                "new": new_body,
+                "summary": await self._summarize_body_diff(old_body, new_body),
+            }
 
-        # Due date changes are a separate event class — always check explicitly.
         old_due = existing.get("due_at")
         if old_due != item.due_at and (old_due or item.due_at):
             changes["due_at"] = {"old": old_due, "new": item.due_at}
 
+        old_points = self._number_value(existing.get("points_possible"))
+        new_points = self._number_value(item.points_possible)
+        if old_points != new_points:
+            changes["points_possible"] = {
+                "old": existing.get("points_possible"),
+                "new": item.points_possible,
+            }
+
+        old_submission_types = self._normalize_submission_types(
+            existing.get("submission_types")
+        )
+        new_submission_types = self._normalize_submission_types(item.submission_types)
+        if old_submission_types != new_submission_types:
+            changes["submission_types"] = {
+                "old": old_submission_types,
+                "new": new_submission_types,
+            }
+
         return changes
+
+    async def _summarize_body_diff(self, old_body: str, new_body: str) -> str:
+        if self.ai_service is None or not hasattr(self.ai_service, "get_diff_summary"):
+            return "본문이 수정되었습니다."
+        try:
+            summary = await self.ai_service.get_diff_summary(old_body, new_body)
+        except Exception as e:
+            logger.error(f"[CANVAS] assignment body diff summary failed: {e}")
+            return "본문이 수정되었습니다."
+        if not summary or summary in {"NO_CHANGE", "변동사항 없음"}:
+            return "본문이 수정되었습니다."
+        return summary
+
+    @staticmethod
+    def _number_value(value: Any) -> Optional[float]:
+        if value is None or value == "":
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _normalize_submission_types(value: Any) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                parsed = [v.strip() for v in value.split(",") if v.strip()]
+            value = parsed
+        if isinstance(value, (list, tuple, set)):
+            return [str(v) for v in value]
+        return [str(value)]
 
     def _upsert_assignment(self, item: CanvasAssignment) -> Dict[str, Any]:
         payload = {

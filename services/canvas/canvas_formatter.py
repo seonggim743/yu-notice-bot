@@ -218,3 +218,51 @@ _SUBMISSION_TYPE_KOREAN = {
 
 def _translate_submission_types(types: List[str]) -> List[str]:
     return [_SUBMISSION_TYPE_KOREAN.get(t, t) for t in types]
+
+
+def _format_points(value: Any) -> str:
+    if value is None or value == "":
+        return "없음"
+    return f"{_num(value)}점"
+
+
+def _format_submission_types(value: Any) -> str:
+    if not value:
+        return "없음"
+    if isinstance(value, str):
+        value = [value]
+    return ", ".join(_translate_submission_types(list(value)))
+
+
+def format_modified_assignment(
+    item: CanvasAssignment, changes: Dict[str, Any]
+) -> str:
+    course = _course_label(item.course_name)
+    lines = ["✏️ [{}] 과제 수정".format(course), item.name]
+
+    if "due_at" in changes:
+        old = _format_kst_datetime(changes["due_at"].get("old")) or "없음"
+        new = _format_kst_datetime(changes["due_at"].get("new")) or "없음"
+        lines.append(f"마감: {old} → {new}")
+    if "points_possible" in changes:
+        old = _format_points(changes["points_possible"].get("old"))
+        new = _format_points(changes["points_possible"].get("new"))
+        lines.append(f"배점: {old} → {new}")
+    if "submission_types" in changes:
+        old = _format_submission_types(changes["submission_types"].get("old"))
+        new = _format_submission_types(changes["submission_types"].get("new"))
+        lines.append(f"제출: {old} → {new}")
+    if "title" in changes:
+        old = changes["title"].get("old") or "-"
+        new = changes["title"].get("new") or "-"
+        lines.append(f"제목: {old} → {new}")
+    if "body" in changes:
+        summary = changes["body"].get("summary") or "본문이 수정되었습니다."
+        lines.append(f"본문: {summary}")
+
+    if len(lines) == 2:
+        lines.append("변경된 항목이 있습니다.")
+
+    if item.html_url:
+        lines.append(f"→ {item.html_url}")
+    return "\n".join(lines)

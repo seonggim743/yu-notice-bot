@@ -164,11 +164,12 @@ class CanvasRepository:
     def _prepare_payload(item: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize types so PostgREST can serialize the RPC payload.
 
-        - lists/dicts → JSON-string for fields the RPC re-parses
+        - JSONB dict/list fields are stringified for fields the RPC re-parses
+        - submission_types stays a JSON array for jsonb_array_elements_text()
         - None values are passed through (RPC handles NULL casts)
         """
         payload = dict(item)
-        for key in ("submission_types", "message_ids", "reminders_sent"):
+        for key in ("message_ids", "reminders_sent"):
             if key in payload and payload[key] is not None and not isinstance(
                 payload[key], str
             ):

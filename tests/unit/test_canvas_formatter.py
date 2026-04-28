@@ -63,7 +63,7 @@ def test_format_modified_assignment_due_date_change():
     }
     text = fmt.format_modified_assignment(a, changes)
     assert text.startswith("✏️ [논리회로] 과제 수정")
-    assert "마감일 변경" in text
+    assert "마감:" in text
     assert "→ https://canvas.yu.ac.kr/courses/2/assignments/3" in text
 
 

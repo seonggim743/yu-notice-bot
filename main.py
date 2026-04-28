@@ -43,6 +43,7 @@ def _build_canvas_service(
     notification_service: INotificationService,
     error_notifier: ErrorNotifier = None,
     file_service=None,
+    ai_service=None,
 ):
     """Construct CanvasService when CANVAS_ENABLED is set; else return None."""
     if not settings.CANVAS_ENABLED:
@@ -61,6 +62,7 @@ def _build_canvas_service(
         api_token=settings.CANVAS_API_TOKEN,
         notifier=notification_service,
         file_service=file_service,
+        ai_service=ai_service,
         error_notifier=error_notifier,
     )
 
@@ -116,6 +118,7 @@ class Bot:
                 notification_service,
                 error_notifier=self.error_notifier,
                 file_service=getattr(self.scraper, "file_service", None),
+                ai_service=getattr(self.scraper, "analyzer", None),
             )
         self.running = True
         self.error_count = 0
