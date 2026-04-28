@@ -39,6 +39,26 @@ from core.interfaces import INotificationService
 from services.scraper_service import ScraperService
 
 
+def _build_canvas_service(notification_service: INotificationService):
+    """Construct CanvasService when CANVAS_ENABLED is set; else return None."""
+    if not settings.CANVAS_ENABLED:
+        return None
+    if not (settings.CANVAS_API_URL and settings.CANVAS_API_TOKEN):
+        logger.warning(
+            "[CANVAS] CANVAS_ENABLED=true but API URL/token missing; skipping."
+        )
+        return None
+    from repositories.canvas_repo import CanvasRepository
+    from services.canvas.canvas_service import CanvasService
+
+    return CanvasService(
+        repo=CanvasRepository(),
+        api_url=settings.CANVAS_API_URL,
+        api_token=settings.CANVAS_API_TOKEN,
+        notifier=notification_service,
+    )
+
+
 class Bot:
     """
     Main Bot class that orchestrates the scraping loop.
@@ -48,6 +68,8 @@ class Bot:
     - HashCalculator: Content hashing for change detection
     - ChangeDetector: Modification detection with AI diff summaries
     - AttachmentProcessor: File download, text extraction, preview generation
+
+    When CANVAS_ENABLED is set, also runs CanvasService in the same loop.
 
     Supports dependency injection for testability.
     """
@@ -59,6 +81,7 @@ class Bot:
         scraper: ScraperService = None,
         error_notifier: ErrorNotifier = None,
         notification_service: INotificationService = None,
+        canvas_service=None,
     ):
         """
         Initialize the Bot.
@@ -68,14 +91,21 @@ class Bot:
             no_ai_mode: If True, skips AI analysis
             scraper: Optional custom ScraperService instance (for DI/testing)
             error_notifier: Optional ErrorNotifier instance (for DI/testing)
-            notification_service: Optional NotificationService to inject into ScraperService.
-                Ignored if `scraper` is provided.
+            notification_service: Optional NotificationService to inject into
+                ScraperService and CanvasService. Ignored if `scraper` /
+                `canvas_service` are provided directly.
+            canvas_service: Optional CanvasService instance. If None and
+                init_mode=False, one is built from settings when
+                CANVAS_ENABLED is set.
         """
         self.scraper = scraper or ScraperService(
             init_mode=init_mode,
             no_ai_mode=no_ai_mode,
             notifier=notification_service,
         )
+        self.canvas_service = canvas_service
+        if self.canvas_service is None and not init_mode:
+            self.canvas_service = _build_canvas_service(notification_service)
         self.error_notifier = error_notifier or get_error_notifier()
         self.running = True
         self.error_count = 0
@@ -174,6 +204,16 @@ class Bot:
         while self.running:
             try:
                 await self.scraper.run()
+                if self.canvas_service is not None:
+                    try:
+                        await self.canvas_service.run()
+                        await self.canvas_service.run_reminders()
+                    except Exception as canvas_err:
+                        # Canvas failures are isolated from the scraper loop
+                        # so a Canvas outage doesn't block notice scraping.
+                        logger.error(
+                            f"[CANVAS] poll failed: {canvas_err}", exc_info=True
+                        )
                 self.error_count = 0  # Reset on successful run
 
             except KeyboardInterrupt:

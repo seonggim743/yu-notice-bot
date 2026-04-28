@@ -1,15 +1,18 @@
 """Canvas LMS orchestrator.
 
 Polls Canvas for new/modified assignments, announcements, and graded
-submissions; persists state through CanvasRepository; and emits change
-events via `_dispatch_notification`. The dispatch hook is intentionally
-thin so that the formatter / channel wiring (added in the next commit)
-can be swapped in without touching the change-detection logic here.
+submissions; persists state through CanvasRepository; emits change
+events via `_dispatch`; and runs deadline reminders at the tiers
+configured in core.constants.CANVAS_REMINDER_HOURS.
 """
 import hashlib
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
+import aiohttp
+
+from core import constants
 from core.logger import get_logger
 from models.canvas import (
     CanvasAnnouncement,
@@ -50,22 +53,67 @@ class CanvasEvent:
 class CanvasService:
     def __init__(
         self,
-        client: CanvasClient,
         repo: CanvasRepository,
+        api_url: str = "",
+        api_token: str = "",
         notifier=None,
         file_service=None,
         ai_service=None,
+        client: Optional[CanvasClient] = None,
     ):
-        self.client = client
+        """Initialize CanvasService.
+
+        Either pass `client` (tests inject a mock with a pre-built session)
+        or pass `api_url` + `api_token` (production: a fresh aiohttp session
+        is created per `run()` call and torn down on exit).
+        """
         self.repo = repo
+        self.api_url = api_url
+        self.api_token = api_token
         self.notifier = notifier
         self.file_service = file_service
         self.ai_service = ai_service
+        self.client: Optional[CanvasClient] = client
 
     # ---------- Top-level run ----------
 
     async def run(self) -> None:
-        """One full polling pass."""
+        """One full polling pass.
+
+        Manages an aiohttp session if no client was injected at init.
+        """
+        if self.client is not None:
+            await self._poll()
+            return
+
+        async with aiohttp.ClientSession() as session:
+            self.client = CanvasClient(self.api_url, self.api_token, session)
+            try:
+                await self._poll()
+            finally:
+                self.client = None
+
+    async def run_reminders(self) -> None:
+        """Send deadline reminders at the configured hour tiers.
+
+        Tier ordering: longest first (e.g. 72h before D-day, then 24h, then
+        3h). Each item tracks which tiers have already fired in its
+        reminders_sent JSONB column to avoid double-sending.
+        """
+        if self.client is not None:
+            await self._poll_reminders()
+            return
+
+        async with aiohttp.ClientSession() as session:
+            # Reminders don't actually call Canvas, but having a session
+            # ensures _send_reminder can use it for notifications uniformly.
+            self.client = CanvasClient(self.api_url, self.api_token, session)
+            try:
+                await self._poll_reminders()
+            finally:
+                self.client = None
+
+    async def _poll(self) -> None:
         try:
             courses = await self.client.get_active_courses()
         except Exception as e:
@@ -307,6 +355,81 @@ class CanvasService:
                 event.item, course_name=event.course.name
             )
         return ""
+
+    # ---------- Deadline reminders ----------
+
+    async def _poll_reminders(self) -> None:
+        """For each upcoming assignment, send the largest applicable
+        reminder tier that hasn't fired yet."""
+        tiers = sorted(constants.CANVAS_REMINDER_HOURS, reverse=True)
+        max_window = max(tiers) if tiers else 0
+        if max_window <= 0:
+            return
+
+        rows = self.repo.get_upcoming_deadlines(hours=max_window)
+        now = datetime.now(timezone.utc)
+
+        for row in rows:
+            if row.get("has_submitted"):
+                continue
+            due_at_str = row.get("due_at")
+            if not due_at_str:
+                continue
+            try:
+                due_at = datetime.fromisoformat(due_at_str.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+
+            hours_left = (due_at - now).total_seconds() / 3600.0
+            if hours_left <= 0:
+                continue
+
+            tier = self._pick_reminder_tier(hours_left, tiers, row.get("reminders_sent") or [])
+            if tier is None:
+                continue
+
+            await self._send_reminder(row, tier)
+            self.repo.mark_reminder_sent(row["id"], tier)
+
+    @staticmethod
+    def _pick_reminder_tier(
+        hours_left: float, tiers: List[int], already_sent: List[int]
+    ) -> Optional[int]:
+        """Smallest tier >= hours_left that hasn't been sent yet."""
+        for tier in tiers:
+            if hours_left <= tier and tier not in already_sent:
+                return tier
+        return None
+
+    async def _send_reminder(self, row: Dict[str, Any], tier_hours: int) -> None:
+        """Build a CanvasAssignment from a DB row and dispatch the reminder."""
+        try:
+            item = CanvasAssignment(
+                id=row["canvas_id"],
+                course_id=row["course_id"],
+                course_name=row.get("course_name") or "",
+                name=row.get("title") or "",
+                description=row.get("body") or "",
+                due_at=row.get("due_at"),
+                points_possible=row.get("points_possible"),
+                has_submitted_submissions=bool(row.get("has_submitted")),
+                html_url=row.get("html_url") or "",
+            )
+        except Exception as e:
+            logger.error(f"[CANVAS] reminder build failed for row {row.get('id')}: {e}")
+            return
+
+        text = canvas_formatter.format_deadline_reminder(item, hours_left=tier_hours)
+        logger.info(
+            f"[CANVAS] reminder tier={tier_hours}h item_id={item.id} "
+            f"title={item.name!r}"
+        )
+        if self.notifier is None or not text:
+            return
+        try:
+            await self.notifier.send_canvas_message(self.client.session, text)
+        except Exception as e:
+            logger.error(f"[CANVAS] reminder send failed: {e}")
 
     # ---------- Helpers ----------
 
