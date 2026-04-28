@@ -74,7 +74,32 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
     def is_enabled(self) -> bool:
         """Check if Discord is configured and enabled."""
         return bool(settings.DISCORD_BOT_TOKEN and settings.DISCORD_CHANNEL_MAP)
-    
+
+    async def send_canvas_message(
+        self,
+        session: aiohttp.ClientSession,
+        text: str,
+        channel_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Send a plain-text Canvas notification. Returns Discord message id."""
+        if not text or not channel_id:
+            return None
+        url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+        headers = {
+            "Authorization": f"Bot {settings.DISCORD_BOT_TOKEN}",
+            "Content-Type": "application/json",
+        }
+        payload = {"content": text}
+        async with self._discord_request(session, "POST", url, headers=headers, json=payload) as resp:
+            if resp.status in (200, 201):
+                data = await resp.json()
+                return data.get("id")
+            logger.error(
+                f"[NOTIFIER] Discord canvas send failed (status {resp.status}): "
+                f"{await resp.text()}"
+            )
+            return None
+
     async def send_notice(
         self,
         session: aiohttp.ClientSession,

@@ -18,6 +18,7 @@ from models.canvas import (
     CanvasSubmission,
 )
 from repositories.canvas_repo import CanvasRepository
+from services.canvas import canvas_formatter
 from services.canvas.canvas_client import CanvasClient
 
 logger = get_logger(__name__)
@@ -274,21 +275,38 @@ class CanvasService:
         }
         return self.repo.upsert_item(payload)
 
-    # ---------- Dispatch hook (commit 5 wires real formatter / sender) ----------
+    # ---------- Dispatch ----------
 
     async def _dispatch(self, event: CanvasEvent) -> None:
-        """Emit a Canvas event. Default implementation logs only — the
-        notification path is wired in the next commit via the formatter
-        module + NotificationService.send_canvas extension."""
+        """Format the event and broadcast via NotificationService."""
+        text = self._format_event(event)
         identifier = getattr(event.item, "id", "?")
-        title = getattr(event.item, "name", None) or getattr(
-            event.item, "title", ""
-        )
         logger.info(
             f"[CANVAS] event={event.kind} course={event.course.name!r} "
-            f"item_id={identifier} title={title!r} "
-            f"changes={list((event.changes or {}).keys())}"
+            f"item_id={identifier} changes={list((event.changes or {}).keys())}"
         )
+        if not text or self.notifier is None:
+            return
+        try:
+            await self.notifier.send_canvas_message(self.client.session, text)
+        except Exception as e:
+            logger.error(f"[CANVAS] notification send failed: {e}")
+
+    def _format_event(self, event: CanvasEvent) -> str:
+        """Map a CanvasEvent to its notification text via canvas_formatter."""
+        if event.kind == KIND_NEW_ASSIGNMENT:
+            return canvas_formatter.format_new_assignment(event.item)
+        if event.kind in (KIND_ASSIGNMENT_MODIFIED, KIND_DUE_DATE_CHANGED):
+            return canvas_formatter.format_modified_assignment(
+                event.item, event.changes or {}
+            )
+        if event.kind == KIND_NEW_ANNOUNCEMENT:
+            return canvas_formatter.format_new_announcement(event.item)
+        if event.kind == KIND_GRADE_REGISTERED:
+            return canvas_formatter.format_grade_notification(
+                event.item, course_name=event.course.name
+            )
+        return ""
 
     # ---------- Helpers ----------
 

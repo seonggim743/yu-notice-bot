@@ -7,6 +7,7 @@ Channels are injected via constructor, enabling OCP compliance.
 import aiohttp
 from typing import Dict, List, Optional, Any, Tuple
 
+from core.config import settings
 from core.logger import get_logger
 from models.notice import Notice
 from services.notification.base import NotificationChannel
@@ -146,6 +147,55 @@ class NotificationService:
         
         return results
     
+    async def send_canvas_message(
+        self,
+        session: aiohttp.ClientSession,
+        text: str,
+        routing_key: str = "canvas",
+    ) -> Dict[str, Any]:
+        """Broadcast a Canvas notification text to all enabled channels.
+
+        Routing:
+        - Telegram: settings.TELEGRAM_TOPIC_MAP[routing_key] for topic id
+        - Discord:  settings.DISCORD_CHANNEL_MAP[routing_key] for channel id
+
+        Channels with no mapping for `routing_key` are skipped (Discord
+        especially needs an explicit channel id; Telegram falls back to
+        the default chat without a topic).
+        """
+        results: Dict[str, Any] = {}
+
+        telegram = self.telegram
+        if telegram and telegram.is_enabled():
+            topic_id = settings.TELEGRAM_TOPIC_MAP.get(routing_key)
+            try:
+                results["telegram"] = await telegram.send_canvas_message(
+                    session, text, topic_id=topic_id
+                )
+            except Exception as e:
+                logger.error(f"[NOTIFICATION] Telegram canvas send failed: {e}")
+                results["telegram"] = None
+
+        discord = self.discord
+        if discord and discord.is_enabled():
+            channel_id = settings.DISCORD_CHANNEL_MAP.get(routing_key)
+            if not channel_id:
+                logger.warning(
+                    f"[NOTIFICATION] DISCORD_CHANNEL_MAP has no '{routing_key}' "
+                    "key; skipping Discord canvas message."
+                )
+                results["discord"] = None
+            else:
+                try:
+                    results["discord"] = await discord.send_canvas_message(
+                        session, text, channel_id=channel_id
+                    )
+                except Exception as e:
+                    logger.error(f"[NOTIFICATION] Discord canvas send failed: {e}")
+                    results["discord"] = None
+
+        return results
+
     # =========================================================================
     # Backward Compatibility - Legacy Methods
     # These delegate to the new Strategy-based implementation

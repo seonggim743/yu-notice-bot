@@ -147,6 +147,27 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                     return None
         return None
 
+    async def send_canvas_message(
+        self,
+        session: aiohttp.ClientSession,
+        text: str,
+        topic_id: Optional[int] = None,
+    ) -> Optional[int]:
+        """Send a plain-text Canvas notification. Returns Telegram message_id."""
+        if not text:
+            return None
+        payload = {
+            "chat_id": self.chat_id,
+            "text": text,
+            "disable_web_page_preview": True,
+        }
+        if topic_id:
+            payload["message_thread_id"] = topic_id
+        result = await self._send_telegram_api(session, "sendMessage", payload=payload)
+        if result and result.get("ok"):
+            return result.get("result", {}).get("message_id")
+        return None
+
     async def send_telegram(
         self,
         session: aiohttp.ClientSession,
