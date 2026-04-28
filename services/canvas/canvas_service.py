@@ -6,6 +6,7 @@ events via `_dispatch`; and runs deadline reminders at the tiers
 configured in core.constants.CANVAS_REMINDER_HOURS.
 """
 import hashlib
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -13,11 +14,13 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 
 from core import constants
+from core.config import settings
 from core.error_notifier import ErrorNotifier
 from core.logger import get_logger
 from models.canvas import (
     CanvasAnnouncement,
     CanvasAssignment,
+    CanvasAttachment,
     CanvasCourse,
     CanvasSubmission,
 )
@@ -349,10 +352,12 @@ class CanvasService:
         if not text or self.notifier is None:
             return
         try:
+            preview_images = await self._build_preview_images(event.item)
             await self.notifier.send_canvas_message(
                 self.client.session,
                 text,
                 event_kind=event.kind,
+                preview_images=preview_images,
             )
         except Exception as e:
             logger.error(f"[CANVAS] notification send failed: {e}")
@@ -372,6 +377,118 @@ class CanvasService:
                 event.item, course_name=event.course.name
             )
         return ""
+
+    # ---------- Attachments ----------
+
+    async def _build_preview_images(self, item: Any) -> List[Dict[str, Any]]:
+        """Download Canvas attachments and generate preview image payloads."""
+        attachments = getattr(item, "attachments", None) or []
+        if not attachments or self.file_service is None or self.client is None:
+            return []
+
+        preview_images: List[Dict[str, Any]] = []
+        max_previews = max(1, settings.MAX_PREVIEWS)
+
+        for att in attachments:
+            if len(preview_images) >= max_previews:
+                break
+            file_data = await self._download_canvas_attachment(att)
+            if not file_data:
+                continue
+
+            filename = self._canvas_attachment_filename(att)
+            content_type = (att.content_type or "").lower()
+
+            if content_type.startswith("image/") or self.file_service.is_image(filename):
+                preview_images.append(
+                    {
+                        "filename": self._image_preview_filename(filename),
+                        "data": self.file_service.image_handler.optimize_for_telegram(
+                            file_data
+                        ),
+                    }
+                )
+                continue
+
+            generated = self.file_service.generate_preview_images(
+                file_data,
+                filename,
+                max_pages=max_previews - len(preview_images),
+            )
+            stem = os.path.splitext(filename)[0] or "canvas_preview"
+            for idx, image_data in enumerate(generated):
+                preview_images.append(
+                    {
+                        "filename": f"{stem}_preview_{idx + 1}.jpg",
+                        "data": image_data,
+                    }
+                )
+                if len(preview_images) >= max_previews:
+                    break
+
+        return preview_images
+
+    async def _download_canvas_attachment(
+        self, attachment: CanvasAttachment
+    ) -> Optional[bytes]:
+        """Download a Canvas attachment with Bearer auth."""
+        if not attachment.url:
+            return None
+        headers = {
+            "Authorization": f"Bearer {self.api_token}",
+            "Accept": "*/*",
+        }
+        try:
+            data = await self.file_service.download_file(
+                self.client.session,
+                attachment.url,
+                headers=headers,
+            )
+            if data is None:
+                logger.warning(
+                    f"[CANVAS] Failed to download attachment {attachment.display_name!r}"
+                )
+            return data
+        except Exception as e:
+            logger.error(
+                f"[CANVAS] Attachment download failed for {attachment.display_name!r}: {e}"
+            )
+            return None
+
+    def _canvas_attachment_filename(self, attachment: CanvasAttachment) -> str:
+        """Choose a filename that FileService can route by extension."""
+        name = attachment.display_name or self.file_service.extract_filename(
+            attachment.url
+        )
+        name = self.file_service.sanitize_filename(name or "canvas_attachment")
+        if "." in name:
+            return name
+
+        ext = self._extension_from_content_type(attachment.content_type)
+        return f"{name}.{ext}" if ext else name
+
+    @staticmethod
+    def _extension_from_content_type(content_type: str) -> str:
+        content_type = (content_type or "").split(";", 1)[0].lower()
+        mapping = {
+            "application/pdf": "pdf",
+            "application/vnd.ms-excel": "xls",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+            "application/msword": "doc",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+            "application/vnd.ms-powerpoint": "ppt",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+            "image/jpeg": "jpg",
+            "image/png": "png",
+            "image/gif": "gif",
+            "image/webp": "webp",
+        }
+        return mapping.get(content_type, "")
+
+    @staticmethod
+    def _image_preview_filename(filename: str) -> str:
+        stem, ext = os.path.splitext(filename)
+        return f"{stem or 'canvas_image'}{ext or '.jpg'}"
 
     # ---------- Deadline reminders ----------
 

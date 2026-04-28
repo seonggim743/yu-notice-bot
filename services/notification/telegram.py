@@ -166,8 +166,44 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
             payload["message_thread_id"] = topic_id
         result = await self._send_telegram_api(session, "sendMessage", payload=payload)
         if result and result.get("ok"):
-            return result.get("result", {}).get("message_id")
+            message_id = result.get("result", {}).get("message_id")
+            if preview_images and message_id:
+                await self._send_canvas_preview_images(
+                    session, preview_images, topic_id, message_id
+                )
+            return message_id
         return None
+
+    async def _send_canvas_preview_images(
+        self,
+        session: aiohttp.ClientSession,
+        preview_images: List[Dict[str, Any]],
+        topic_id: Optional[int],
+        reply_to_message_id: int,
+    ) -> None:
+        """Send Canvas preview images as Telegram media groups."""
+        for batch in [
+            preview_images[i : i + 10] for i in range(0, len(preview_images), 10)
+        ]:
+            form = MultipartWriter("form-data")
+            self._add_text_part(form, "chat_id", self.chat_id)
+            self._add_text_part(form, "reply_to_message_id", reply_to_message_id)
+            if topic_id:
+                self._add_text_part(form, "message_thread_id", topic_id)
+
+            media = []
+            for idx, image in enumerate(batch):
+                field_name = f"preview_{idx}"
+                media.append({"type": "photo", "media": f"attach://{field_name}"})
+                self._add_file_part(
+                    form,
+                    field_name,
+                    image["data"],
+                    image.get("filename") or f"canvas_preview_{idx + 1}.jpg",
+                    content_type="image/jpeg",
+                )
+            self._add_text_part(form, "media", json.dumps(media))
+            await self._send_telegram_api(session, "sendMediaGroup", data=form)
 
     async def send_telegram(
         self,

@@ -87,8 +87,11 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
         if not text or not channel_id:
             return None
         url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
-        headers = {
+        auth_headers = {
             "Authorization": f"Bot {settings.DISCORD_BOT_TOKEN}",
+        }
+        json_headers = {
+            **auth_headers,
             "Content-Type": "application/json",
         }
         description = self._truncate_canvas_description(text)
@@ -101,10 +104,20 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                 }
             ]
         }
-        async with self._discord_request(session, "POST", url, headers=headers, json=payload) as resp:
+        async with self._discord_request(session, "POST", url, headers=json_headers, json=payload) as resp:
             if resp.status in (200, 201):
                 data = await resp.json()
-                return data.get("id")
+                message_id = data.get("id")
+                if preview_images and message_id:
+                    await self._send_discord_reply(
+                        session,
+                        channel_id,
+                        preview_images,
+                        auth_headers,
+                        is_thread=False,
+                        reply_to_id=message_id,
+                    )
+                return message_id
             logger.error(
                 f"[NOTIFIER] Discord canvas send failed (status {resp.status}): "
                 f"{await resp.text()}"

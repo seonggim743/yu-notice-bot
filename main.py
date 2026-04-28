@@ -42,6 +42,7 @@ from services.scraper_service import ScraperService
 def _build_canvas_service(
     notification_service: INotificationService,
     error_notifier: ErrorNotifier = None,
+    file_service=None,
 ):
     """Construct CanvasService when CANVAS_ENABLED is set; else return None."""
     if not settings.CANVAS_ENABLED:
@@ -59,6 +60,7 @@ def _build_canvas_service(
         api_url=settings.CANVAS_API_URL,
         api_token=settings.CANVAS_API_TOKEN,
         notifier=notification_service,
+        file_service=file_service,
         error_notifier=error_notifier,
     )
 
@@ -113,6 +115,7 @@ class Bot:
             self.canvas_service = _build_canvas_service(
                 notification_service,
                 error_notifier=self.error_notifier,
+                file_service=getattr(self.scraper, "file_service", None),
             )
         self.running = True
         self.error_count = 0
