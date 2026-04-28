@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     YU_EOULLIM_ID: Optional[str] = Field(None, description="Eoullim ID")
     YU_EOULLIM_PW: Optional[str] = Field(None, description="Eoullim Password")
 
+    # --- Canvas LMS Integration ---
+    CANVAS_API_URL: str = Field("", description="Canvas LMS base URL")
+    CANVAS_API_TOKEN: str = Field("", description="Canvas API access token")
+    CANVAS_ENABLED: bool = Field(False, description="Enable Canvas integration")
+    CANVAS_POLL_INTERVAL: int = Field(1800, description="Canvas polling interval in seconds")
+
     @field_validator("TELEGRAM_TOPIC_MAP", mode="before")
     @classmethod
     def parse_telegram_topic_map(cls, v):
