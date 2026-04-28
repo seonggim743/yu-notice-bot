@@ -125,6 +125,18 @@ def format_modified_assignment(
     return "\n".join(lines)
 
 
+def format_unsubmitted_warning(item: CanvasAssignment) -> str:
+    course = _course_label(item.course_name)
+    lines = [f"⚠️ [{course}] 미제출 과제"]
+
+    due = _format_kst_datetime(item.due_at) or "미정"
+    lines.append(f"{item.name} — 마감 지남 ({due})")
+
+    if item.html_url:
+        lines.append(f"→ {item.html_url}")
+    return "\n".join(lines)
+
+
 def format_new_announcement(item: CanvasAnnouncement) -> str:
     course = _course_label(item.course_name)
     lines = [f"📢 [{course}] 강의 공지", item.title]

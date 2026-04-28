@@ -158,6 +158,40 @@ class CanvasRepository:
             logger.error(f"[CANVAS_REPO] get_unsubmitted_assignments failed: {e}")
             return []
 
+    def get_recent_overdue_unsubmitted_assignments(
+        self, hours_after_due: int = 1
+    ) -> List[Dict[str, Any]]:
+        """Assignments due within the last window that still need one alert."""
+        try:
+            now = datetime.now(timezone.utc)
+            window_start = now - timedelta(hours=hours_after_due)
+            response = (
+                self.db.table("canvas_items")
+                .select("*")
+                .eq("item_type", "assignment")
+                .eq("has_submitted", False)
+                .eq("alerted_unsubmitted", False)
+                .gte("due_at", window_start.isoformat())
+                .lte("due_at", now.isoformat())
+                .order("due_at")
+                .execute()
+            )
+            return response.data or []
+        except Exception as e:
+            logger.error(
+                f"[CANVAS_REPO] get_recent_overdue_unsubmitted_assignments failed: {e}"
+            )
+            return []
+
+    def mark_unsubmitted_alerted(self, item_id: str) -> None:
+        """Mark the one-time overdue/unsubmitted alert as sent."""
+        try:
+            self.db.table("canvas_items").update(
+                {"alerted_unsubmitted": True}
+            ).eq("id", item_id).execute()
+        except Exception as e:
+            logger.error(f"[CANVAS_REPO] mark_unsubmitted_alerted failed: {e}")
+
     # ---------- Internal ----------
 
     @staticmethod

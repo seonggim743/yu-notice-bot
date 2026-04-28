@@ -38,6 +38,7 @@ KIND_ASSIGNMENT_MODIFIED = "assignment_modified"
 KIND_DUE_DATE_CHANGED = "due_date_changed"
 KIND_NEW_ANNOUNCEMENT = "new_announcement"
 KIND_GRADE_REGISTERED = "grade_registered"
+KIND_UNSUBMITTED_WARNING = "unsubmitted_warning"
 
 
 @dataclass
@@ -114,6 +115,7 @@ class CanvasService:
         """
         if self.client is not None:
             await self._poll_reminders()
+            await self.check_unsubmitted()
             return
 
         async with aiohttp.ClientSession() as session:
@@ -127,6 +129,7 @@ class CanvasService:
             )
             try:
                 await self._poll_reminders()
+                await self.check_unsubmitted()
             finally:
                 self.client = None
 
@@ -619,6 +622,46 @@ class CanvasService:
             )
         except Exception as e:
             logger.error(f"[CANVAS] reminder send failed: {e}")
+
+    async def check_unsubmitted(self) -> None:
+        """Warn once when an assignment is still unsubmitted just after due."""
+        rows = self.repo.get_recent_overdue_unsubmitted_assignments(hours_after_due=1)
+        for row in rows:
+            if row.get("has_submitted"):
+                continue
+            try:
+                item = CanvasAssignment(
+                    id=row["canvas_id"],
+                    course_id=row["course_id"],
+                    course_name=row.get("course_name") or "",
+                    name=row.get("title") or "",
+                    description=row.get("body") or "",
+                    due_at=row.get("due_at"),
+                    points_possible=row.get("points_possible"),
+                    has_submitted_submissions=False,
+                    html_url=row.get("html_url") or "",
+                )
+            except Exception as e:
+                logger.error(
+                    f"[CANVAS] unsubmitted warning build failed for row {row.get('id')}: {e}"
+                )
+                continue
+
+            text = canvas_formatter.format_unsubmitted_warning(item)
+            logger.info(
+                f"[CANVAS] unsubmitted warning item_id={item.id} title={item.name!r}"
+            )
+            if self.notifier is None or not text:
+                continue
+            try:
+                await self.notifier.send_canvas_message(
+                    self.client.session,
+                    text,
+                    event_kind=KIND_UNSUBMITTED_WARNING,
+                )
+                self.repo.mark_unsubmitted_alerted(row["id"])
+            except Exception as e:
+                logger.error(f"[CANVAS] unsubmitted warning send failed: {e}")
 
     # ---------- Helpers ----------
 
