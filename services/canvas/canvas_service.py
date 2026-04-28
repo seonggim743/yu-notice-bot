@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 import aiohttp
 
 from core import constants
+from core.error_notifier import ErrorNotifier
 from core.logger import get_logger
 from models.canvas import (
     CanvasAnnouncement,
@@ -59,6 +60,7 @@ class CanvasService:
         notifier=None,
         file_service=None,
         ai_service=None,
+        error_notifier: Optional[ErrorNotifier] = None,
         client: Optional[CanvasClient] = None,
     ):
         """Initialize CanvasService.
@@ -73,6 +75,7 @@ class CanvasService:
         self.notifier = notifier
         self.file_service = file_service
         self.ai_service = ai_service
+        self.error_notifier = error_notifier
         self.client: Optional[CanvasClient] = client
 
     # ---------- Top-level run ----------
@@ -87,7 +90,12 @@ class CanvasService:
             return
 
         async with aiohttp.ClientSession() as session:
-            self.client = CanvasClient(self.api_url, self.api_token, session)
+            self.client = CanvasClient(
+                self.api_url,
+                self.api_token,
+                session,
+                error_notifier=self.error_notifier,
+            )
             try:
                 await self._poll()
             finally:
@@ -107,7 +115,12 @@ class CanvasService:
         async with aiohttp.ClientSession() as session:
             # Reminders don't actually call Canvas, but having a session
             # ensures _send_reminder can use it for notifications uniformly.
-            self.client = CanvasClient(self.api_url, self.api_token, session)
+            self.client = CanvasClient(
+                self.api_url,
+                self.api_token,
+                session,
+                error_notifier=self.error_notifier,
+            )
             try:
                 await self._poll_reminders()
             finally:
@@ -237,30 +250,30 @@ class CanvasService:
     ) -> None:
         if not course_by_id:
             return
-        try:
-            announcements = await self.client.get_announcements(
-                list(course_by_id.keys())
-            )
-        except Exception as e:
-            logger.error(f"[CANVAS] get_announcements failed: {e}")
-            return
-
-        for ann in announcements:
-            course = course_by_id.get(ann.course_id)
-            if course is None:
+        for course in course_by_id.values():
+            try:
+                announcements = await self.client.get_announcements([course.id])
+            except Exception as e:
+                logger.error(
+                    f"[CANVAS] get_announcements failed for course {course.id}: {e}"
+                )
                 continue
-            ann.course_name = course.name
 
-            existing = self.repo.get_item(ann.id, "announcement")
-            if existing is not None:
-                # Refresh DB but do not re-notify on subsequent passes
+            for ann in announcements:
+                ann.course_name = course.name
+                if not ann.course_id:
+                    ann.course_id = course.id
+
+                existing = self.repo.get_item(ann.id, "announcement")
+                if existing is not None:
+                    # Refresh DB but do not re-notify on subsequent passes
+                    self._upsert_announcement(ann)
+                    continue
+
                 self._upsert_announcement(ann)
-                continue
-
-            self._upsert_announcement(ann)
-            await self._dispatch(
-                CanvasEvent(KIND_NEW_ANNOUNCEMENT, course, ann)
-            )
+                await self._dispatch(
+                    CanvasEvent(KIND_NEW_ANNOUNCEMENT, course, ann)
+                )
 
     def _upsert_announcement(self, item: CanvasAnnouncement) -> Dict[str, Any]:
         payload = {

@@ -7,11 +7,13 @@ Handles three concerns the rest of the integration shouldn't think about:
   hard 429 with Retry-After / 401 / 403 surfacing
 """
 import asyncio
+import json
 import re
 from typing import Any, Dict, List, Optional
 
 import aiohttp
 
+from core.error_notifier import ErrorNotifier, ErrorSeverity
 from core.exceptions import (
     CanvasAuthException,
     CanvasRateLimitException,
@@ -45,10 +47,16 @@ class CanvasClient:
         api_url: str,
         api_token: str,
         session: aiohttp.ClientSession,
+        error_notifier: Optional[ErrorNotifier] = None,
+        max_timeout_retries: int = 2,
+        retry_base_delay: float = 1.0,
     ):
         self.api_url = api_url.rstrip("/")
         self.api_token = api_token
         self.session = session
+        self.error_notifier = error_notifier
+        self.max_timeout_retries = max_timeout_retries
+        self.retry_base_delay = retry_base_delay
 
     # ---------- Public endpoints ----------
 
@@ -131,7 +139,35 @@ class CanvasClient:
         url: str,
         params: Any = None,
     ):
-        """Single Canvas request. Returns (json_body, next_url_or_None)."""
+        """Single Canvas request with timeout retry."""
+        last_timeout: Optional[BaseException] = None
+        for attempt in range(self.max_timeout_retries + 1):
+            try:
+                return await self._request_once(method, url, params=params)
+            except asyncio.TimeoutError as e:
+                last_timeout = e
+                if attempt >= self.max_timeout_retries:
+                    break
+                delay = self.retry_base_delay * (2**attempt)
+                logger.warning(
+                    f"[CANVAS] Request timed out for {url}. "
+                    f"Retrying in {delay:.1f}s "
+                    f"({attempt + 1}/{self.max_timeout_retries})."
+                )
+                await asyncio.sleep(delay)
+
+        raise NetworkException(
+            "Canvas request timed out",
+            details={"url": url, "attempts": self.max_timeout_retries + 1},
+        ) from last_timeout
+
+    async def _request_once(
+        self,
+        method: str,
+        url: str,
+        params: Any = None,
+    ):
+        """Single Canvas request attempt. Returns (json_body, next_url_or_None)."""
         headers = {
             "Authorization": f"Bearer {self.api_token}",
             "Accept": "application/json+canvas-string-ids, application/json",
@@ -147,8 +183,9 @@ class CanvasClient:
             ) as resp:
                 # 401 / 403 / 429 — explicit handling
                 if resp.status == 401:
+                    await self._notify_auth_failure(url, resp.status)
                     raise CanvasAuthException(
-                        "Canvas API token is invalid or expired (401)",
+                        "Canvas API token is invalid or expired (401). Check CANVAS_API_TOKEN.",
                         details={"url": url},
                     )
                 if resp.status == 403:
@@ -184,13 +221,51 @@ class CanvasClient:
                     await asyncio.sleep(self.LOW_QUOTA_SLEEP_SECONDS)
 
                 next_url = self._parse_next_link(resp.headers.get("Link", ""))
-                body = await resp.json()
+                body = await self._json_body(resp, url)
                 return body, next_url
 
+        except asyncio.TimeoutError:
+            raise
         except aiohttp.ClientError as e:
             raise NetworkException(
                 f"Canvas request failed: {e}", details={"url": url}
             ) from e
+
+    async def _json_body(self, resp: aiohttp.ClientResponse, url: str) -> Any:
+        """Decode JSON and surface Canvas maintenance/non-JSON pages clearly."""
+        content_type = resp.headers.get("Content-Type", "")
+        if "json" not in content_type.lower():
+            text = await resp.text()
+            raise NetworkException(
+                "Canvas API returned a non-JSON response",
+                details={
+                    "url": url,
+                    "content_type": content_type,
+                    "body": text[:300],
+                },
+            )
+
+        try:
+            return await resp.json(content_type=None)
+        except json.JSONDecodeError as e:
+            text = await resp.text()
+            raise NetworkException(
+                "Canvas API returned invalid JSON",
+                details={"url": url, "body": text[:300]},
+            ) from e
+
+    async def _notify_auth_failure(self, url: str, status: int) -> None:
+        """Notify operations when Canvas auth cannot continue."""
+        if self.error_notifier is None:
+            return
+        try:
+            await self.error_notifier.send_critical_error(
+                "Canvas API token is invalid or expired. Check CANVAS_API_TOKEN.",
+                context={"url": url, "status": status},
+                severity=ErrorSeverity.HIGH,
+            )
+        except Exception as e:
+            logger.error(f"[CANVAS] Failed to send auth failure alert: {e}")
 
     # ---------- Helpers ----------
 

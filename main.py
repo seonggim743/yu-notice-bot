@@ -39,7 +39,10 @@ from core.interfaces import INotificationService
 from services.scraper_service import ScraperService
 
 
-def _build_canvas_service(notification_service: INotificationService):
+def _build_canvas_service(
+    notification_service: INotificationService,
+    error_notifier: ErrorNotifier = None,
+):
     """Construct CanvasService when CANVAS_ENABLED is set; else return None."""
     if not settings.CANVAS_ENABLED:
         return None
@@ -56,6 +59,7 @@ def _build_canvas_service(notification_service: INotificationService):
         api_url=settings.CANVAS_API_URL,
         api_token=settings.CANVAS_API_TOKEN,
         notifier=notification_service,
+        error_notifier=error_notifier,
     )
 
 
@@ -98,6 +102,7 @@ class Bot:
                 init_mode=False, one is built from settings when
                 CANVAS_ENABLED is set.
         """
+        self.error_notifier = error_notifier or get_error_notifier()
         self.scraper = scraper or ScraperService(
             init_mode=init_mode,
             no_ai_mode=no_ai_mode,
@@ -105,8 +110,10 @@ class Bot:
         )
         self.canvas_service = canvas_service
         if self.canvas_service is None and not init_mode:
-            self.canvas_service = _build_canvas_service(notification_service)
-        self.error_notifier = error_notifier or get_error_notifier()
+            self.canvas_service = _build_canvas_service(
+                notification_service,
+                error_notifier=self.error_notifier,
+            )
         self.running = True
         self.error_count = 0
         self.MAX_CONSECUTIVE_ERRORS = 5
