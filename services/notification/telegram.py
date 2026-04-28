@@ -152,7 +152,7 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
         session: aiohttp.ClientSession,
         text: str,
         topic_id: Optional[int] = None,
-        preview_images: Optional[List[Dict[str, Any]]] = None,
+        attachment_payloads: Optional[List[Dict[str, Any]]] = None,
         use_html: bool = False,
     ) -> Optional[int]:
         """Send a Canvas notification. Returns Telegram message_id.
@@ -160,6 +160,15 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
         When `use_html` is True the message is sent with parse_mode="HTML"
         so <b>/<blockquote> tags render. Caller must have escaped any
         user-supplied content (canvas_formatter handles this).
+
+        For each entry in `attachment_payloads` we send:
+        1. preview image batches (≤10 photos per Telegram media group)
+           with caption "📑 [미리보기] {filename} (N/M)"
+        2. the original file as a sendDocument reply with caption
+           "📎 [원본] {filename} ({size})"
+
+        All extra messages are sent as replies to the main message so
+        Telegram threads them visually.
         """
         if not text:
             return None
@@ -173,26 +182,35 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
         if topic_id:
             payload["message_thread_id"] = topic_id
         result = await self._send_telegram_api(session, "sendMessage", payload=payload)
-        if result and result.get("ok"):
-            message_id = result.get("result", {}).get("message_id")
-            if preview_images and message_id:
-                await self._send_canvas_preview_images(
-                    session, preview_images, topic_id, message_id
-                )
-            return message_id
-        return None
+        if not (result and result.get("ok")):
+            return None
 
-    async def _send_canvas_preview_images(
+        message_id = result.get("result", {}).get("message_id")
+        if attachment_payloads and message_id:
+            for entry in attachment_payloads:
+                await self._send_canvas_attachment_entry(
+                    session, entry, topic_id, message_id
+                )
+        return message_id
+
+    async def _send_canvas_attachment_entry(
         self,
         session: aiohttp.ClientSession,
-        preview_images: List[Dict[str, Any]],
+        entry: Dict[str, Any],
         topic_id: Optional[int],
         reply_to_message_id: int,
     ) -> None:
-        """Send Canvas preview images as Telegram media groups."""
-        for batch in [
-            preview_images[i : i + 10] for i in range(0, len(preview_images), 10)
-        ]:
+        """Send one source-file's previews + original file as replies."""
+        source_filename = entry.get("source_filename") or "첨부파일"
+        previews = entry.get("preview_images") or []
+        original_data = entry.get("original_data")
+        source_size = int(entry.get("source_size") or 0)
+
+        # 1. Preview chunks (Telegram media group max 10).
+        chunks = [previews[i : i + 10] for i in range(0, len(previews), 10)] or []
+        total_chunks = len(chunks)
+        for chunk_idx, chunk in enumerate(chunks):
+            caption = self._preview_caption(source_filename, chunk_idx, total_chunks)
             form = MultipartWriter("form-data")
             self._add_text_part(form, "chat_id", self.chat_id)
             self._add_text_part(form, "reply_to_message_id", reply_to_message_id)
@@ -200,18 +218,68 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                 self._add_text_part(form, "message_thread_id", topic_id)
 
             media = []
-            for idx, image in enumerate(batch):
+            for idx, image in enumerate(chunk):
                 field_name = f"preview_{idx}"
-                media.append({"type": "photo", "media": f"attach://{field_name}"})
+                item = {"type": "photo", "media": f"attach://{field_name}"}
+                # Telegram puts the album-level caption on the first item.
+                if idx == 0:
+                    item["caption"] = caption
+                media.append(item)
                 self._add_file_part(
                     form,
                     field_name,
                     image["data"],
-                    image.get("filename") or f"canvas_preview_{idx + 1}.jpg",
+                    image.get("filename") or f"preview_{idx + 1}.jpg",
                     content_type="image/jpeg",
                 )
             self._add_text_part(form, "media", json.dumps(media))
             await self._send_telegram_api(session, "sendMediaGroup", data=form)
+
+        # 2. Original file (skip if missing or larger than Telegram's limit).
+        if original_data and source_size <= constants.TELEGRAM_FILE_SIZE_LIMIT:
+            doc_form = MultipartWriter("form-data")
+            self._add_text_part(doc_form, "chat_id", self.chat_id)
+            self._add_text_part(doc_form, "reply_to_message_id", reply_to_message_id)
+            if topic_id:
+                self._add_text_part(doc_form, "message_thread_id", topic_id)
+            self._add_text_part(
+                doc_form,
+                "caption",
+                self._original_caption(source_filename, source_size),
+            )
+            self._add_file_part(
+                doc_form,
+                "document",
+                original_data,
+                source_filename,
+            )
+            await self._send_telegram_api(session, "sendDocument", data=doc_form)
+        elif original_data:
+            logger.info(
+                f"[NOTIFIER] Skipping original-file forward for {source_filename}: "
+                f"{source_size} bytes exceeds Telegram limit "
+                f"{constants.TELEGRAM_FILE_SIZE_LIMIT}"
+            )
+
+    @staticmethod
+    def _preview_caption(filename: str, chunk_idx: int, total_chunks: int) -> str:
+        suffix = f" ({chunk_idx + 1}/{total_chunks})" if total_chunks > 1 else ""
+        return f"📑 [미리보기] {filename}{suffix}"
+
+    @staticmethod
+    def _original_caption(filename: str, size_bytes: int) -> str:
+        return f"📎 [원본] {filename} ({_format_byte_size(size_bytes)})"
+
+
+def _format_byte_size(size_bytes: int) -> str:
+    """Render a byte count as 1.2KB / 3.4MB. Module-level so the static
+    method can call it without a name-resolution dance."""
+    if size_bytes < 1024:
+        return f"{size_bytes}B"
+    kb = size_bytes / 1024
+    if kb < 1024:
+        return f"{kb:.0f}KB"
+    return f"{kb / 1024:.1f}MB"
 
     async def send_telegram(
         self,
@@ -516,6 +584,7 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                                 for i in range(0, len(att.preview_images), 10)
                             ]
 
+                            total_chunks = len(preview_chunks)
                             for chunk_idx, chunk in enumerate(preview_chunks):
                                 media = []
                                 form = MultipartWriter("form-data")
@@ -535,9 +604,16 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                                         "type": "photo",
                                         "media": f"attach://{field_name}",
                                     }
-                                    # Caption only on the very first image of the first chunk
-                                    if chunk_idx == 0 and idx == 0:
-                                        media_item["caption"] = f"📑 [미리보기] {att.name}"
+                                    # Per-chunk caption with (N/M) suffix when split.
+                                    if idx == 0:
+                                        suffix = (
+                                            f" ({chunk_idx + 1}/{total_chunks})"
+                                            if total_chunks > 1
+                                            else ""
+                                        )
+                                        media_item["caption"] = (
+                                            f"📑 [미리보기] {att.name}{suffix}"
+                                        )
                                         media_item["parse_mode"] = "HTML"
                                     media.append(media_item)
 

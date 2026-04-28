@@ -475,13 +475,13 @@ class CanvasService:
         if not text_plain or self.notifier is None:
             return
         try:
-            preview_images = await self._build_preview_images(event.item)
+            attachment_payloads = await self._build_attachment_payloads(event.item)
             await self.notifier.send_canvas_message(
                 self.client.session,
                 text_plain,
                 text_html=text_html,
                 event_kind=event.kind,
-                preview_images=preview_images,
+                attachment_payloads=attachment_payloads,
             )
         except Exception as e:
             logger.error(f"[CANVAS] notification send failed: {e}")
@@ -508,17 +508,35 @@ class CanvasService:
 
     # ---------- Attachments ----------
 
-    async def _build_preview_images(self, item: Any) -> List[Dict[str, Any]]:
-        """Download Canvas attachments and generate preview image payloads."""
+    async def _build_attachment_payloads(
+        self, item: Any
+    ) -> List[Dict[str, Any]]:
+        """Download Canvas attachments and build per-file payloads.
+
+        Each payload entry:
+            {
+                "source_filename": str,   # human-readable name shown in captions
+                "source_size": int,       # bytes; used for "(150KB)" labels
+                "original_data": bytes,   # raw file for the [원본] reply
+                "preview_images": [
+                    {"filename": str, "data": bytes}, ...
+                ],
+            }
+
+        The grouping (one entry per source file) lets the notifier add a
+        "📑 [미리보기] {name} (N/M)" caption per chunk and a separate
+        "📎 [원본] {name} (size)" reply for the original file.
+        """
         attachments = getattr(item, "attachments", None) or []
         if not attachments or self.file_service is None or self.client is None:
             return []
 
-        preview_images: List[Dict[str, Any]] = []
+        payloads: List[Dict[str, Any]] = []
+        total_previews = 0
         max_previews = max(1, settings.MAX_PREVIEWS)
 
         for att in attachments:
-            if len(preview_images) >= max_previews:
+            if total_previews >= max_previews:
                 break
             file_data = await self._download_canvas_attachment(att)
             if not file_data:
@@ -527,7 +545,10 @@ class CanvasService:
             filename = self._canvas_attachment_filename(att)
             content_type = (att.content_type or "").lower()
 
-            if content_type.startswith("image/") or self.file_service.is_image(filename):
+            preview_images: List[Dict[str, Any]] = []
+            if content_type.startswith("image/") or self.file_service.is_image(
+                filename
+            ):
                 preview_images.append(
                     {
                         "filename": self._image_preview_filename(filename),
@@ -536,25 +557,34 @@ class CanvasService:
                         ),
                     }
                 )
-                continue
-
-            generated = self.file_service.generate_preview_images(
-                file_data,
-                filename,
-                max_pages=max_previews - len(preview_images),
-            )
-            stem = os.path.splitext(filename)[0] or "canvas_preview"
-            for idx, image_data in enumerate(generated):
-                preview_images.append(
-                    {
-                        "filename": f"{stem}_preview_{idx + 1}.jpg",
-                        "data": image_data,
-                    }
+            else:
+                generated = self.file_service.generate_preview_images(
+                    file_data,
+                    filename,
+                    max_pages=max_previews - total_previews,
                 )
-                if len(preview_images) >= max_previews:
-                    break
+                stem = os.path.splitext(filename)[0] or "canvas_preview"
+                for idx, image_data in enumerate(generated):
+                    preview_images.append(
+                        {
+                            "filename": f"{stem}_preview_{idx + 1}.jpg",
+                            "data": image_data,
+                        }
+                    )
+                    if total_previews + len(preview_images) >= max_previews:
+                        break
 
-        return preview_images
+            total_previews += len(preview_images)
+            payloads.append(
+                {
+                    "source_filename": filename,
+                    "source_size": len(file_data),
+                    "original_data": file_data,
+                    "preview_images": preview_images,
+                }
+            )
+
+        return payloads
 
     async def _download_canvas_attachment(
         self, attachment: CanvasAttachment

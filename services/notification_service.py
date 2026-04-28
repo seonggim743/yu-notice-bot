@@ -154,7 +154,7 @@ class NotificationService:
         text_html: Optional[str] = None,
         routing_key: str = "canvas",
         event_kind: Optional[str] = None,
-        preview_images: Optional[List[Dict[str, Any]]] = None,
+        attachment_payloads: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Broadcast a Canvas notification to all enabled channels.
 
@@ -163,6 +163,9 @@ class NotificationService:
         - `text_html` is the Telegram parse_mode="HTML" rendering with
           <b>/<blockquote> markup; pass it whenever the channel can render
           rich text.
+        - `attachment_payloads` is the per-file payload list produced by
+          CanvasService._build_attachment_payloads. Each notifier handles
+          its own preview-batch + original-file reply chain.
 
         Routing:
         - Telegram: settings.TELEGRAM_TOPIC_MAP[routing_key] for topic id
@@ -178,7 +181,7 @@ class NotificationService:
                     session,
                     text_html or text,
                     topic_id=topic_id,
-                    preview_images=preview_images,
+                    attachment_payloads=attachment_payloads,
                     use_html=bool(text_html),
                 )
             except Exception as e:
@@ -201,7 +204,7 @@ class NotificationService:
                         text,
                         channel_id=channel_id,
                         event_kind=event_kind,
-                        preview_images=preview_images,
+                        attachment_payloads=attachment_payloads,
                     )
                 except Exception as e:
                     logger.error(f"[NOTIFICATION] Discord canvas send failed: {e}")

@@ -28,6 +28,17 @@ _DISCORD_DIFF_CHUNK_LIMIT = constants.DISCORD_MAX_EMBED_LENGTH - 74
 logger = get_logger(__name__)
 
 
+def _format_byte_size_discord(size_bytes: int) -> str:
+    """Render a byte count as 1.2KB / 3.4MB. Mirrors telegram._format_byte_size
+    so caption text stays consistent across channels."""
+    if size_bytes < 1024:
+        return f"{size_bytes}B"
+    kb = size_bytes / 1024
+    if kb < 1024:
+        return f"{kb:.0f}KB"
+    return f"{kb / 1024:.1f}MB"
+
+
 class DiscordNotifier(BaseNotifier, NotificationChannel):
     """
     Handles all Discord-specific notification logic.
@@ -81,9 +92,16 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
         text: str,
         channel_id: Optional[str] = None,
         event_kind: Optional[str] = None,
-        preview_images: Optional[List[Dict[str, Any]]] = None,
+        attachment_payloads: Optional[List[Dict[str, Any]]] = None,
     ) -> Optional[str]:
-        """Send a Canvas notification embed. Returns Discord message id."""
+        """Send a Canvas notification embed. Returns Discord message id.
+
+        For each entry in `attachment_payloads`:
+        1. preview image batches (≤10 files per Discord message) sent as
+           replies with content "📑 [미리보기] {filename} (N/M)"
+        2. original file sent as a reply with content
+           "📎 [원본] {filename} ({size})"
+        """
         if not text or not channel_id:
             return None
         url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
@@ -105,24 +123,102 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
             ]
         }
         async with self._discord_request(session, "POST", url, headers=json_headers, json=payload) as resp:
-            if resp.status in (200, 201):
-                data = await resp.json()
-                message_id = data.get("id")
-                if preview_images and message_id:
-                    await self._send_discord_reply(
-                        session,
-                        channel_id,
-                        preview_images,
-                        auth_headers,
-                        is_thread=False,
-                        reply_to_id=message_id,
-                    )
-                return message_id
-            logger.error(
-                f"[NOTIFIER] Discord canvas send failed (status {resp.status}): "
-                f"{await resp.text()}"
+            if resp.status not in (200, 201):
+                logger.error(
+                    f"[NOTIFIER] Discord canvas send failed (status {resp.status}): "
+                    f"{await resp.text()}"
+                )
+                return None
+            data = await resp.json()
+            message_id = data.get("id")
+
+        if attachment_payloads and message_id:
+            for entry in attachment_payloads:
+                await self._send_canvas_attachment_entry(
+                    session, channel_id, auth_headers, entry, message_id
+                )
+        return message_id
+
+    async def _send_canvas_attachment_entry(
+        self,
+        session: aiohttp.ClientSession,
+        channel_id: str,
+        auth_headers: Dict[str, str],
+        entry: Dict[str, Any],
+        reply_to_id: str,
+    ) -> None:
+        """Send one source-file's previews + original file as Discord replies."""
+        source_filename = entry.get("source_filename") or "첨부파일"
+        previews = entry.get("preview_images") or []
+        original_data = entry.get("original_data")
+        source_size = int(entry.get("source_size") or 0)
+
+        url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+
+        # 1. Preview chunks (Discord allows up to 10 files per message).
+        chunks = [previews[i : i + 10] for i in range(0, len(previews), 10)] or []
+        total_chunks = len(chunks)
+        for chunk_idx, chunk in enumerate(chunks):
+            content = self._preview_caption(source_filename, chunk_idx, total_chunks)
+            form = MultipartWriter("form-data")
+            payload = {
+                "content": content,
+                "message_reference": {"message_id": reply_to_id},
+            }
+            self._add_text_part(form, "payload_json", json.dumps(payload))
+            for idx, image in enumerate(chunk):
+                self._add_file_part(
+                    form,
+                    f"files[{idx}]",
+                    image["data"],
+                    image.get("filename") or f"preview_{idx + 1}.jpg",
+                )
+            try:
+                async with self._discord_request(
+                    session, "POST", url, headers=auth_headers, data=form
+                ) as resp:
+                    if resp.status not in (200, 201, 204):
+                        logger.error(
+                            f"[NOTIFIER] Discord preview send failed: {await resp.text()}"
+                        )
+            except Exception as e:
+                logger.error(f"[NOTIFIER] Discord preview send error: {e}")
+
+        # 2. Original file (skip if missing or larger than Discord's limit).
+        if original_data and source_size <= constants.DISCORD_FILE_SIZE_LIMIT:
+            content = self._original_caption(source_filename, source_size)
+            form = MultipartWriter("form-data")
+            payload = {
+                "content": content,
+                "message_reference": {"message_id": reply_to_id},
+            }
+            self._add_text_part(form, "payload_json", json.dumps(payload))
+            self._add_file_part(form, "files[0]", original_data, source_filename)
+            try:
+                async with self._discord_request(
+                    session, "POST", url, headers=auth_headers, data=form
+                ) as resp:
+                    if resp.status not in (200, 201, 204):
+                        logger.error(
+                            f"[NOTIFIER] Discord original-file send failed: {await resp.text()}"
+                        )
+            except Exception as e:
+                logger.error(f"[NOTIFIER] Discord original-file send error: {e}")
+        elif original_data:
+            logger.info(
+                f"[NOTIFIER] Skipping original-file forward for {source_filename}: "
+                f"{source_size} bytes exceeds Discord limit "
+                f"{constants.DISCORD_FILE_SIZE_LIMIT}"
             )
-            return None
+
+    @staticmethod
+    def _preview_caption(filename: str, chunk_idx: int, total_chunks: int) -> str:
+        suffix = f" ({chunk_idx + 1}/{total_chunks})" if total_chunks > 1 else ""
+        return f"📑 [미리보기] {filename}{suffix}"
+
+    @staticmethod
+    def _original_caption(filename: str, size_bytes: int) -> str:
+        return f"📎 [원본] {filename} ({_format_byte_size_discord(size_bytes)})"
 
     @staticmethod
     def _canvas_embed_color(event_kind: Optional[str]) -> int:
