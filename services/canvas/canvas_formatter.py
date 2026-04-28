@@ -1,10 +1,20 @@
-"""Plain-text message formatters for Canvas notifications.
+"""Message formatters for Canvas notifications.
 
-Each format_* function returns a single string suitable for both Telegram
-(no parse_mode) and Discord (no markdown). Format follows the spec
-agreed in the project context — emoji + bracketed course name + body
-+ canvas URL on the last line.
+Each `format_*` function returns a single multi-line string. The `html`
+flag controls escaping and tag wrapping:
+
+- `html=True`  → Telegram parse_mode="HTML" output. Course/title are wrapped
+                 in <b>, body preview in <blockquote>, and any user-supplied
+                 strings go through html.escape so an injected `<` cannot
+                 break the parse.
+- `html=False` → plain text suitable for Discord embed.description.
+
+Body preview length defaults differ per platform: 500 chars for HTML
+(Telegram), 1000 chars for plain (Discord). Callers may override.
 """
+from __future__ import annotations
+
+import html as html_lib
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -13,30 +23,36 @@ from models.canvas import CanvasAnnouncement, CanvasAssignment, CanvasSubmission
 
 _KOREAN_WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]
 
+# Platform-specific defaults for body preview length.
+DEFAULT_TELEGRAM_BODY_LIMIT = 500
+DEFAULT_DISCORD_BODY_LIMIT = 1000
 
-def _strip_html(html: Optional[str], limit: int = 240) -> str:
-    """Crude tag strip + whitespace squash + length cap."""
+
+# ---------- Low-level helpers ----------
+
+
+def _strip_html(html: Optional[str], limit: int = 500) -> str:
+    """Remove tags + collapse whitespace + cap length (with ellipsis)."""
     if not html:
         return ""
-    # Remove script/style blocks first so their bodies don't leak through.
     text = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"</p>\s*<p>", "\n\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", "", text)
     text = re.sub(r"&nbsp;", " ", text)
     text = re.sub(r"&amp;", "&", text)
     text = re.sub(r"&lt;", "<", text)
     text = re.sub(r"&gt;", ">", text)
     text = re.sub(r"&quot;", '"', text)
-    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
     if len(text) > limit:
         text = text[: limit - 1].rstrip() + "…"
     return text
 
 
 def _format_kst_datetime(iso: Optional[str]) -> Optional[str]:
-    """Render an ISO datetime string as 'M/D(요일) H:MM' in KST.
-
-    Returns None for missing input.
-    """
+    """Render an ISO datetime string as 'M/D(요일) H:MM' in KST."""
     if not iso:
         return None
     try:
@@ -63,91 +79,160 @@ def _course_label(course_name: str) -> str:
     return course_name or "강의"
 
 
-def _attachment_lines(attachments: List[Any]) -> List[str]:
+def _e(text: str, html: bool) -> str:
+    """Escape user-supplied text for HTML; leave plain mode untouched."""
+    return html_lib.escape(text, quote=False) if html else text
+
+
+def _b(text: str, html: bool) -> str:
+    """Bold wrap for HTML; identity for plain."""
+    return f"<b>{_e(text, True)}</b>" if html else text
+
+
+def _blockquote(text: str, html: bool) -> str:
+    """Blockquote wrap for HTML; plain returns the text as-is."""
+    if not text:
+        return ""
+    if html:
+        # Preserve newlines inside blockquote — Telegram renders them.
+        escaped = _e(text, True)
+        return f"<blockquote>{escaped}</blockquote>"
+    return text
+
+
+def _attachment_lines(attachments: List[Any], html: bool) -> List[str]:
     lines = []
     for att in attachments[:3]:
         name = getattr(att, "display_name", "") or "첨부파일"
         size = _format_size(getattr(att, "size", 0) or 0)
-        lines.append(f"📎 첨부: {name} ({size})")
+        lines.append(f"📎 첨부: {_e(name, html)} ({size})")
     return lines
+
+
+def _link_line(url: str, html: bool) -> str:
+    """Final '🔗 url' line; in HTML mode this is non-clickable text per
+    spec example."""
+    if not url:
+        return ""
+    return f"🔗 {_e(url, html)}"
+
+
+def _resolve_body_limit(html: bool, override: Optional[int]) -> int:
+    if override is not None:
+        return override
+    return DEFAULT_TELEGRAM_BODY_LIMIT if html else DEFAULT_DISCORD_BODY_LIMIT
 
 
 # ---------- Public format functions ----------
 
 
-def format_new_assignment(item: CanvasAssignment) -> str:
+def format_new_assignment(
+    item: CanvasAssignment,
+    html: bool = False,
+    body_limit: Optional[int] = None,
+) -> str:
     course = _course_label(item.course_name)
-    lines = [f"📝 [{course}] 새 과제", item.name]
+    limit = _resolve_body_limit(html, body_limit)
 
-    body = _strip_html(item.description, limit=140)
+    lines = [f"📝 {_b(f'[{course}] 새 과제', html)}", _b(item.name, html)]
+
+    body = _strip_html(item.description, limit=limit)
     if body:
-        lines[-1] = f"{item.name} — {body}"
+        lines.append(_blockquote(body, html))
 
     meta = []
     due = _format_kst_datetime(item.due_at)
     if due:
-        meta.append(f"마감: {due}")
+        meta.append(f"⏰ 마감: {due}")
     if item.points_possible is not None:
-        meta.append(f"배점: {int(item.points_possible) if item.points_possible.is_integer() else item.points_possible}점")
+        meta.append(f"💯 배점: {_num(item.points_possible)}점")
     if meta:
         lines.append(" | ".join(meta))
 
     if item.submission_types:
         readable = ", ".join(_translate_submission_types(item.submission_types))
-        lines.append(f"제출방식: {readable}")
+        lines.append(f"📎 제출: {_e(readable, html)}")
 
-    lines.extend(_attachment_lines(item.attachments))
-    if item.html_url:
-        lines.append(f"→ {item.html_url}")
+    lines.extend(_attachment_lines(item.attachments, html))
+
+    link = _link_line(item.html_url, html)
+    if link:
+        lines.append(link)
     return "\n".join(lines)
 
 
 def format_modified_assignment(
-    item: CanvasAssignment, changes: Dict[str, Any]
+    item: CanvasAssignment,
+    changes: Dict[str, Any],
+    html: bool = False,
+    body_limit: Optional[int] = None,
 ) -> str:
     course = _course_label(item.course_name)
-    lines = [f"✏️ [{course}] 과제 수정"]
+    lines = [f"✏️ {_b(f'[{course}] 과제 수정', html)}", _b(item.name, html)]
 
     if "due_at" in changes:
-        old = _format_kst_datetime(changes["due_at"].get("old"))
-        new = _format_kst_datetime(changes["due_at"].get("new"))
-        lines.append(f"{item.name} — 마감일 변경: {old or '없음'} → {new or '없음'}")
-    elif "title" in changes:
+        old = _format_kst_datetime(changes["due_at"].get("old")) or "없음"
+        new = _format_kst_datetime(changes["due_at"].get("new")) or "없음"
+        lines.append(f"⏰ 마감: {_e(old, html)} → {_e(new, html)}")
+    if "points_possible" in changes:
+        old = _format_points(changes["points_possible"].get("old"))
+        new = _format_points(changes["points_possible"].get("new"))
+        lines.append(f"💯 배점: {_e(old, html)} → {_e(new, html)}")
+    if "submission_types" in changes:
+        old = _format_submission_types(changes["submission_types"].get("old"))
+        new = _format_submission_types(changes["submission_types"].get("new"))
+        lines.append(f"📎 제출: {_e(old, html)} → {_e(new, html)}")
+    if "title" in changes:
         old = changes["title"].get("old") or "-"
-        lines.append(f"{item.name} — 제목 변경 (이전: {old})")
-    elif "body" in changes:
-        lines.append(f"{item.name} — 본문 수정됨")
-    else:
-        lines.append(item.name)
+        new = changes["title"].get("new") or "-"
+        lines.append(f"📝 제목: {_e(str(old), html)} → {_e(str(new), html)}")
+    if "body" in changes:
+        summary = changes["body"].get("summary") or "본문이 수정되었습니다."
+        lines.append(f"본문: {_e(summary, html)}")
 
-    if item.html_url:
-        lines.append(f"→ {item.html_url}")
+    if len(lines) == 2:
+        lines.append(_e("변경된 항목이 있습니다.", html))
+
+    link = _link_line(item.html_url, html)
+    if link:
+        lines.append(link)
     return "\n".join(lines)
 
 
-def format_unsubmitted_warning(item: CanvasAssignment) -> str:
+def format_unsubmitted_warning(
+    item: CanvasAssignment, html: bool = False
+) -> str:
     course = _course_label(item.course_name)
-    lines = [f"⚠️ [{course}] 미제출 과제"]
+    lines = [f"⚠️ {_b(f'[{course}] 미제출 과제', html)}", _b(item.name, html)]
 
     due = _format_kst_datetime(item.due_at) or "미정"
-    lines.append(f"{item.name} — 마감 지남 ({due})")
+    lines.append(f"⏰ 마감 지남 ({_e(due, html)})")
 
-    if item.html_url:
-        lines.append(f"→ {item.html_url}")
+    link = _link_line(item.html_url, html)
+    if link:
+        lines.append(link)
     return "\n".join(lines)
 
 
-def format_new_announcement(item: CanvasAnnouncement) -> str:
+def format_new_announcement(
+    item: CanvasAnnouncement,
+    html: bool = False,
+    body_limit: Optional[int] = None,
+) -> str:
     course = _course_label(item.course_name)
-    lines = [f"📢 [{course}] 강의 공지", item.title]
+    limit = _resolve_body_limit(html, body_limit)
 
-    body = _strip_html(item.message, limit=240)
+    lines = [f"📢 {_b(f'[{course}] 강의 공지', html)}", _b(item.title, html)]
+
+    body = _strip_html(item.message, limit=limit)
     if body:
-        lines.append(body)
+        lines.append(_blockquote(body, html))
 
-    lines.extend(_attachment_lines(item.attachments))
-    if item.html_url:
-        lines.append(f"→ {item.html_url}")
+    lines.extend(_attachment_lines(item.attachments, html))
+
+    link = _link_line(item.html_url, html)
+    if link:
+        lines.append(link)
     return "\n".join(lines)
 
 
@@ -155,11 +240,16 @@ def format_grade_notification(
     submission: CanvasSubmission,
     assignment: Optional[CanvasAssignment] = None,
     course_name: str = "",
+    html: bool = False,
 ) -> str:
-    course = _course_label(course_name or (assignment.course_name if assignment else ""))
-    lines = [f"📊 [{course}] 성적 등록"]
+    course = _course_label(
+        course_name or (assignment.course_name if assignment else "")
+    )
+    lines = [f"📊 {_b(f'[{course}] 성적 등록', html)}"]
 
     name = assignment.name if assignment else f"과제 #{submission.assignment_id}"
+    lines.append(_b(name, html))
+
     points = assignment.points_possible if assignment else None
     if submission.score is not None and points is not None:
         score_str = f"{_num(submission.score)}/{_num(points)}점"
@@ -169,15 +259,17 @@ def format_grade_notification(
         score_str = f"{_num(submission.score)}점"
     else:
         score_str = "채점 완료"
-    lines.append(f"{name} — {score_str}")
+    lines.append(f"💯 {_e(score_str, html)}")
 
     if assignment and assignment.html_url:
-        lines.append(f"→ {assignment.html_url}")
+        lines.append(_link_line(assignment.html_url, html))
     return "\n".join(lines)
 
 
 def format_deadline_reminder(
-    item: CanvasAssignment, hours_left: int
+    item: CanvasAssignment,
+    hours_left: int,
+    html: bool = False,
 ) -> str:
     course = _course_label(item.course_name)
     if hours_left <= 24:
@@ -185,23 +277,28 @@ def format_deadline_reminder(
     else:
         days = max(1, round(hours_left / 24))
         label = f"D-{days}"
-    lines = [f"⏰ [{course}] 마감 {label}"]
+    lines = [f"⏰ {_b(f'[{course}] 마감 {label}', html)}", _b(item.name, html)]
 
     due = _format_kst_datetime(item.due_at) or "미정"
-    if hours_left <= 24:
-        lines.append(f"{item.name} — 내일 {due.split(' ', 1)[-1]} 마감" if hours_left > 12 else f"{item.name} — {due} 마감")
+    if hours_left <= 24 and hours_left > 12:
+        # "내일 23:59 마감"
+        time_part = due.split(" ", 1)[-1]
+        lines.append(f"⏰ 내일 {_e(time_part, html)} 마감")
     else:
-        lines.append(f"{item.name} — {due} 마감")
+        lines.append(f"⏰ {_e(due, html)} 마감")
 
-    status = "미제출 ⚠️" if not item.has_submitted_submissions else "제출 완료"
-    lines.append(f"제출 상태: {status}")
+    if not item.has_submitted_submissions:
+        lines.append("제출 상태: 미제출 ⚠️")
+    else:
+        lines.append("제출 상태: 제출 완료")
 
-    if item.html_url:
-        lines.append(f"→ {item.html_url}")
+    link = _link_line(item.html_url, html)
+    if link:
+        lines.append(link)
     return "\n".join(lines)
 
 
-# ---------- Helpers ----------
+# ---------- Misc helpers ----------
 
 
 def _num(value) -> str:
@@ -244,37 +341,3 @@ def _format_submission_types(value: Any) -> str:
     if isinstance(value, str):
         value = [value]
     return ", ".join(_translate_submission_types(list(value)))
-
-
-def format_modified_assignment(
-    item: CanvasAssignment, changes: Dict[str, Any]
-) -> str:
-    course = _course_label(item.course_name)
-    lines = ["✏️ [{}] 과제 수정".format(course), item.name]
-
-    if "due_at" in changes:
-        old = _format_kst_datetime(changes["due_at"].get("old")) or "없음"
-        new = _format_kst_datetime(changes["due_at"].get("new")) or "없음"
-        lines.append(f"마감: {old} → {new}")
-    if "points_possible" in changes:
-        old = _format_points(changes["points_possible"].get("old"))
-        new = _format_points(changes["points_possible"].get("new"))
-        lines.append(f"배점: {old} → {new}")
-    if "submission_types" in changes:
-        old = _format_submission_types(changes["submission_types"].get("old"))
-        new = _format_submission_types(changes["submission_types"].get("new"))
-        lines.append(f"제출: {old} → {new}")
-    if "title" in changes:
-        old = changes["title"].get("old") or "-"
-        new = changes["title"].get("new") or "-"
-        lines.append(f"제목: {old} → {new}")
-    if "body" in changes:
-        summary = changes["body"].get("summary") or "본문이 수정되었습니다."
-        lines.append(f"본문: {summary}")
-
-    if len(lines) == 2:
-        lines.append("변경된 항목이 있습니다.")
-
-    if item.html_url:
-        lines.append(f"→ {item.html_url}")
-    return "\n".join(lines)

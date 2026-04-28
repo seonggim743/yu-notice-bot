@@ -151,19 +151,22 @@ class NotificationService:
         self,
         session: aiohttp.ClientSession,
         text: str,
+        text_html: Optional[str] = None,
         routing_key: str = "canvas",
         event_kind: Optional[str] = None,
         preview_images: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """Broadcast a Canvas notification text to all enabled channels.
+        """Broadcast a Canvas notification to all enabled channels.
+
+        - `text` is the plain-text rendering used by Discord embed bodies
+          and as the Telegram fallback if `text_html` isn't provided.
+        - `text_html` is the Telegram parse_mode="HTML" rendering with
+          <b>/<blockquote> markup; pass it whenever the channel can render
+          rich text.
 
         Routing:
         - Telegram: settings.TELEGRAM_TOPIC_MAP[routing_key] for topic id
         - Discord:  settings.DISCORD_CHANNEL_MAP[routing_key] for channel id
-
-        Channels with no mapping for `routing_key` are skipped (Discord
-        especially needs an explicit channel id; Telegram falls back to
-        the default chat without a topic).
         """
         results: Dict[str, Any] = {}
 
@@ -173,9 +176,10 @@ class NotificationService:
             try:
                 results["telegram"] = await telegram.send_canvas_message(
                     session,
-                    text,
+                    text_html or text,
                     topic_id=topic_id,
                     preview_images=preview_images,
+                    use_html=bool(text_html),
                 )
             except Exception as e:
                 logger.error(f"[NOTIFICATION] Telegram canvas send failed: {e}")

@@ -127,15 +127,17 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
     @staticmethod
     def _canvas_embed_color(event_kind: Optional[str]) -> int:
         """Map Canvas event kind to Discord embed color."""
-        if event_kind in {"new_assignment", "assignment_modified", "due_date_changed"}:
-            return 0x3B82F6
+        if event_kind == "new_assignment":
+            return 0x3498DB  # blue
+        if event_kind in {"assignment_modified", "due_date_changed"}:
+            return 0xE67E22  # orange
         if event_kind == "new_announcement":
-            return 0x22C55E
+            return 0x2ECC71  # green
         if event_kind == "grade_registered":
-            return 0xF97316
+            return 0x9B59B6  # purple
         if event_kind in {"deadline_reminder", "unsubmitted_warning"}:
-            return 0xEF4444
-        return 0x64748B
+            return 0xE74C3C  # red
+        return 0x95A5A6  # neutral grey
 
     @staticmethod
     def _truncate_canvas_description(text: str) -> str:

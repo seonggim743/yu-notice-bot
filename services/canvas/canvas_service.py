@@ -8,6 +8,7 @@ configured in core.constants.CANVAS_REMINDER_HOURS.
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -207,24 +208,36 @@ class CanvasService:
     async def _diff_assignment(
         self, existing: Dict[str, Any], item: CanvasAssignment
     ) -> Dict[str, Any]:
-        """Return per-field {old, new} for fields that materially changed."""
+        """Return per-field {old, new} for fields that materially changed.
+
+        Short-circuits when Canvas's own canvas_updated_at hasn't moved —
+        Canvas bumps that timestamp on every meaningful edit, so when it
+        is unchanged we know nothing material changed regardless of what
+        the volatile body URLs / due-at string formatting say.
+        """
         changes: Dict[str, Any] = {}
+
+        if self._canvas_updated_unchanged(
+            existing.get("canvas_updated_at"), item.updated_at
+        ):
+            return changes
 
         if (existing.get("title") or "") != (item.name or ""):
             changes["title"] = {"old": existing.get("title"), "new": item.name}
 
-        old_body = existing.get("body") or ""
-        new_body = item.description or ""
-        if old_body != new_body:
+        old_body_norm = self._normalize_body(existing.get("body"))
+        new_body_norm = self._normalize_body(item.description)
+        if old_body_norm != new_body_norm:
             changes["body"] = {
-                "old": old_body,
-                "new": new_body,
-                "summary": await self._summarize_body_diff(old_body, new_body),
+                "old": existing.get("body") or "",
+                "new": item.description or "",
+                "summary": await self._summarize_body_diff(
+                    existing.get("body") or "", item.description or ""
+                ),
             }
 
-        old_due = existing.get("due_at")
-        if old_due != item.due_at and (old_due or item.due_at):
-            changes["due_at"] = {"old": old_due, "new": item.due_at}
+        if not self._datetimes_equal(existing.get("due_at"), item.due_at):
+            changes["due_at"] = {"old": existing.get("due_at"), "new": item.due_at}
 
         old_points = self._number_value(existing.get("points_possible"))
         new_points = self._number_value(item.points_possible)
@@ -258,6 +271,59 @@ class CanvasService:
             return "본문이 수정되었습니다."
         return summary
 
+    # ---------- Normalization helpers (used by _diff_assignment) ----------
+
+    # Canvas embeds verifier tokens / instfs ids in inline file URLs that
+    # change every fetch; strip them before hashing/comparing bodies so
+    # we don't see a "modification" on every poll.
+    _VOLATILE_QUERY_KEYS = re.compile(
+        r"[?&](?:verifier|download_frd|wrap|instfs_id|sf_verifier)=[^&\"'\s]+",
+        re.IGNORECASE,
+    )
+
+    @classmethod
+    def _normalize_body(cls, value: Optional[str]) -> str:
+        """Strip volatile per-fetch query tokens and collapse whitespace."""
+        if not value:
+            return ""
+        cleaned = cls._VOLATILE_QUERY_KEYS.sub("", value)
+        # Squash runs of whitespace so trivial reformatting is invisible
+        return re.sub(r"\s+", " ", cleaned).strip()
+
+    @staticmethod
+    def _canvas_updated_unchanged(old: Any, new: Any) -> bool:
+        """True iff Canvas's own canvas_updated_at is present on both sides
+        and equal after normalization."""
+        if not old or not new:
+            return False
+        return CanvasService._datetimes_equal(old, new)
+
+    @staticmethod
+    def _datetimes_equal(a: Any, b: Any) -> bool:
+        """Compare two datetime-ish values (ISO string, datetime, None).
+
+        Both None → equal. One None and the other empty string → equal.
+        Otherwise parse to UTC and compare instants.
+        """
+        a_norm = CanvasService._to_utc(a)
+        b_norm = CanvasService._to_utc(b)
+        return a_norm == b_norm
+
+    @staticmethod
+    def _to_utc(value: Any) -> Optional[datetime]:
+        if value is None or value == "":
+            return None
+        if isinstance(value, datetime):
+            dt = value
+        else:
+            try:
+                dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            except ValueError:
+                return None
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+
     @staticmethod
     def _number_value(value: Any) -> Optional[float]:
         if value is None or value == "":
@@ -289,7 +355,9 @@ class CanvasService:
             "course_name": item.course_name,
             "title": item.name,
             "body": item.description,
-            "content_hash": self._content_hash(item.name, item.description),
+            "content_hash": self._content_hash(
+                item.name, self._normalize_body(item.description)
+            ),
             "due_at": item.due_at,
             "points_possible": item.points_possible,
             "submission_types": item.submission_types,
@@ -396,39 +464,45 @@ class CanvasService:
     # ---------- Dispatch ----------
 
     async def _dispatch(self, event: CanvasEvent) -> None:
-        """Format the event and broadcast via NotificationService."""
-        text = self._format_event(event)
+        """Format the event (plain + html) and broadcast via NotificationService."""
+        text_plain = self._format_event(event, html=False)
+        text_html = self._format_event(event, html=True)
         identifier = getattr(event.item, "id", "?")
         logger.info(
             f"[CANVAS] event={event.kind} course={event.course.name!r} "
             f"item_id={identifier} changes={list((event.changes or {}).keys())}"
         )
-        if not text or self.notifier is None:
+        if not text_plain or self.notifier is None:
             return
         try:
             preview_images = await self._build_preview_images(event.item)
             await self.notifier.send_canvas_message(
                 self.client.session,
-                text,
+                text_plain,
+                text_html=text_html,
                 event_kind=event.kind,
                 preview_images=preview_images,
             )
         except Exception as e:
             logger.error(f"[CANVAS] notification send failed: {e}")
 
-    def _format_event(self, event: CanvasEvent) -> str:
+    def _format_event(self, event: CanvasEvent, html: bool = False) -> str:
         """Map a CanvasEvent to its notification text via canvas_formatter."""
         if event.kind == KIND_NEW_ASSIGNMENT:
-            return canvas_formatter.format_new_assignment(event.item)
+            return canvas_formatter.format_new_assignment(event.item, html=html)
         if event.kind in (KIND_ASSIGNMENT_MODIFIED, KIND_DUE_DATE_CHANGED):
             return canvas_formatter.format_modified_assignment(
-                event.item, event.changes or {}
+                event.item, event.changes or {}, html=html
             )
         if event.kind == KIND_NEW_ANNOUNCEMENT:
-            return canvas_formatter.format_new_announcement(event.item)
+            return canvas_formatter.format_new_announcement(event.item, html=html)
         if event.kind == KIND_GRADE_REGISTERED:
             return canvas_formatter.format_grade_notification(
-                event.item, course_name=event.course.name
+                event.item, course_name=event.course.name, html=html
+            )
+        if event.kind == KIND_UNSUBMITTED_WARNING:
+            return canvas_formatter.format_unsubmitted_warning(
+                event.item, html=html
             )
         return ""
 
@@ -607,17 +681,23 @@ class CanvasService:
             logger.error(f"[CANVAS] reminder build failed for row {row.get('id')}: {e}")
             return
 
-        text = canvas_formatter.format_deadline_reminder(item, hours_left=tier_hours)
+        text_plain = canvas_formatter.format_deadline_reminder(
+            item, hours_left=tier_hours, html=False
+        )
+        text_html = canvas_formatter.format_deadline_reminder(
+            item, hours_left=tier_hours, html=True
+        )
         logger.info(
             f"[CANVAS] reminder tier={tier_hours}h item_id={item.id} "
             f"title={item.name!r}"
         )
-        if self.notifier is None or not text:
+        if self.notifier is None or not text_plain:
             return
         try:
             await self.notifier.send_canvas_message(
                 self.client.session,
-                text,
+                text_plain,
+                text_html=text_html,
                 event_kind="deadline_reminder",
             )
         except Exception as e:
@@ -647,16 +727,18 @@ class CanvasService:
                 )
                 continue
 
-            text = canvas_formatter.format_unsubmitted_warning(item)
+            text_plain = canvas_formatter.format_unsubmitted_warning(item, html=False)
+            text_html = canvas_formatter.format_unsubmitted_warning(item, html=True)
             logger.info(
                 f"[CANVAS] unsubmitted warning item_id={item.id} title={item.name!r}"
             )
-            if self.notifier is None or not text:
+            if self.notifier is None or not text_plain:
                 continue
             try:
                 await self.notifier.send_canvas_message(
                     self.client.session,
-                    text,
+                    text_plain,
+                    text_html=text_html,
                     event_kind=KIND_UNSUBMITTED_WARNING,
                 )
                 self.repo.mark_unsubmitted_alerted(row["id"])

@@ -153,8 +153,14 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
         text: str,
         topic_id: Optional[int] = None,
         preview_images: Optional[List[Dict[str, Any]]] = None,
+        use_html: bool = False,
     ) -> Optional[int]:
-        """Send a plain-text Canvas notification. Returns Telegram message_id."""
+        """Send a Canvas notification. Returns Telegram message_id.
+
+        When `use_html` is True the message is sent with parse_mode="HTML"
+        so <b>/<blockquote> tags render. Caller must have escaped any
+        user-supplied content (canvas_formatter handles this).
+        """
         if not text:
             return None
         payload = {
@@ -162,6 +168,8 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
             "text": text,
             "disable_web_page_preview": True,
         }
+        if use_html:
+            payload["parse_mode"] = "HTML"
         if topic_id:
             payload["message_thread_id"] = topic_id
         result = await self._send_telegram_api(session, "sendMessage", payload=payload)
