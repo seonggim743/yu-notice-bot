@@ -382,6 +382,11 @@ if __name__ == "__main__":
         type=str,
         help="Run scraper for a specific target only (e.g., yu_news)",
     )
+    parser.add_argument(
+        "--canvas-only",
+        action="store_true",
+        help="Skip the scraper and only run CanvasService.run() + run_reminders() once",
+    )
     args = parser.parse_args()
 
     # ==========================================================================
@@ -408,13 +413,29 @@ if __name__ == "__main__":
         logger.info("🚀 Starting in INIT MODE (Database Seeding)")
         logger.info("AI analysis and Notifications will be DISABLED.")
 
-    if args.once or args.init or args.test_url:
+    if args.once or args.init or args.test_url or args.canvas_only:
         # Run once logic
         try:
             if args.once:
                 logger.info("Running in --once mode")
 
-            if args.test_url:
+            if args.canvas_only:
+                if bot.canvas_service is None:
+                    logger.critical(
+                        "--canvas-only requires CANVAS_ENABLED=true and "
+                        "CANVAS_API_URL/CANVAS_API_TOKEN to be set."
+                    )
+                    exit_code = 1
+                else:
+                    logger.info("🎓 Running in --canvas-only mode (scraper skipped)")
+
+                    async def _canvas_only_run():
+                        await bot.canvas_service.run()
+                        await bot.canvas_service.run_reminders()
+
+                    asyncio.run(_canvas_only_run())
+                    logger.info("Canvas run completed successfully")
+            elif args.test_url:
                 logger.info(f"🧪 Running Test Notification for: {args.test_url}")
                 asyncio.run(bot.scraper.run_test(args.test_url))
             else:
@@ -422,13 +443,13 @@ if __name__ == "__main__":
                 if not success:
                     exit_code = 1
 
-            logger.info("Run completed successfully")
+                logger.info("Run completed successfully")
         except Exception as e:
             logger.critical(f"Run failed: {e}", exc_info=True)
             # Send error notification
             asyncio.run(
                 error_notifier.send_critical_error(
-                    "Bot run failed in --once/--init mode",
+                    "Bot run failed in --once/--init/--canvas-only mode",
                     exception=e,
                     severity=ErrorSeverity.CRITICAL,
                 )
