@@ -221,3 +221,52 @@ class TestFormatters:
 
         assert "- 첫 번째 요약" in embed["description"]
         assert "- 두 번째 요약" in embed["description"]
+
+    def test_format_revised_body_quote_strips_html_and_breaks_sentences(self):
+        raw = (
+            "<p>첫 번째 문장입니다. "
+            "두 번째 문장입니다. "
+            "세 번째 문장입니다. "
+            "네 번째 문장입니다. "
+            "다섯 번째 문장입니다. "
+            "여섯 번째 문장입니다. "
+            "일곱 번째 문장입니다. "
+            "여덟 번째 문장입니다. "
+            "아홉 번째 문장입니다. "
+            "열 번째 문장입니다. "
+            "열한 번째 문장입니다. "
+            "열두 번째 문장입니다.</p>"
+            "<img src='x.jpg'><script>alert(1)</script>"
+        )
+
+        quote = formatters.format_revised_body_quote(raw)
+
+        assert "첫 번째 문장입니다." in quote
+        assert "두 번째 문장입니다." in quote
+        assert "\n" in quote
+        assert "img" not in quote
+        assert "alert" not in quote
+        assert len(quote) <= 500
+
+    def test_format_revised_body_quote_wraps_long_text_without_sentences(self):
+        raw = "가" * 220
+
+        quote = formatters.format_revised_body_quote(raw)
+
+        assert "\n" in quote
+        assert len(quote) <= 500
+
+    def test_telegram_revised_body_quote_uses_blockquote(self):
+        block = formatters.format_telegram_revised_body_quote("<p>수정 후 <b>본문</b></p>")
+
+        assert "📝 <b>수정 후 원문</b>" in block
+        assert "<blockquote>수정 후 본문</blockquote>" in block
+
+    def test_create_revised_body_quote_field(self):
+        field = formatters.create_revised_body_quote_field("<p>수정 후 본문</p>")
+
+        assert field == {
+            "name": "📝 수정 후 원문",
+            "value": "수정 후 본문",
+            "inline": False,
+        }

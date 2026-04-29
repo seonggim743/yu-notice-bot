@@ -6,6 +6,7 @@ Provides diff generation, emoji mappings, text formatting, and message creation.
 import difflib
 import html
 import re
+import textwrap
 from datetime import datetime
 from typing import Dict, Any, Optional
 
@@ -30,6 +31,8 @@ CONTEXT_DIFF_CHARS = 30
 CONTEXT_DIFF_GROUP_EQUAL_LIMIT = 6
 TELEGRAM_QUOTE_LENGTH = 500
 DISCORD_QUOTE_LENGTH = 1000
+REVISED_BODY_QUOTE_LENGTH = 500
+REVISED_BODY_WRAP_WIDTH = 100
 
 
 def generate_clean_diff(
@@ -434,8 +437,12 @@ def strip_html_text(
     soup = BeautifulSoup(raw_text, "html.parser")
     for tag in soup(["script", "style", "img"]):
         tag.decompose()
+    for tag in soup.find_all("br"):
+        tag.replace_with("\n")
+    for tag in soup.find_all(["p", "div", "li", "tr"]):
+        tag.append("\n")
 
-    text = soup.get_text("\n")
+    text = soup.get_text(" ")
     text = html.unescape(text)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r" *\n *", "\n", text)
@@ -460,6 +467,50 @@ def get_notice_quote_text(
     if is_ai_summary and bullet_summary:
         text = format_summary_lines(text)
     return truncate_text(text, max_length)
+
+
+def format_revised_body_quote(
+    raw_text: str, max_length: int = REVISED_BODY_QUOTE_LENGTH
+) -> str:
+    """Format the revised body for compact modified-notice detail replies."""
+    text = strip_html_text(raw_text)
+    if not text:
+        return ""
+    text = _break_long_text_by_sentence(text)
+    return truncate_text(text, max_length)
+
+
+def format_telegram_revised_body_quote(raw_text: str) -> str:
+    quote = format_revised_body_quote(raw_text)
+    if not quote:
+        return ""
+    escaped = html.escape(quote, quote=False)
+    return f"📝 <b>수정 후 원문</b>\n<blockquote>{escaped}</blockquote>"
+
+
+def create_revised_body_quote_field(raw_text: str) -> Optional[Dict[str, Any]]:
+    quote = format_revised_body_quote(raw_text)
+    if not quote:
+        return None
+    return {"name": "📝 수정 후 원문", "value": quote, "inline": False}
+
+
+def _break_long_text_by_sentence(text: str) -> str:
+    if "\n" in text or len(text) <= REVISED_BODY_WRAP_WIDTH:
+        return text
+
+    sentences = [part.strip() for part in re.split(r"(?<=\.)\s*", text) if part.strip()]
+    if len(sentences) > 1:
+        return "\n".join(sentences)
+
+    return "\n".join(
+        textwrap.wrap(
+            text,
+            width=REVISED_BODY_WRAP_WIDTH,
+            break_long_words=True,
+            replace_whitespace=False,
+        )
+    )
 
 
 def format_date(dt_str: str) -> str:
