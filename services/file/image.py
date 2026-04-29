@@ -4,8 +4,6 @@ Image processing utilities.
 import io
 from typing import List
 
-import fitz  # PyMuPDF
-
 from core.logger import get_logger
 
 logger = get_logger(__name__)
@@ -17,6 +15,8 @@ class ImageHandler:
     def images_to_pdf(self, image_paths: List[str]) -> bytes:
         """Converts a list of images to a single PDF."""
         try:
+            import fitz  # PyMuPDF
+
             doc = fitz.open()
 
             for img_path in image_paths:

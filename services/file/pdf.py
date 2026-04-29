@@ -6,7 +6,6 @@ import tempfile
 import os
 from typing import Optional, List
 
-import fitz  # PyMuPDF
 from pypdf import PdfReader
 
 from core.logger import get_logger
@@ -40,6 +39,8 @@ class PDFHandler:
         """
         images = []
         try:
+            import fitz  # PyMuPDF
+
             doc = fitz.open(stream=file_data, filetype="pdf")
             page_count = min(len(doc), max_pages)
 

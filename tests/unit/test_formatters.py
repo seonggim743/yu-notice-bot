@@ -37,29 +37,43 @@ class TestFormatters:
         assert len(diff) > 1550
         assert "(생략)" not in diff
 
-    def test_generate_clean_diff_telegram_inline_highlight(self):
-        """Test inline HTML highlight for long similar changed lines"""
+    def test_generate_clean_diff_telegram_context_snippet(self):
+        """Test context snippets for long similar changed lines"""
         old = "오늘 오후에는 야외에 제초제 살포 작업을 진행합니다. 안전에 유의해주세요."
         new = "오늘 오후에는 야외에 수목에 방제 작업을 진행합니다. 안전에 유의해주세요."
 
         diff = formatters.generate_clean_diff(old, new, inline_style="telegram")
 
-        assert "🔴" in diff and "🟢" in diff
-        assert "<u>" in diff and "</u>" in diff
+        assert "🔴" not in diff and "🟢" not in diff
+        assert "<u>" not in diff and "</u>" not in diff
+        assert "[" in diff and " → " in diff and "]" in diff
         assert "제초제" in diff
         assert "수목" in diff
 
-    def test_generate_clean_diff_discord_inline_highlight(self):
-        """Test inline Markdown highlight for long similar changed lines"""
+    def test_generate_clean_diff_discord_context_snippet(self):
+        """Test context snippets for long similar changed lines"""
         old = "오늘 오후에는 야외에 제초제 살포 작업을 진행합니다. 안전에 유의해주세요."
         new = "오늘 오후에는 야외에 수목에 방제 작업을 진행합니다. 안전에 유의해주세요."
 
         diff = formatters.generate_clean_diff(old, new, inline_style="discord")
 
-        assert "🔴" in diff and "🟢" in diff
-        assert "**" in diff
+        assert "🔴" not in diff and "🟢" not in diff
+        assert "**" not in diff
+        assert "[" in diff and " → " in diff and "]" in diff
         assert "제초제" in diff
         assert "수목" in diff
+
+    def test_generate_clean_diff_context_multiple_changes(self):
+        """Multiple long-line changes should be shown one snippet per change."""
+        old = "접수 현황 : 25 / 30 온라인 접수 중이며 신청 마감일은 2026.05.10. 입니다."
+        new = "접수 현황 : 26 / 30 온라인 접수 중이며 신청 마감일은 2026.05.11. 입니다."
+
+        diff = formatters.generate_clean_diff(old, new, inline_style="discord")
+
+        lines = diff.splitlines()
+        assert len(lines) == 2
+        assert any("[25 → 26]" in line for line in lines)
+        assert any("[2026.05.10. → 2026.05.11.]" in line for line in lines)
 
     def test_generate_clean_diff_short_lines_stay_line_level(self):
         """Short replacements should stay as plain line-level diff"""
@@ -162,7 +176,22 @@ class TestFormatters:
 
         msg = formatters.create_telegram_message(notice, is_new=True)
 
-        assert "<blockquote>AI 요약 내용</blockquote>" in msg
+        assert "<blockquote>- AI 요약 내용</blockquote>" in msg
+
+    def test_create_telegram_message_does_not_bullet_short_article_quote(self):
+        notice = Notice(
+            site_key="yu_news",
+            article_id="1",
+            title="공지",
+            content="<p>원문 본문</p>",
+            summary="[단신] 원문 그대로",
+            url="https://example.com",
+        )
+
+        msg = formatters.create_telegram_message(notice, is_new=True)
+
+        assert "<blockquote>원문 그대로</blockquote>" in msg
+        assert "<blockquote>- 원문 그대로</blockquote>" not in msg
 
     def test_create_discord_embed_quotes_content_without_summary(self):
         notice = Notice(
@@ -178,3 +207,66 @@ class TestFormatters:
         assert "원문" in embed["description"]
         assert "본문" in embed["description"]
         assert "<img" not in embed["description"]
+
+    def test_create_discord_embed_bullets_summary_lines(self):
+        notice = Notice(
+            site_key="yu_news",
+            article_id="1",
+            title="공지",
+            summary="첫 번째 요약\n두 번째 요약",
+            url="https://example.com",
+        )
+
+        embed = formatters.create_discord_embed(notice, is_new=True)
+
+        assert "- 첫 번째 요약" in embed["description"]
+        assert "- 두 번째 요약" in embed["description"]
+
+    def test_format_revised_body_quote_strips_html_and_breaks_sentences(self):
+        raw = (
+            "<p>첫 번째 문장입니다. "
+            "두 번째 문장입니다. "
+            "세 번째 문장입니다. "
+            "네 번째 문장입니다. "
+            "다섯 번째 문장입니다. "
+            "여섯 번째 문장입니다. "
+            "일곱 번째 문장입니다. "
+            "여덟 번째 문장입니다. "
+            "아홉 번째 문장입니다. "
+            "열 번째 문장입니다. "
+            "열한 번째 문장입니다. "
+            "열두 번째 문장입니다.</p>"
+            "<img src='x.jpg'><script>alert(1)</script>"
+        )
+
+        quote = formatters.format_revised_body_quote(raw)
+
+        assert "첫 번째 문장입니다." in quote
+        assert "두 번째 문장입니다." in quote
+        assert "\n" in quote
+        assert "img" not in quote
+        assert "alert" not in quote
+        assert len(quote) <= 500
+
+    def test_format_revised_body_quote_wraps_long_text_without_sentences(self):
+        raw = "가" * 220
+
+        quote = formatters.format_revised_body_quote(raw)
+
+        assert "\n" in quote
+        assert len(quote) <= 500
+
+    def test_telegram_revised_body_quote_uses_blockquote(self):
+        block = formatters.format_telegram_revised_body_quote("<p>수정 후 <b>본문</b></p>")
+
+        assert "📝 <b>수정 후 원문</b>" in block
+        assert "<blockquote>수정 후 본문</blockquote>" in block
+
+    def test_create_revised_body_quote_field(self):
+        field = formatters.create_revised_body_quote_field("<p>수정 후 본문</p>")
+
+        assert field == {
+            "name": "📝 수정 후 원문",
+            "value": "수정 후 본문",
+            "inline": False,
+        }

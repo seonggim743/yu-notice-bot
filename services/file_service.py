@@ -9,18 +9,19 @@ import os
 import subprocess
 import tempfile
 import zipfile
-from typing import Optional, List
+from typing import Optional, List, TYPE_CHECKING
 
-import fitz  # PyMuPDF
 from PIL import Image
 
 from core.logger import get_logger
 from services.polaris_service import PolarisService
 from services.file.base import BaseFileHandler
-from services.file.pdf import PDFHandler
 from services.file.hwp import HWPHandler
 from services.file.office import OfficeHandler
-from services.file.image import ImageHandler
+
+if TYPE_CHECKING:
+    from services.file.pdf import PDFHandler
+    from services.file.image import ImageHandler
 
 logger = get_logger(__name__)
 
@@ -36,17 +37,33 @@ class FileService(BaseFileHandler):
         self,
         # Dependency Injection - Optional, defaults to real implementations
         polaris_service: Optional[PolarisService] = None,
-        pdf_handler: Optional[PDFHandler] = None,
+        pdf_handler: Optional["PDFHandler"] = None,
         hwp_handler: Optional[HWPHandler] = None,
         office_handler: Optional[OfficeHandler] = None,
-        image_handler: Optional[ImageHandler] = None,
+        image_handler: Optional["ImageHandler"] = None,
     ):
         # Inject or create default instances
         self.polaris_service = polaris_service or PolarisService()
-        self.pdf_handler = pdf_handler or PDFHandler()
+        self._pdf_handler = pdf_handler
         self.hwp_handler = hwp_handler or HWPHandler()
         self.office_handler = office_handler or OfficeHandler()
-        self.image_handler = image_handler or ImageHandler()
+        self._image_handler = image_handler
+
+    @property
+    def pdf_handler(self) -> "PDFHandler":
+        if self._pdf_handler is None:
+            from services.file.pdf import PDFHandler
+
+            self._pdf_handler = PDFHandler()
+        return self._pdf_handler
+
+    @property
+    def image_handler(self) -> "ImageHandler":
+        if self._image_handler is None:
+            from services.file.image import ImageHandler
+
+            self._image_handler = ImageHandler()
+        return self._image_handler
 
     def extract_text(self, file_data: bytes, filename: str) -> str:
         """Extracts text from PDF or HWP files."""
@@ -308,6 +325,8 @@ class FileService(BaseFileHandler):
                 pdf_data = self.convert_to_pdf(file_data, filename)
                 if not pdf_data:
                     return []
+
+            import fitz  # PyMuPDF
 
             doc = fitz.open(stream=pdf_data, filetype="pdf")
             preview_images = []

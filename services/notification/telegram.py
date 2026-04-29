@@ -17,7 +17,10 @@ from models.notice import Notice
 from services.file.attachment_downloader import AttachmentDownloader
 from services.notification.base import BaseNotifier, NotificationChannel
 from services.notification.diff_chunker import split_diff
-from services.notification.formatters import create_telegram_message
+from services.notification.formatters import (
+    create_telegram_message,
+    format_telegram_revised_body_quote,
+)
 from services.file.image import ImageHandler
 
 from services.notification.dev_notifier import DevNotifier
@@ -751,6 +754,8 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
 
                 if diff_text:
                     chunks = split_diff(diff_text, _TELEGRAM_DIFF_CHUNK_LIMIT)
+                    revised_body_quote = format_telegram_revised_body_quote(new_content)
+                    revised_quote_sent = False
                     for idx, chunk in enumerate(chunks):
                         header = (
                             "🔍 <b>상세 변경 내용</b>"
@@ -758,6 +763,13 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                             else f"🔍 <b>상세 변경 내용 ({idx + 1}/{len(chunks)})</b>"
                         )
                         detail_msg = f"{header}\n{chunk}"
+                        if (
+                            revised_body_quote
+                            and idx == len(chunks) - 1
+                            and len(detail_msg) + len(revised_body_quote) + 2
+                            <= constants.TELEGRAM_MAX_MESSAGE_LENGTH
+                        ):
+                            detail_msg += f"\n\n{revised_body_quote}"
                         reply_payload = {
                             "chat_id": self.chat_id,
                             "text": detail_msg,
@@ -771,6 +783,8 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                             session, "sendMessage", payload=reply_payload
                         )
                         if result:
+                            if revised_body_quote and idx == len(chunks) - 1:
+                                revised_quote_sent = revised_body_quote in detail_msg
                             if idx < len(chunks) - 1:
                                 await asyncio.sleep(0.2)
                         elif len(chunks) == 1:
@@ -782,6 +796,19 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                             await self._send_telegram_api(
                                 session, "sendMessage", payload=reply_payload
                             )
+
+                    if revised_body_quote and not revised_quote_sent:
+                        quote_payload = {
+                            "chat_id": self.chat_id,
+                            "text": revised_body_quote,
+                            "reply_to_message_id": main_msg_id,
+                            "parse_mode": "HTML",
+                        }
+                        if topic_id:
+                            quote_payload["message_thread_id"] = topic_id
+                        await self._send_telegram_api(
+                            session, "sendMessage", payload=quote_payload
+                        )
 
                 else:
                     # Diff generation failed but content changed

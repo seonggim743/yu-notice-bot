@@ -6,6 +6,7 @@ Provides diff generation, emoji mappings, text formatting, and message creation.
 import difflib
 import html
 import re
+import textwrap
 from datetime import datetime
 from typing import Dict, Any, Optional
 
@@ -26,8 +27,12 @@ SCHOOL_LOGO_URL = constants.SCHOOL_LOGO_URL
 INLINE_DIFF_MIN_LINE_LENGTH = 30
 INLINE_DIFF_MIN_RATIO = 0.45
 INLINE_DIFF_MIN_SPAN = 2
+CONTEXT_DIFF_CHARS = 30
+CONTEXT_DIFF_GROUP_EQUAL_LIMIT = 6
 TELEGRAM_QUOTE_LENGTH = 500
 DISCORD_QUOTE_LENGTH = 1000
+REVISED_BODY_QUOTE_LENGTH = 500
+REVISED_BODY_WRAP_WIDTH = 100
 
 
 def generate_clean_diff(
@@ -63,11 +68,16 @@ def generate_clean_diff(
         if tag == "replace":
             paired = min(len(old_lines), len(new_lines))
             for idx in range(paired):
-                old_line, new_line = _highlight_line_pair(
-                    old_lines[idx].strip(), new_lines[idx].strip(), inline_style
+                old_line = old_lines[idx].strip()
+                new_line = new_lines[idx].strip()
+                context_lines = _context_diff_lines(
+                    old_line, new_line, inline_style
                 )
-                changes.append(f"🔴 {old_line}")
-                changes.append(f"🟢 {new_line}")
+                if context_lines:
+                    changes.extend(context_lines)
+                else:
+                    changes.append(f"🔴 {_format_diff_line(old_line, inline_style)}")
+                    changes.append(f"🟢 {_format_diff_line(new_line, inline_style)}")
 
             for line in old_lines[paired:]:
                 changes.append(f"🔴 {_format_diff_line(line.strip(), inline_style)}")
@@ -82,6 +92,135 @@ def generate_clean_diff(
 
     # Return full result without truncation
     return "\n".join(changes)
+
+
+def _context_diff_lines(
+    old_line: str, new_line: str, inline_style: Optional[str]
+) -> Optional[list[str]]:
+    if (
+        len(old_line) < INLINE_DIFF_MIN_LINE_LENGTH
+        or len(new_line) < INLINE_DIFF_MIN_LINE_LENGTH
+    ):
+        return None
+
+    matcher = difflib.SequenceMatcher(None, old_line, new_line)
+    if matcher.ratio() < INLINE_DIFF_MIN_RATIO:
+        return None
+
+    groups = _context_token_change_groups(old_line, new_line)
+    if not groups:
+        groups = _context_change_groups(matcher.get_opcodes())
+    if not groups:
+        return None
+
+    lines = []
+    for old_start, old_end, new_start, new_end in groups:
+        old_start, old_end = _trim_range(old_line, old_start, old_end)
+        new_start, new_end = _trim_range(new_line, new_start, new_end)
+
+        old_segment = old_line[old_start:old_end]
+        new_segment = new_line[new_start:new_end]
+        if not (
+            _has_meaningful_span(old_segment) or _has_meaningful_span(new_segment)
+        ):
+            continue
+
+        context_line = new_line if new_start < new_end else old_line
+        context_start = new_start if new_start < new_end else old_start
+        context_end = new_end if new_start < new_end else old_end
+        before_start = max(0, context_start - CONTEXT_DIFF_CHARS)
+        after_end = min(len(context_line), context_end + CONTEXT_DIFF_CHARS)
+
+        before = context_line[before_start:context_start]
+        after = context_line[context_end:after_end]
+        prefix = "..." if before_start > 0 else ""
+        suffix = "..." if after_end < len(context_line) else ""
+        lines.append(
+            "".join(
+                [
+                    prefix,
+                    _format_diff_line(before, inline_style),
+                    "[",
+                    _format_diff_line(old_segment, inline_style),
+                    " → ",
+                    _format_diff_line(new_segment, inline_style),
+                    "]",
+                    _format_diff_line(after, inline_style),
+                    suffix,
+                ]
+            )
+        )
+
+    return lines or None
+
+
+def _context_token_change_groups(
+    old_line: str, new_line: str
+) -> list[tuple[int, int, int, int]]:
+    old_tokens = _token_spans(old_line)
+    new_tokens = _token_spans(new_line)
+    old_content_tokens = [token for token in old_tokens if token[0].strip()]
+    new_content_tokens = [token for token in new_tokens if token[0].strip()]
+    if len(old_content_tokens) <= 1 and len(new_content_tokens) <= 1:
+        return []
+
+    matcher = difflib.SequenceMatcher(
+        None,
+        [token for token, _, _ in old_tokens],
+        [token for token, _, _ in new_tokens],
+    )
+    groups = []
+    for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+
+        old_char_start = _token_boundary(old_tokens, old_start, old_line)
+        old_char_end = _token_boundary(old_tokens, old_end, old_line)
+        new_char_start = _token_boundary(new_tokens, new_start, new_line)
+        new_char_end = _token_boundary(new_tokens, new_end, new_line)
+        groups.append((old_char_start, old_char_end, new_char_start, new_char_end))
+    return groups
+
+
+def _token_boundary(tokens: list[tuple[str, int, int]], index: int, text: str) -> int:
+    if not tokens:
+        return 0
+    if index <= 0:
+        return tokens[0][1]
+    if index >= len(tokens):
+        return len(text)
+    return tokens[index][1]
+
+
+def _context_change_groups(
+    opcodes: list[tuple[str, int, int, int, int]]
+) -> list[tuple[int, int, int, int]]:
+    groups = []
+    current = None
+    for tag, old_start, old_end, new_start, new_end in opcodes:
+        if tag == "equal":
+            if (
+                current is not None
+                and old_end - old_start <= CONTEXT_DIFF_GROUP_EQUAL_LIMIT
+                and new_end - new_start <= CONTEXT_DIFF_GROUP_EQUAL_LIMIT
+            ):
+                current[1] = old_end
+                current[3] = new_end
+            else:
+                if current is not None:
+                    groups.append(tuple(current))
+                    current = None
+            continue
+
+        if current is None:
+            current = [old_start, old_end, new_start, new_end]
+        else:
+            current[1] = old_end
+            current[3] = new_end
+
+    if current is not None:
+        groups.append(tuple(current))
+    return groups
 
 
 def _highlight_line_pair(
@@ -298,8 +437,12 @@ def strip_html_text(
     soup = BeautifulSoup(raw_text, "html.parser")
     for tag in soup(["script", "style", "img"]):
         tag.decompose()
+    for tag in soup.find_all("br"):
+        tag.replace_with("\n")
+    for tag in soup.find_all(["p", "div", "li", "tr"]):
+        tag.append("\n")
 
-    text = soup.get_text("\n")
+    text = soup.get_text(" ")
     text = html.unescape(text)
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r" *\n *", "\n", text)
@@ -310,12 +453,64 @@ def strip_html_text(
     return text
 
 
-def get_notice_quote_text(notice, max_length: int) -> str:
+def get_notice_quote_text(
+    notice, max_length: int, bullet_summary: bool = False
+) -> str:
     """Prefer AI summary, then stripped notice body, for compact quote previews."""
-    source = notice.summary or notice.content or ""
-    if source.startswith("[단신]"):
+    summary = notice.summary or ""
+    is_ai_summary = bool(summary and not summary.startswith("[단신]"))
+    source = summary or notice.content or ""
+    if summary.startswith("[단신]"):
         source = source.replace("[단신]", "", 1).strip()
-    return strip_html_text(source, max_length=max_length)
+
+    text = strip_html_text(source)
+    if is_ai_summary and bullet_summary:
+        text = format_summary_lines(text)
+    return truncate_text(text, max_length)
+
+
+def format_revised_body_quote(
+    raw_text: str, max_length: int = REVISED_BODY_QUOTE_LENGTH
+) -> str:
+    """Format the revised body for compact modified-notice detail replies."""
+    text = strip_html_text(raw_text)
+    if not text:
+        return ""
+    text = _break_long_text_by_sentence(text)
+    return truncate_text(text, max_length)
+
+
+def format_telegram_revised_body_quote(raw_text: str) -> str:
+    quote = format_revised_body_quote(raw_text)
+    if not quote:
+        return ""
+    escaped = html.escape(quote, quote=False)
+    return f"📝 <b>수정 후 원문</b>\n<blockquote>{escaped}</blockquote>"
+
+
+def create_revised_body_quote_field(raw_text: str) -> Optional[Dict[str, Any]]:
+    quote = format_revised_body_quote(raw_text)
+    if not quote:
+        return None
+    return {"name": "📝 수정 후 원문", "value": quote, "inline": False}
+
+
+def _break_long_text_by_sentence(text: str) -> str:
+    if "\n" in text or len(text) <= REVISED_BODY_WRAP_WIDTH:
+        return text
+
+    sentences = [part.strip() for part in re.split(r"(?<=\.)\s*", text) if part.strip()]
+    if len(sentences) > 1:
+        return "\n".join(sentences)
+
+    return "\n".join(
+        textwrap.wrap(
+            text,
+            width=REVISED_BODY_WRAP_WIDTH,
+            break_long_words=True,
+            replace_whitespace=False,
+        )
+    )
 
 
 def format_date(dt_str: str) -> str:
@@ -405,7 +600,9 @@ def create_discord_embed(notice, is_new: bool, modified_reason: str = "", change
     # However, if we don't have detailed changes but have a reason, we can mention it here or in fields.
     # Logic moved to Field generation.
 
-    quote_text = get_notice_quote_text(notice, DISCORD_QUOTE_LENGTH)
+    quote_text = get_notice_quote_text(
+        notice, DISCORD_QUOTE_LENGTH, bullet_summary=True
+    )
     if quote_text:
         description_text += f"{summary_header}\n{quote_text}"
 
@@ -508,7 +705,9 @@ def create_telegram_message(notice, is_new: bool, modified_reason: str = "", cha
     elif not is_new and modified_reason:
         msg += f"⚠️ <b>수정 사항</b>: {modified_reason}\n\n"
 
-    quote_text = get_notice_quote_text(notice, TELEGRAM_QUOTE_LENGTH)
+    quote_text = get_notice_quote_text(
+        notice, TELEGRAM_QUOTE_LENGTH, bullet_summary=True
+    )
     if quote_text:
         msg += f"{summary_header}\n<blockquote>{escape_html(quote_text)}</blockquote>\n\n"
 

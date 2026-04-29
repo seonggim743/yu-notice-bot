@@ -19,7 +19,11 @@ from models.notice import Notice
 from services.file.attachment_downloader import AttachmentDownloader
 from services.notification.base import BaseNotifier, NotificationChannel
 from services.notification.diff_chunker import split_diff
-from services.notification.formatters import create_discord_embed, format_change_summary
+from services.notification.formatters import (
+    create_discord_embed,
+    create_revised_body_quote_field,
+    format_change_summary,
+)
 from services.tag_matcher import TagMatcher
 
 # Discord embed field max is 1024; inline bold diff is sent as plain field text.
@@ -488,6 +492,9 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                                 "inline": False,
                             }
                         )
+                    revised_field = create_revised_body_quote_field(new_content)
+                    if revised_field:
+                        embed["fields"].append(revised_field)
 
         # Add attachment links as the last field (before footer)
         if notice.attachments:
@@ -633,6 +640,9 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                                     "inline": False,
                                 }
                             )
+                    revised_field = create_revised_body_quote_field(new_content)
+                    if revised_field:
+                        update_embed["fields"].append(revised_field)
 
             # Prepare Payload
             payload = {"embeds": [update_embed]}
