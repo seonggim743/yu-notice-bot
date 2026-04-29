@@ -36,6 +36,40 @@ class TestFormatters:
         assert len(diff) > 1550
         assert "(생략)" not in diff
 
+    def test_generate_clean_diff_telegram_inline_highlight(self):
+        """Test inline HTML highlight for long similar changed lines"""
+        old = "오늘 오후에는 야외에 제초제 살포 작업을 진행합니다. 안전에 유의해주세요."
+        new = "오늘 오후에는 야외에 수목에 방제 작업을 진행합니다. 안전에 유의해주세요."
+
+        diff = formatters.generate_clean_diff(old, new, inline_style="telegram")
+
+        assert "🔴" in diff and "🟢" in diff
+        assert "<u>" in diff and "</u>" in diff
+        assert "제초제" in diff
+        assert "수목" in diff
+
+    def test_generate_clean_diff_discord_inline_highlight(self):
+        """Test inline Markdown highlight for long similar changed lines"""
+        old = "오늘 오후에는 야외에 제초제 살포 작업을 진행합니다. 안전에 유의해주세요."
+        new = "오늘 오후에는 야외에 수목에 방제 작업을 진행합니다. 안전에 유의해주세요."
+
+        diff = formatters.generate_clean_diff(old, new, inline_style="discord")
+
+        assert "🔴" in diff and "🟢" in diff
+        assert "**" in diff
+        assert "제초제" in diff
+        assert "수목" in diff
+
+    def test_generate_clean_diff_short_lines_stay_line_level(self):
+        """Short replacements should stay as plain line-level diff"""
+        diff = formatters.generate_clean_diff(
+            "마감 4/6", "마감 4/8", inline_style="telegram"
+        )
+
+        assert "<u>" not in diff
+        assert "🔴 마감 4/6" in diff
+        assert "🟢 마감 4/8" in diff
+
     def test_get_category_emoji(self):
         """Test category emoji mapping"""
         assert formatters.get_category_emoji("장학") == "💰"

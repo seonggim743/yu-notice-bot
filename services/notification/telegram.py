@@ -268,18 +268,18 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
 
     @staticmethod
     def _original_caption(filename: str, size_bytes: int) -> str:
-        return f"📎 [원본] {filename} ({_format_byte_size(size_bytes)})"
+        return f"📎 [원본] {filename} ({TelegramNotifier._format_byte_size(size_bytes)})"
 
 
-def _format_byte_size(size_bytes: int) -> str:
-    """Render a byte count as 1.2KB / 3.4MB. Module-level so the static
-    method can call it without a name-resolution dance."""
-    if size_bytes < 1024:
-        return f"{size_bytes}B"
-    kb = size_bytes / 1024
-    if kb < 1024:
-        return f"{kb:.0f}KB"
-    return f"{kb / 1024:.1f}MB"
+    @staticmethod
+    def _format_byte_size(size_bytes: int) -> str:
+        """Render a byte count as 1.2KB / 3.4MB."""
+        if size_bytes < 1024:
+            return f"{size_bytes}B"
+        kb = size_bytes / 1024
+        if kb < 1024:
+            return f"{kb:.0f}KB"
+        return f"{kb / 1024:.1f}MB"
 
     async def send_telegram(
         self,
@@ -672,44 +672,19 @@ def _format_byte_size(size_bytes: int) -> str:
             new_content = notice.change_details.get("new_content")
 
             if old_content and new_content:
-                if old_content and new_content:
-                    diff_text = self.generate_clean_diff(old_content, new_content)
+                diff_text = self.generate_clean_diff(
+                    old_content, new_content, inline_style="telegram"
+                )
 
-                    if diff_text:
-                        chunks = split_diff(diff_text, _TELEGRAM_DIFF_CHUNK_LIMIT)
-                        for idx, chunk in enumerate(chunks):
-                            header = (
-                                "🔍 <b>상세 변경 내용</b>"
-                                if len(chunks) == 1
-                                else f"🔍 <b>상세 변경 내용 ({idx + 1}/{len(chunks)})</b>"
-                            )
-                            detail_msg = f"{header}\n<pre>{html.escape(chunk)}</pre>"
-                            reply_payload = {
-                                "chat_id": self.chat_id,
-                                "text": detail_msg,
-                                "reply_to_message_id": main_msg_id,
-                                "parse_mode": "HTML",
-                            }
-                            if topic_id:
-                                reply_payload["message_thread_id"] = topic_id
-
-                            result = await self._send_telegram_api(session, "sendMessage", payload=reply_payload)
-                            if result:
-                                if idx < len(chunks) - 1:
-                                    await asyncio.sleep(0.2)
-                            elif len(chunks) == 1:
-                                # Single-chunk path: fall back to a short notice
-                                fallback_msg = (
-                                    "⚠️ 상세 변경 내용을 불러올 수 없습니다. <b>원본 공지 링크</b>를 확인해주세요."
-                                )
-                                reply_payload["text"] = fallback_msg
-                                await self._send_telegram_api(session, "sendMessage", payload=reply_payload)
-
-                    else:
-                        # Diff generation failed but content changed
-                        detail_msg = (
-                            "⚠️ 내용이 변경되었으나 상세 비교를 생성할 수 없습니다."
+                if diff_text:
+                    chunks = split_diff(diff_text, _TELEGRAM_DIFF_CHUNK_LIMIT)
+                    for idx, chunk in enumerate(chunks):
+                        header = (
+                            "🔍 <b>상세 변경 내용</b>"
+                            if len(chunks) == 1
+                            else f"🔍 <b>상세 변경 내용 ({idx + 1}/{len(chunks)})</b>"
                         )
+                        detail_msg = f"{header}\n{chunk}"
                         reply_payload = {
                             "chat_id": self.chat_id,
                             "text": detail_msg,
@@ -718,8 +693,40 @@ def _format_byte_size(size_bytes: int) -> str:
                         }
                         if topic_id:
                             reply_payload["message_thread_id"] = topic_id
-                        
-                        await self._send_telegram_api(session, "sendMessage", payload=reply_payload)
+
+                        result = await self._send_telegram_api(
+                            session, "sendMessage", payload=reply_payload
+                        )
+                        if result:
+                            if idx < len(chunks) - 1:
+                                await asyncio.sleep(0.2)
+                        elif len(chunks) == 1:
+                            # Single-chunk path: fall back to a short notice
+                            fallback_msg = (
+                                "⚠️ 상세 변경 내용을 불러올 수 없습니다. <b>원본 공지 링크</b>를 확인해주세요."
+                            )
+                            reply_payload["text"] = fallback_msg
+                            await self._send_telegram_api(
+                                session, "sendMessage", payload=reply_payload
+                            )
+
+                else:
+                    # Diff generation failed but content changed
+                    detail_msg = (
+                        "⚠️ 내용이 변경되었으나 상세 비교를 생성할 수 없습니다."
+                    )
+                    reply_payload = {
+                        "chat_id": self.chat_id,
+                        "text": detail_msg,
+                        "reply_to_message_id": main_msg_id,
+                        "parse_mode": "HTML",
+                    }
+                    if topic_id:
+                        reply_payload["message_thread_id"] = topic_id
+
+                    await self._send_telegram_api(
+                        session, "sendMessage", payload=reply_payload
+                    )
 
         return main_msg_id
 

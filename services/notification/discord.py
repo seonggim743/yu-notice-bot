@@ -22,8 +22,8 @@ from services.notification.diff_chunker import split_diff
 from services.notification.formatters import create_discord_embed, format_change_summary
 from services.tag_matcher import TagMatcher
 
-# Discord embed field max is 1024; reserve room for the ```diff\n...\n``` wrapper.
-_DISCORD_DIFF_CHUNK_LIMIT = constants.DISCORD_MAX_EMBED_LENGTH - 74
+# Discord embed field max is 1024; inline bold diff is sent as plain field text.
+_DISCORD_DIFF_CHUNK_LIMIT = constants.DISCORD_MAX_EMBED_LENGTH
 
 logger = get_logger(__name__)
 
@@ -397,7 +397,9 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
             new_content = notice.change_details.get("new_content")
 
             if old_content and new_content:
-                diff_text = self.generate_clean_diff(old_content, new_content)
+                diff_text = self.generate_clean_diff(
+                    old_content, new_content, inline_style="discord"
+                )
 
                 if diff_text:
                     chunks = split_diff(diff_text, _DISCORD_DIFF_CHUNK_LIMIT)
@@ -410,7 +412,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                         embed["fields"].append(
                             {
                                 "name": name,
-                                "value": f"```diff\n{chunk}\n```",
+                                "value": chunk,
                                 "inline": False,
                             }
                         )
@@ -540,7 +542,9 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                 new_content = notice.change_details.get("new_content")
 
                 if old_content and new_content:
-                    diff_text = self.generate_clean_diff(old_content, new_content)
+                    diff_text = self.generate_clean_diff(
+                        old_content, new_content, inline_style="discord"
+                    )
 
                     if diff_text:
                         chunks = split_diff(diff_text, _DISCORD_DIFF_CHUNK_LIMIT)
@@ -553,7 +557,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                             update_embed["fields"].append(
                                 {
                                     "name": name,
-                                    "value": f"```diff\n{chunk}\n```",
+                                    "value": chunk,
                                     "inline": False,
                                 }
                             )

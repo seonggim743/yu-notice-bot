@@ -5,6 +5,7 @@ Provides diff generation, emoji mappings, text formatting, and message creation.
 
 import difflib
 import html
+import re
 from datetime import datetime
 from typing import Dict, Any, Optional
 
@@ -20,7 +21,14 @@ SITE_NAME_MAP = constants.SITE_NAME_MAP
 SCHOOL_LOGO_URL = constants.SCHOOL_LOGO_URL
 
 
-def generate_clean_diff(old_text: str, new_text: str) -> str:
+INLINE_DIFF_MIN_LINE_LENGTH = 30
+INLINE_DIFF_MIN_RATIO = 0.45
+INLINE_DIFF_MIN_SPAN = 2
+
+
+def generate_clean_diff(
+    old_text: str, new_text: str, inline_style: Optional[str] = None
+) -> str:
     """
     Generates a clean, line-by-line diff showing only changes.
 
@@ -34,20 +42,186 @@ def generate_clean_diff(old_text: str, new_text: str) -> str:
     if not old_text or not new_text:
         return ""
 
-    d = difflib.Differ()
-    diff = list(d.compare(old_text.splitlines(), new_text.splitlines()))
+    if inline_style not in {None, "telegram", "discord"}:
+        inline_style = None
 
     changes = []
-    for line in diff:
-        if line.startswith("- "):
-            changes.append(f"🔴 {line[2:].strip()}")
-        elif line.startswith("+ "):
-            changes.append(f"🟢 {line[2:].strip()}")
-        elif line.startswith("? "):
+    matcher = difflib.SequenceMatcher(
+        None, old_text.splitlines(), new_text.splitlines()
+    )
+    for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+        if tag == "equal":
             continue
+
+        old_lines = old_text.splitlines()[old_start:old_end]
+        new_lines = new_text.splitlines()[new_start:new_end]
+
+        if tag == "replace":
+            paired = min(len(old_lines), len(new_lines))
+            for idx in range(paired):
+                old_line, new_line = _highlight_line_pair(
+                    old_lines[idx].strip(), new_lines[idx].strip(), inline_style
+                )
+                changes.append(f"🔴 {old_line}")
+                changes.append(f"🟢 {new_line}")
+
+            for line in old_lines[paired:]:
+                changes.append(f"🔴 {_format_diff_line(line.strip(), inline_style)}")
+            for line in new_lines[paired:]:
+                changes.append(f"🟢 {_format_diff_line(line.strip(), inline_style)}")
+        elif tag == "delete":
+            for line in old_lines:
+                changes.append(f"🔴 {_format_diff_line(line.strip(), inline_style)}")
+        elif tag == "insert":
+            for line in new_lines:
+                changes.append(f"🟢 {_format_diff_line(line.strip(), inline_style)}")
 
     # Return full result without truncation
     return "\n".join(changes)
+
+
+def _highlight_line_pair(
+    old_line: str, new_line: str, inline_style: Optional[str]
+) -> tuple[str, str]:
+    if not inline_style:
+        return old_line, new_line
+
+    if (
+        len(old_line) < INLINE_DIFF_MIN_LINE_LENGTH
+        or len(new_line) < INLINE_DIFF_MIN_LINE_LENGTH
+    ):
+        return (
+            _format_diff_line(old_line, inline_style),
+            _format_diff_line(new_line, inline_style),
+        )
+
+    matcher = difflib.SequenceMatcher(None, old_line, new_line)
+    if matcher.ratio() < INLINE_DIFF_MIN_RATIO:
+        return (
+            _format_diff_line(old_line, inline_style),
+            _format_diff_line(new_line, inline_style),
+        )
+
+    old_ranges, new_ranges = _changed_token_ranges(old_line, new_line)
+    if not old_ranges and not new_ranges:
+        old_ranges = []
+        new_ranges = []
+        for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+            if tag == "equal":
+                continue
+            if tag in {"replace", "delete"} and _has_meaningful_span(
+                old_line[old_start:old_end]
+            ):
+                old_ranges.append((old_start, old_end))
+            if tag in {"replace", "insert"} and _has_meaningful_span(
+                new_line[new_start:new_end]
+            ):
+                new_ranges.append((new_start, new_end))
+
+    if not old_ranges and not new_ranges:
+        return (
+            _format_diff_line(old_line, inline_style),
+            _format_diff_line(new_line, inline_style),
+        )
+
+    return (
+        _apply_inline_ranges(old_line, old_ranges, inline_style),
+        _apply_inline_ranges(new_line, new_ranges, inline_style),
+    )
+
+
+def _changed_token_ranges(
+    old_line: str, new_line: str
+) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
+    old_tokens = _token_spans(old_line)
+    new_tokens = _token_spans(new_line)
+    if not old_tokens or not new_tokens:
+        return [], []
+
+    matcher = difflib.SequenceMatcher(
+        None,
+        [token for token, _, _ in old_tokens],
+        [token for token, _, _ in new_tokens],
+    )
+    old_ranges = []
+    new_ranges = []
+    for tag, old_start, old_end, new_start, new_end in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+
+        if tag in {"replace", "delete"} and old_start < old_end:
+            start = old_tokens[old_start][1]
+            end = old_tokens[old_end - 1][2]
+            start, end = _trim_range(old_line, start, end)
+            if _has_meaningful_span(old_line[start:end]):
+                old_ranges.append((start, end))
+        if tag in {"replace", "insert"} and new_start < new_end:
+            start = new_tokens[new_start][1]
+            end = new_tokens[new_end - 1][2]
+            start, end = _trim_range(new_line, start, end)
+            if _has_meaningful_span(new_line[start:end]):
+                new_ranges.append((start, end))
+    return old_ranges, new_ranges
+
+
+def _token_spans(text: str) -> list[tuple[str, int, int]]:
+    return [
+        (m.group(0), m.start(), m.end())
+        for m in re.finditer(r"\s+|[^\s]+", text)
+    ]
+
+
+def _trim_range(text: str, start: int, end: int) -> tuple[int, int]:
+    while start < end and text[start].isspace():
+        start += 1
+    while end > start and text[end - 1].isspace():
+        end -= 1
+    return start, end
+
+
+def _has_meaningful_span(text: str) -> bool:
+    normalized = re.sub(r"\s+", "", text)
+    return len(normalized) >= INLINE_DIFF_MIN_SPAN
+
+
+def _apply_inline_ranges(
+    text: str, ranges: list[tuple[int, int]], inline_style: str
+) -> str:
+    if not ranges:
+        return _format_diff_line(text, inline_style)
+
+    parts = []
+    cursor = 0
+    for start, end in _merge_ranges(ranges):
+        if start > cursor:
+            parts.append(_format_diff_line(text[cursor:start], inline_style))
+        changed = _format_diff_line(text[start:end], inline_style)
+        if inline_style == "telegram":
+            parts.append(f"<u>{changed}</u>")
+        else:
+            parts.append(f"**{changed}**")
+        cursor = end
+    if cursor < len(text):
+        parts.append(_format_diff_line(text[cursor:], inline_style))
+    return "".join(parts)
+
+
+def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    merged = []
+    for start, end in sorted(ranges):
+        if start >= end:
+            continue
+        if not merged or start > merged[-1][1]:
+            merged.append((start, end))
+        else:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+    return merged
+
+
+def _format_diff_line(text: str, inline_style: Optional[str]) -> str:
+    if inline_style == "telegram":
+        return html.escape(text, quote=False)
+    return text
 
 
 def get_category_emoji(category: str) -> str:

@@ -284,14 +284,18 @@ class NotificationService:
             return await telegram.send_menu_notification(session, notice, menu_data)
         return None
     
-    def generate_clean_diff(self, old_text: str, new_text: str) -> str:
+    def generate_clean_diff(
+        self, old_text: str, new_text: str, inline_style: Optional[str] = None
+    ) -> str:
         """
         Legacy method - Generates a clean diff.
         Delegates to first available channel (all use same base method).
         """
         if self._channels:
-            return self._channels[0].generate_clean_diff(old_text, new_text)
+            return self._channels[0].generate_clean_diff(
+                old_text, new_text, inline_style=inline_style
+            )
         
         # Fallback
         from services.notification.formatters import generate_clean_diff
-        return generate_clean_diff(old_text, new_text)
+        return generate_clean_diff(old_text, new_text, inline_style=inline_style)
