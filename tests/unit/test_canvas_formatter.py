@@ -2,8 +2,7 @@
 
 The formatter has two render modes: plain (Discord embed) and
 html=True (Telegram parse_mode=HTML). Both produce the same logical
-layout — emoji + course/title + body + meta + 🔗 url — but differ in
-markup.
+layout — emoji + course/title + body + meta — but differ in markup.
 """
 import pytest
 
@@ -48,7 +47,7 @@ def test_format_new_assignment_plain_layout():
     assert "5.3, 5.5" in text
     assert any("배점: 100점" in line for line in lines)
     assert any("📎 제출:" in line and "파일 업로드" in line for line in lines)
-    assert lines[-1] == "🔗 https://canvas.yu.ac.kr/courses/2/assignments/1"
+    assert "🔗 " not in text
 
 
 def test_format_new_assignment_html_wraps_bold_and_blockquote():
@@ -64,7 +63,7 @@ def test_format_new_assignment_html_wraps_bold_and_blockquote():
     assert "<b>[논리회로] 새 과제</b>" in text
     assert "<b>HW #5</b>" in text
     assert "<blockquote>" in text and "5.3, 5.5" in text
-    assert "🔗 https://canvas.yu.ac.kr/courses/2/assignments/1" in text
+    assert "🔗 " not in text
 
 
 def test_format_html_escapes_user_supplied_text():
@@ -99,7 +98,7 @@ def test_format_modified_assignment_due_date_change():
     text = fmt.format_modified_assignment(a, changes, html=False)
     assert text.startswith("✏️ [논리회로] 과제 수정")
     assert "마감:" in text and "→" in text
-    assert "🔗 https://canvas.yu.ac.kr/courses/2/assignments/3" in text
+    assert "🔗 " not in text
 
 
 def test_format_new_announcement_with_attachment():
@@ -152,4 +151,4 @@ def test_format_deadline_reminder_unsubmitted():
     text = fmt.format_deadline_reminder(a, hours_left=24)
     assert text.startswith("⏰ [논리회로] 마감")
     assert "미제출" in text
-    assert "🔗 " in text
+    assert "🔗 " not in text

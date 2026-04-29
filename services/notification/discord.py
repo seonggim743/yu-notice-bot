@@ -93,6 +93,10 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
         channel_id: Optional[str] = None,
         event_kind: Optional[str] = None,
         attachment_payloads: Optional[List[Dict[str, Any]]] = None,
+        title: Optional[str] = None,
+        url: Optional[str] = None,
+        attachments: Optional[List[Any]] = None,
+        is_modified: Optional[bool] = None,
     ) -> Optional[str]:
         """Send a Canvas notification embed. Returns Discord message id.
 
@@ -104,7 +108,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
         """
         if not text or not channel_id:
             return None
-        url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+        message_url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
         auth_headers = {
             "Authorization": f"Bot {settings.DISCORD_BOT_TOKEN}",
         }
@@ -113,16 +117,30 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
             "Content-Type": "application/json",
         }
         description = self._truncate_canvas_description(text)
-        payload = {
-            "embeds": [
-                {
-                    "description": description,
-                    "color": self._canvas_embed_color(event_kind),
-                    "timestamp": get_utc_now().isoformat(),
-                }
-            ]
+        embed = {
+            "description": description,
+            "color": self._canvas_embed_color(event_kind),
+            "timestamp": get_utc_now().isoformat(),
         }
-        async with self._discord_request(session, "POST", url, headers=json_headers, json=payload) as resp:
+        if title:
+            embed["title"] = (
+                "⚠️ 공지사항 수정 알림"
+                if self._canvas_is_modified(event_kind, is_modified)
+                else self._truncate_canvas_title(title)
+            )
+        if url:
+            embed["url"] = url
+
+        attachment_field = self._canvas_attachment_field(
+            attachments, attachment_payloads
+        )
+        if attachment_field:
+            embed["fields"] = [attachment_field]
+
+        payload = {"embeds": [embed]}
+        async with self._discord_request(
+            session, "POST", message_url, headers=json_headers, json=payload
+        ) as resp:
             if resp.status not in (200, 201):
                 logger.error(
                     f"[NOTIFIER] Discord canvas send failed (status {resp.status}): "
@@ -228,6 +246,51 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
             },
             "allowed_mentions": {"replied_user": False},
         }
+
+    @staticmethod
+    def _canvas_is_modified(
+        event_kind: Optional[str], is_modified: Optional[bool]
+    ) -> bool:
+        return bool(
+            is_modified is True
+            or event_kind in {"assignment_modified", "due_date_changed"}
+        )
+
+    @staticmethod
+    def _truncate_canvas_title(title: str) -> str:
+        return title if len(title) <= 256 else title[:253].rstrip() + "..."
+
+    def _canvas_attachment_field(
+        self,
+        attachments: Optional[List[Any]],
+        attachment_payloads: Optional[List[Dict[str, Any]]],
+    ) -> Optional[Dict[str, Any]]:
+        lines = []
+        for att in attachments or []:
+            name = getattr(att, "display_name", "") or "첨부파일"
+            att_url = getattr(att, "url", "")
+            if att_url:
+                lines.append(f"{self._attachment_emoji(name)} [{name}]({att_url})")
+
+        if not lines:
+            for entry in attachment_payloads or []:
+                name = entry.get("source_filename") or "첨부파일"
+                att_url = entry.get("source_url")
+                if att_url:
+                    lines.append(f"{self._attachment_emoji(name)} [{name}]({att_url})")
+
+        if not lines:
+            return None
+        return {
+            "name": "📎 첨부파일",
+            "value": "\n".join(lines)[: constants.DISCORD_MAX_EMBED_LENGTH],
+            "inline": False,
+        }
+
+    @staticmethod
+    def _attachment_emoji(filename: str) -> str:
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "default"
+        return constants.FILE_EMOJI_MAP.get(ext, constants.FILE_EMOJI_MAP["default"])
 
     @staticmethod
     def _canvas_embed_color(event_kind: Optional[str]) -> int:

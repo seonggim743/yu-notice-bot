@@ -154,6 +154,11 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
         topic_id: Optional[int] = None,
         attachment_payloads: Optional[List[Dict[str, Any]]] = None,
         use_html: bool = False,
+        title: Optional[str] = None,
+        url: Optional[str] = None,
+        attachments: Optional[List[Any]] = None,
+        event_kind: Optional[str] = None,
+        is_modified: Optional[bool] = None,
     ) -> Optional[int]:
         """Send a Canvas notification. Returns Telegram message_id.
 
@@ -172,6 +177,14 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
         """
         if not text:
             return None
+        text = self._format_canvas_text(
+            text,
+            use_html=use_html,
+            title=title,
+            url=url,
+            event_kind=event_kind,
+            is_modified=is_modified,
+        )
         payload = {
             "chat_id": self.chat_id,
             "text": text,
@@ -181,6 +194,11 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
             payload["parse_mode"] = "HTML"
         if topic_id:
             payload["message_thread_id"] = topic_id
+        inline_keyboard = self._canvas_attachment_keyboard(
+            attachments, attachment_payloads
+        )
+        if inline_keyboard:
+            payload["reply_markup"] = json.dumps({"inline_keyboard": inline_keyboard})
         result = await self._send_telegram_api(session, "sendMessage", payload=payload)
         if not (result and result.get("ok")):
             return None
@@ -192,6 +210,61 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                     session, entry, topic_id, message_id
                 )
         return message_id
+
+    def _format_canvas_text(
+        self,
+        text: str,
+        use_html: bool,
+        title: Optional[str],
+        url: Optional[str],
+        event_kind: Optional[str],
+        is_modified: Optional[bool],
+    ) -> str:
+        prefix = self._canvas_status_prefix(event_kind, is_modified)
+        if prefix and not text.startswith(prefix):
+            text = f"{prefix} {text}"
+
+        if not (use_html and title and url):
+            return text
+
+        safe_title = html.escape(title, quote=False)
+        safe_url = html.escape(url, quote=True)
+        linked_title = f'<a href="{safe_url}"><b>{safe_title}</b></a>'
+        return text.replace(f"<b>{safe_title}</b>", linked_title, 1)
+
+    @staticmethod
+    def _canvas_status_prefix(
+        event_kind: Optional[str], is_modified: Optional[bool]
+    ) -> str:
+        if is_modified is True or event_kind in {
+            "assignment_modified",
+            "due_date_changed",
+        }:
+            return "🔄"
+        if event_kind in {"new_assignment", "new_announcement"}:
+            return "🆕"
+        return ""
+
+    @staticmethod
+    def _canvas_attachment_keyboard(
+        attachments: Optional[List[Any]],
+        attachment_payloads: Optional[List[Dict[str, Any]]],
+    ) -> Optional[List[List[Dict[str, str]]]]:
+        buttons = []
+        for att in attachments or []:
+            name = getattr(att, "display_name", "") or "첨부파일"
+            att_url = getattr(att, "url", "")
+            if att_url:
+                buttons.append({"text": name, "url": att_url})
+
+        if not buttons:
+            for entry in attachment_payloads or []:
+                name = entry.get("source_filename") or "첨부파일"
+                att_url = entry.get("source_url")
+                if att_url:
+                    buttons.append({"text": name, "url": att_url})
+
+        return [[button] for button in buttons] if buttons else None
 
     async def _send_canvas_attachment_entry(
         self,

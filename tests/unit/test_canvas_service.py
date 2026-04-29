@@ -137,6 +137,10 @@ async def test_new_assignment_detected_and_dispatched():
 
     assert repo.get_item(1, "assignment")["title"] == "HW #1"
     assert notifier.sent[0]["event_kind"] == "new_assignment"
+    assert notifier.sent[0]["title"] == "HW #1"
+    assert notifier.sent[0]["url"] == "https://canvas.test/assignments/1"
+    assert notifier.sent[0]["is_modified"] is False
+    assert "🔗 " not in notifier.sent[0]["text"]
 
 
 @pytest.mark.asyncio
@@ -182,6 +186,9 @@ async def test_assignment_modified_includes_due_body_points_and_submission_diff(
     assert "배점:" in text
     assert "제출:" in text
     assert "본문: 본문 변경 요약" in text
+    assert notifier.sent[0]["title"] == "HW #1"
+    assert notifier.sent[0]["url"] == "https://canvas.test/assignments/1"
+    assert notifier.sent[0]["is_modified"] is True
 
 
 @pytest.mark.asyncio
@@ -202,6 +209,9 @@ async def test_new_announcement_detected():
 
     assert repo.get_item(20, "announcement")["title"] == "시험 공지"
     assert notifier.sent[0]["event_kind"] == "new_announcement"
+    assert notifier.sent[0]["title"] == "시험 공지"
+    assert notifier.sent[0]["url"] == "https://canvas.test/announcements/20"
+    assert "🔗 " not in notifier.sent[0]["text"]
 
 
 @pytest.mark.asyncio

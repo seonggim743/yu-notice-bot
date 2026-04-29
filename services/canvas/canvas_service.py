@@ -476,12 +476,20 @@ class CanvasService:
             return
         try:
             attachment_payloads = await self._build_attachment_payloads(event.item)
+            is_modified = event.kind in {
+                KIND_ASSIGNMENT_MODIFIED,
+                KIND_DUE_DATE_CHANGED,
+            }
             await self.notifier.send_canvas_message(
                 self.client.session,
                 text_plain,
                 text_html=text_html,
                 event_kind=event.kind,
                 attachment_payloads=attachment_payloads,
+                title=self._event_title(event),
+                url=self._event_url(event),
+                attachments=getattr(event.item, "attachments", None) or [],
+                is_modified=is_modified,
             )
         except Exception as e:
             logger.error(f"[CANVAS] notification send failed: {e}")
@@ -579,12 +587,28 @@ class CanvasService:
                 {
                     "source_filename": filename,
                     "source_size": len(file_data),
+                    "source_url": att.url,
+                    "source_content_type": content_type,
                     "original_data": file_data,
                     "preview_images": preview_images,
                 }
             )
 
         return payloads
+
+    @staticmethod
+    def _event_title(event: CanvasEvent) -> str:
+        if hasattr(event.item, "name"):
+            return event.item.name or ""
+        if hasattr(event.item, "title"):
+            return event.item.title or ""
+        if hasattr(event.item, "assignment_id"):
+            return f"과제 #{event.item.assignment_id}"
+        return ""
+
+    @staticmethod
+    def _event_url(event: CanvasEvent) -> str:
+        return getattr(event.item, "html_url", "") or ""
 
     async def _download_canvas_attachment(
         self, attachment: CanvasAttachment
@@ -729,6 +753,9 @@ class CanvasService:
                 text_plain,
                 text_html=text_html,
                 event_kind="deadline_reminder",
+                title=item.name,
+                url=item.html_url,
+                is_modified=False,
             )
         except Exception as e:
             logger.error(f"[CANVAS] reminder send failed: {e}")
@@ -770,6 +797,9 @@ class CanvasService:
                     text_plain,
                     text_html=text_html,
                     event_kind=KIND_UNSUBMITTED_WARNING,
+                    title=item.name,
+                    url=item.html_url,
+                    is_modified=False,
                 )
                 self.repo.mark_unsubmitted_alerted(row["id"])
             except Exception as e:

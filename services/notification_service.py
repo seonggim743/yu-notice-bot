@@ -155,6 +155,10 @@ class NotificationService:
         routing_key: str = "canvas",
         event_kind: Optional[str] = None,
         attachment_payloads: Optional[List[Dict[str, Any]]] = None,
+        title: Optional[str] = None,
+        url: Optional[str] = None,
+        attachments: Optional[List[Any]] = None,
+        is_modified: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """Broadcast a Canvas notification to all enabled channels.
 
@@ -183,6 +187,11 @@ class NotificationService:
                     topic_id=topic_id,
                     attachment_payloads=attachment_payloads,
                     use_html=bool(text_html),
+                    title=title,
+                    url=url,
+                    attachments=attachments,
+                    event_kind=event_kind,
+                    is_modified=is_modified,
                 )
             except Exception as e:
                 logger.error(f"[NOTIFICATION] Telegram canvas send failed: {e}")
@@ -205,6 +214,10 @@ class NotificationService:
                         channel_id=channel_id,
                         event_kind=event_kind,
                         attachment_payloads=attachment_payloads,
+                        title=title,
+                        url=url,
+                        attachments=attachments,
+                        is_modified=is_modified,
                     )
                 except Exception as e:
                     logger.error(f"[NOTIFICATION] Discord canvas send failed: {e}")

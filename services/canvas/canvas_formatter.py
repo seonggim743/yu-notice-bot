@@ -110,14 +110,6 @@ def _attachment_lines(attachments: List[Any], html: bool) -> List[str]:
     return lines
 
 
-def _link_line(url: str, html: bool) -> str:
-    """Final '🔗 url' line; in HTML mode this is non-clickable text per
-    spec example."""
-    if not url:
-        return ""
-    return f"🔗 {_e(url, html)}"
-
-
 def _resolve_body_limit(html: bool, override: Optional[int]) -> int:
     if override is not None:
         return override
@@ -156,9 +148,6 @@ def format_new_assignment(
 
     lines.extend(_attachment_lines(item.attachments, html))
 
-    link = _link_line(item.html_url, html)
-    if link:
-        lines.append(link)
     return "\n".join(lines)
 
 
@@ -194,9 +183,6 @@ def format_modified_assignment(
     if len(lines) == 2:
         lines.append(_e("변경된 항목이 있습니다.", html))
 
-    link = _link_line(item.html_url, html)
-    if link:
-        lines.append(link)
     return "\n".join(lines)
 
 
@@ -209,9 +195,6 @@ def format_unsubmitted_warning(
     due = _format_kst_datetime(item.due_at) or "미정"
     lines.append(f"⏰ 마감 지남 ({_e(due, html)})")
 
-    link = _link_line(item.html_url, html)
-    if link:
-        lines.append(link)
     return "\n".join(lines)
 
 
@@ -231,9 +214,6 @@ def format_new_announcement(
 
     lines.extend(_attachment_lines(item.attachments, html))
 
-    link = _link_line(item.html_url, html)
-    if link:
-        lines.append(link)
     return "\n".join(lines)
 
 
@@ -262,8 +242,6 @@ def format_grade_notification(
         score_str = "채점 완료"
     lines.append(f"💯 {_e(score_str, html)}")
 
-    if assignment and assignment.html_url:
-        lines.append(_link_line(assignment.html_url, html))
     return "\n".join(lines)
 
 
@@ -293,9 +271,6 @@ def format_deadline_reminder(
     else:
         lines.append("제출 상태: 제출 완료")
 
-    link = _link_line(item.html_url, html)
-    if link:
-        lines.append(link)
     return "\n".join(lines)
 
 
