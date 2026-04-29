@@ -37,29 +37,43 @@ class TestFormatters:
         assert len(diff) > 1550
         assert "(생략)" not in diff
 
-    def test_generate_clean_diff_telegram_inline_highlight(self):
-        """Test inline HTML highlight for long similar changed lines"""
+    def test_generate_clean_diff_telegram_context_snippet(self):
+        """Test context snippets for long similar changed lines"""
         old = "오늘 오후에는 야외에 제초제 살포 작업을 진행합니다. 안전에 유의해주세요."
         new = "오늘 오후에는 야외에 수목에 방제 작업을 진행합니다. 안전에 유의해주세요."
 
         diff = formatters.generate_clean_diff(old, new, inline_style="telegram")
 
-        assert "🔴" in diff and "🟢" in diff
-        assert "<u>" in diff and "</u>" in diff
+        assert "🔴" not in diff and "🟢" not in diff
+        assert "<u>" not in diff and "</u>" not in diff
+        assert "[" in diff and " → " in diff and "]" in diff
         assert "제초제" in diff
         assert "수목" in diff
 
-    def test_generate_clean_diff_discord_inline_highlight(self):
-        """Test inline Markdown highlight for long similar changed lines"""
+    def test_generate_clean_diff_discord_context_snippet(self):
+        """Test context snippets for long similar changed lines"""
         old = "오늘 오후에는 야외에 제초제 살포 작업을 진행합니다. 안전에 유의해주세요."
         new = "오늘 오후에는 야외에 수목에 방제 작업을 진행합니다. 안전에 유의해주세요."
 
         diff = formatters.generate_clean_diff(old, new, inline_style="discord")
 
-        assert "🔴" in diff and "🟢" in diff
-        assert "**" in diff
+        assert "🔴" not in diff and "🟢" not in diff
+        assert "**" not in diff
+        assert "[" in diff and " → " in diff and "]" in diff
         assert "제초제" in diff
         assert "수목" in diff
+
+    def test_generate_clean_diff_context_multiple_changes(self):
+        """Multiple long-line changes should be shown one snippet per change."""
+        old = "접수 현황 : 25 / 30 온라인 접수 중이며 신청 마감일은 2026.05.10. 입니다."
+        new = "접수 현황 : 26 / 30 온라인 접수 중이며 신청 마감일은 2026.05.11. 입니다."
+
+        diff = formatters.generate_clean_diff(old, new, inline_style="discord")
+
+        lines = diff.splitlines()
+        assert len(lines) == 2
+        assert any("[25 → 26]" in line for line in lines)
+        assert any("[2026.05.10. → 2026.05.11.]" in line for line in lines)
 
     def test_generate_clean_diff_short_lines_stay_line_level(self):
         """Short replacements should stay as plain line-level diff"""
