@@ -9,6 +9,8 @@ import re
 from datetime import datetime
 from typing import Dict, Any, Optional
 
+from bs4 import BeautifulSoup
+
 from core import constants
 from core.utils import get_utc_now
 
@@ -24,6 +26,8 @@ SCHOOL_LOGO_URL = constants.SCHOOL_LOGO_URL
 INLINE_DIFF_MIN_LINE_LENGTH = 30
 INLINE_DIFF_MIN_RATIO = 0.45
 INLINE_DIFF_MIN_SPAN = 2
+TELEGRAM_QUOTE_LENGTH = 500
+DISCORD_QUOTE_LENGTH = 1000
 
 
 def generate_clean_diff(
@@ -284,6 +288,36 @@ def truncate_text(text: str, max_length: int, suffix: str = "...") -> str:
     return text[: max_length - len(suffix)] + suffix
 
 
+def strip_html_text(
+    raw_text: str, max_length: Optional[int] = None, suffix: str = "..."
+) -> str:
+    """Remove HTML/media tags and collapse whitespace for notification quotes."""
+    if not raw_text:
+        return ""
+
+    soup = BeautifulSoup(raw_text, "html.parser")
+    for tag in soup(["script", "style", "img"]):
+        tag.decompose()
+
+    text = soup.get_text("\n")
+    text = html.unescape(text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+
+    if max_length and len(text) > max_length:
+        return text[: max_length - len(suffix)].rstrip() + suffix
+    return text
+
+
+def get_notice_quote_text(notice, max_length: int) -> str:
+    """Prefer AI summary, then stripped notice body, for compact quote previews."""
+    source = notice.summary or notice.content or ""
+    if source.startswith("[단신]"):
+        source = source.replace("[단신]", "", 1).strip()
+    return strip_html_text(source, max_length=max_length)
+
+
 def format_date(dt_str: str) -> str:
     """Format datetime string to readable format."""
     if not dt_str:
@@ -359,11 +393,9 @@ def create_discord_embed(notice, is_new: bool, modified_reason: str = "", change
     )
 
     # Handle Short Article (단신)
-    summary_text = notice.summary
     summary_header = "📝 **요약**"
     
     if notice.summary and notice.summary.startswith("[단신]"):
-        summary_text = notice.summary.replace("[단신]", "").strip()
         summary_header = "📝 **원문**"
     
     description_text = ""
@@ -373,9 +405,9 @@ def create_discord_embed(notice, is_new: bool, modified_reason: str = "", change
     # However, if we don't have detailed changes but have a reason, we can mention it here or in fields.
     # Logic moved to Field generation.
 
-    if summary_text:
-        formatted_summary = format_summary_lines(summary_text)
-        description_text += f"{summary_header}\n{formatted_summary}"
+    quote_text = get_notice_quote_text(notice, DISCORD_QUOTE_LENGTH)
+    if quote_text:
+        description_text += f"{summary_header}\n{quote_text}"
 
     embed = {
         "title": f"{prefix} {emoji} {truncate_text(notice.title, 200)}",
@@ -463,15 +495,8 @@ def create_telegram_message(notice, is_new: bool, modified_reason: str = "", cha
     
     # Handle Short Article (단신)
     summary_header = "📝 <b>요약</b>"
-    summary_text = notice.summary
-    
     if notice.summary and notice.summary.startswith("[단신]"):
         summary_header = "📝 <b>원문</b>"
-        summary_text = notice.summary.replace("[단신]", "").strip()
-    
-    safe_summary = (
-        format_summary_lines(escape_html(summary_text)) if summary_text else ""
-    )
 
     msg = f"{prefix} <a href='{notice.url}'><b>{emoji} {safe_title}</b></a>\n\n"
 
@@ -483,7 +508,9 @@ def create_telegram_message(notice, is_new: bool, modified_reason: str = "", cha
     elif not is_new and modified_reason:
         msg += f"⚠️ <b>수정 사항</b>: {modified_reason}\n\n"
 
-    msg += f"{summary_header}\n{safe_summary}\n\n"
+    quote_text = get_notice_quote_text(notice, TELEGRAM_QUOTE_LENGTH)
+    if quote_text:
+        msg += f"{summary_header}\n<blockquote>{escape_html(quote_text)}</blockquote>\n\n"
 
     # Add optional fields - Skip for dormitory_menu
     is_menu = notice.site_key == "dormitory_menu"

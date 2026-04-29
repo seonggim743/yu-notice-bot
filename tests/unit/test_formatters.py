@@ -3,6 +3,7 @@ Unit tests for NotificationService formatters module.
 """
 
 from services.notification import formatters
+from models.notice import Notice
 
 
 class TestFormatters:
@@ -138,3 +139,42 @@ class TestFormatters:
 
         assert truncated == "Short"
         assert "..." not in truncated
+
+    def test_strip_html_text_removes_images_and_truncates(self):
+        raw = "<p>본문 <b>텍스트</b></p><img src='x.jpg'><script>x()</script>"
+
+        text = formatters.strip_html_text(raw, max_length=20)
+
+        assert "본문" in text
+        assert "텍스트" in text
+        assert "img" not in text
+        assert "x()" not in text
+
+    def test_create_telegram_message_quotes_summary(self):
+        notice = Notice(
+            site_key="yu_news",
+            article_id="1",
+            title="공지",
+            content="<p>원문 본문</p>",
+            summary="AI 요약 내용",
+            url="https://example.com",
+        )
+
+        msg = formatters.create_telegram_message(notice, is_new=True)
+
+        assert "<blockquote>AI 요약 내용</blockquote>" in msg
+
+    def test_create_discord_embed_quotes_content_without_summary(self):
+        notice = Notice(
+            site_key="yu_news",
+            article_id="1",
+            title="공지",
+            content="<p>원문 <img src='x.jpg'>본문</p>",
+            url="https://example.com",
+        )
+
+        embed = formatters.create_discord_embed(notice, is_new=True)
+
+        assert "원문" in embed["description"]
+        assert "본문" in embed["description"]
+        assert "<img" not in embed["description"]

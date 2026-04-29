@@ -26,7 +26,7 @@ def test_strip_html_removes_tags_and_collapses_whitespace():
 def test_strip_html_truncates_to_limit():
     out = fmt._strip_html("a" * 1500, limit=50)
     assert len(out) == 50
-    assert out.endswith("…")
+    assert out.endswith("...")
 
 
 def test_format_new_assignment_plain_layout():

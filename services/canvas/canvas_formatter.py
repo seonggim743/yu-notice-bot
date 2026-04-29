@@ -36,6 +36,7 @@ def _strip_html(html: Optional[str], limit: int = 500) -> str:
     if not html:
         return ""
     text = re.sub(r"<(script|style)[^>]*>.*?</\1>", "", html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<img\b[^>]*>", "", text, flags=re.IGNORECASE)
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"</p>\s*<p>", "\n\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", "", text)
@@ -47,7 +48,7 @@ def _strip_html(html: Optional[str], limit: int = 500) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
     if len(text) > limit:
-        text = text[: limit - 1].rstrip() + "…"
+        text = text[: limit - 3].rstrip() + "..."
     return text
 
 
