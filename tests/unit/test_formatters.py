@@ -176,7 +176,22 @@ class TestFormatters:
 
         msg = formatters.create_telegram_message(notice, is_new=True)
 
-        assert "<blockquote>AI 요약 내용</blockquote>" in msg
+        assert "<blockquote>- AI 요약 내용</blockquote>" in msg
+
+    def test_create_telegram_message_does_not_bullet_short_article_quote(self):
+        notice = Notice(
+            site_key="yu_news",
+            article_id="1",
+            title="공지",
+            content="<p>원문 본문</p>",
+            summary="[단신] 원문 그대로",
+            url="https://example.com",
+        )
+
+        msg = formatters.create_telegram_message(notice, is_new=True)
+
+        assert "<blockquote>원문 그대로</blockquote>" in msg
+        assert "<blockquote>- 원문 그대로</blockquote>" not in msg
 
     def test_create_discord_embed_quotes_content_without_summary(self):
         notice = Notice(
@@ -192,3 +207,17 @@ class TestFormatters:
         assert "원문" in embed["description"]
         assert "본문" in embed["description"]
         assert "<img" not in embed["description"]
+
+    def test_create_discord_embed_bullets_summary_lines(self):
+        notice = Notice(
+            site_key="yu_news",
+            article_id="1",
+            title="공지",
+            summary="첫 번째 요약\n두 번째 요약",
+            url="https://example.com",
+        )
+
+        embed = formatters.create_discord_embed(notice, is_new=True)
+
+        assert "- 첫 번째 요약" in embed["description"]
+        assert "- 두 번째 요약" in embed["description"]

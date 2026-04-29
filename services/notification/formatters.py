@@ -446,12 +446,20 @@ def strip_html_text(
     return text
 
 
-def get_notice_quote_text(notice, max_length: int) -> str:
+def get_notice_quote_text(
+    notice, max_length: int, bullet_summary: bool = False
+) -> str:
     """Prefer AI summary, then stripped notice body, for compact quote previews."""
-    source = notice.summary or notice.content or ""
-    if source.startswith("[단신]"):
+    summary = notice.summary or ""
+    is_ai_summary = bool(summary and not summary.startswith("[단신]"))
+    source = summary or notice.content or ""
+    if summary.startswith("[단신]"):
         source = source.replace("[단신]", "", 1).strip()
-    return strip_html_text(source, max_length=max_length)
+
+    text = strip_html_text(source)
+    if is_ai_summary and bullet_summary:
+        text = format_summary_lines(text)
+    return truncate_text(text, max_length)
 
 
 def format_date(dt_str: str) -> str:
@@ -541,7 +549,9 @@ def create_discord_embed(notice, is_new: bool, modified_reason: str = "", change
     # However, if we don't have detailed changes but have a reason, we can mention it here or in fields.
     # Logic moved to Field generation.
 
-    quote_text = get_notice_quote_text(notice, DISCORD_QUOTE_LENGTH)
+    quote_text = get_notice_quote_text(
+        notice, DISCORD_QUOTE_LENGTH, bullet_summary=True
+    )
     if quote_text:
         description_text += f"{summary_header}\n{quote_text}"
 
@@ -644,7 +654,9 @@ def create_telegram_message(notice, is_new: bool, modified_reason: str = "", cha
     elif not is_new and modified_reason:
         msg += f"⚠️ <b>수정 사항</b>: {modified_reason}\n\n"
 
-    quote_text = get_notice_quote_text(notice, TELEGRAM_QUOTE_LENGTH)
+    quote_text = get_notice_quote_text(
+        notice, TELEGRAM_QUOTE_LENGTH, bullet_summary=True
+    )
     if quote_text:
         msg += f"{summary_header}\n<blockquote>{escape_html(quote_text)}</blockquote>\n\n"
 
