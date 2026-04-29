@@ -161,10 +161,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
         for chunk_idx, chunk in enumerate(chunks):
             content = self._preview_caption(source_filename, chunk_idx, total_chunks)
             form = MultipartWriter("form-data")
-            payload = {
-                "content": content,
-                "message_reference": {"message_id": reply_to_id},
-            }
+            payload = self._canvas_reply_payload(channel_id, reply_to_id, content)
             self._add_text_part(form, "payload_json", json.dumps(payload))
             for idx, image in enumerate(chunk):
                 self._add_file_part(
@@ -188,10 +185,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
         if original_data and source_size <= constants.DISCORD_FILE_SIZE_LIMIT:
             content = self._original_caption(source_filename, source_size)
             form = MultipartWriter("form-data")
-            payload = {
-                "content": content,
-                "message_reference": {"message_id": reply_to_id},
-            }
+            payload = self._canvas_reply_payload(channel_id, reply_to_id, content)
             self._add_text_part(form, "payload_json", json.dumps(payload))
             self._add_file_part(form, "files[0]", original_data, source_filename)
             try:
@@ -219,6 +213,21 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
     @staticmethod
     def _original_caption(filename: str, size_bytes: int) -> str:
         return f"📎 [원본] {filename} ({_format_byte_size_discord(size_bytes)})"
+
+    @staticmethod
+    def _canvas_reply_payload(
+        channel_id: str, reply_to_id: str, content: str
+    ) -> Dict[str, Any]:
+        """Build a Discord reply payload for Canvas attachment follow-ups."""
+        return {
+            "content": content,
+            "message_reference": {
+                "message_id": str(reply_to_id),
+                "channel_id": str(channel_id),
+                "fail_if_not_exists": False,
+            },
+            "allowed_mentions": {"replied_user": False},
+        }
 
     @staticmethod
     def _canvas_embed_color(event_kind: Optional[str]) -> int:
