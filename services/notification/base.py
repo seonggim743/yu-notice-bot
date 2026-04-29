@@ -117,9 +117,11 @@ class BaseNotifier:
         # 4. Set Header
         part.headers["Content-Disposition"] = new_header_value
 
-    def generate_clean_diff(self, old_text: str, new_text: str) -> str:
+    def generate_clean_diff(
+        self, old_text: str, new_text: str, inline_style: Optional[str] = None
+    ) -> str:
         """
         Generates a clean, line-by-line diff showing only changes.
         Delegates to formatters module.
         """
-        return generate_clean_diff(old_text, new_text)
+        return generate_clean_diff(old_text, new_text, inline_style=inline_style)

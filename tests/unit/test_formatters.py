@@ -3,6 +3,7 @@ Unit tests for NotificationService formatters module.
 """
 
 from services.notification import formatters
+from models.notice import Notice
 
 
 class TestFormatters:
@@ -35,6 +36,40 @@ class TestFormatters:
 
         assert len(diff) > 1550
         assert "(생략)" not in diff
+
+    def test_generate_clean_diff_telegram_inline_highlight(self):
+        """Test inline HTML highlight for long similar changed lines"""
+        old = "오늘 오후에는 야외에 제초제 살포 작업을 진행합니다. 안전에 유의해주세요."
+        new = "오늘 오후에는 야외에 수목에 방제 작업을 진행합니다. 안전에 유의해주세요."
+
+        diff = formatters.generate_clean_diff(old, new, inline_style="telegram")
+
+        assert "🔴" in diff and "🟢" in diff
+        assert "<u>" in diff and "</u>" in diff
+        assert "제초제" in diff
+        assert "수목" in diff
+
+    def test_generate_clean_diff_discord_inline_highlight(self):
+        """Test inline Markdown highlight for long similar changed lines"""
+        old = "오늘 오후에는 야외에 제초제 살포 작업을 진행합니다. 안전에 유의해주세요."
+        new = "오늘 오후에는 야외에 수목에 방제 작업을 진행합니다. 안전에 유의해주세요."
+
+        diff = formatters.generate_clean_diff(old, new, inline_style="discord")
+
+        assert "🔴" in diff and "🟢" in diff
+        assert "**" in diff
+        assert "제초제" in diff
+        assert "수목" in diff
+
+    def test_generate_clean_diff_short_lines_stay_line_level(self):
+        """Short replacements should stay as plain line-level diff"""
+        diff = formatters.generate_clean_diff(
+            "마감 4/6", "마감 4/8", inline_style="telegram"
+        )
+
+        assert "<u>" not in diff
+        assert "🔴 마감 4/6" in diff
+        assert "🟢 마감 4/8" in diff
 
     def test_get_category_emoji(self):
         """Test category emoji mapping"""
@@ -104,3 +139,42 @@ class TestFormatters:
 
         assert truncated == "Short"
         assert "..." not in truncated
+
+    def test_strip_html_text_removes_images_and_truncates(self):
+        raw = "<p>본문 <b>텍스트</b></p><img src='x.jpg'><script>x()</script>"
+
+        text = formatters.strip_html_text(raw, max_length=20)
+
+        assert "본문" in text
+        assert "텍스트" in text
+        assert "img" not in text
+        assert "x()" not in text
+
+    def test_create_telegram_message_quotes_summary(self):
+        notice = Notice(
+            site_key="yu_news",
+            article_id="1",
+            title="공지",
+            content="<p>원문 본문</p>",
+            summary="AI 요약 내용",
+            url="https://example.com",
+        )
+
+        msg = formatters.create_telegram_message(notice, is_new=True)
+
+        assert "<blockquote>AI 요약 내용</blockquote>" in msg
+
+    def test_create_discord_embed_quotes_content_without_summary(self):
+        notice = Notice(
+            site_key="yu_news",
+            article_id="1",
+            title="공지",
+            content="<p>원문 <img src='x.jpg'>본문</p>",
+            url="https://example.com",
+        )
+
+        embed = formatters.create_discord_embed(notice, is_new=True)
+
+        assert "원문" in embed["description"]
+        assert "본문" in embed["description"]
+        assert "<img" not in embed["description"]

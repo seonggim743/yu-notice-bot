@@ -3,7 +3,7 @@
 # =============================================================================
 
 # YU Authentication URLs
-AUTH_SSO_EOULLIM_URL = "https://portal.yu.ac.kr/sso/login.jsp?type=linc&cReturn_Url=join.yu.ac.kr"
+AUTH_SSO_EOULLIM_URL = "https://portal.yu.ac.kr/sso/login.jsp?type=linc&cReturn_Url=https%3A%2F%2Fjoin.yu.ac.kr%2Ffront_new%2F"
 AUTH_SSO_YUTOPIA_URL = "https://portal.yu.ac.kr/sso/login.jsp?type=linc&cReturn_Url=https%3A%2F%2Fyutopia.yu.ac.kr%2Fmodules%2Fyu%2Fsso%2FloginCheck.php"
 AUTH_SUCCESS_EOULLIM_PATTERN = "join.yu.ac.kr"
 AUTH_SUCCESS_YUTOPIA_PATTERN = "yutopia.yu.ac.kr"
@@ -36,9 +36,9 @@ SITE_NAME_MAP = {
     "calendar": "학사일정",
     "dormitory_notice": "생활관공지",
     "dormitory_menu": "기숙사식단",
-    "eoullim_career": "이음림커리어",
-    "eoullim_external": "이음림대외활동",
-    "eoullim_study": "이음림스터디",
+    "eoullim_career": "어울림커리어",
+    "eoullim_external": "어울림대외활동",
+    "eoullim_study": "어울림스터디",
     "yutopia": "유토피아",
     "computer_notice": "컴퓨터학부공지",
     "swedu_notice": "SW중심대학",
@@ -93,6 +93,23 @@ FILENAME_TRUNCATE_LENGTH = 20
 # AI Settings
 # =============================================================================
 AI_TEXT_TRUNCATE_LIMIT = 8000
+
+# =============================================================================
+# Canvas LMS Settings
+# =============================================================================
+# Tiers for assignment deadline reminders (hours before due_at).
+CANVAS_REMINDER_HOURS = [72, 24, 3]
+
+# Reference map of event-kind → emoji prefix used by canvas_formatter.
+# Kept here so any future channel that needs to react to event types has
+# a single source of truth.
+CANVAS_EMOJI_MAP = {
+    "assignment_new": "📝",
+    "assignment_modified": "✏️",
+    "announcement": "📢",
+    "grade": "📊",
+    "deadline_reminder": "⏰",
+}
 
 # =============================================================================
 # File Extension Emojis

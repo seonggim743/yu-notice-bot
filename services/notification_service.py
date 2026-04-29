@@ -7,6 +7,7 @@ Channels are injected via constructor, enabling OCP compliance.
 import aiohttp
 from typing import Dict, List, Optional, Any, Tuple
 
+from core.config import settings
 from core.logger import get_logger
 from models.notice import Notice
 from services.notification.base import NotificationChannel
@@ -146,6 +147,84 @@ class NotificationService:
         
         return results
     
+    async def send_canvas_message(
+        self,
+        session: aiohttp.ClientSession,
+        text: str,
+        text_html: Optional[str] = None,
+        routing_key: str = "canvas",
+        event_kind: Optional[str] = None,
+        attachment_payloads: Optional[List[Dict[str, Any]]] = None,
+        title: Optional[str] = None,
+        url: Optional[str] = None,
+        attachments: Optional[List[Any]] = None,
+        is_modified: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Broadcast a Canvas notification to all enabled channels.
+
+        - `text` is the plain-text rendering used by Discord embed bodies
+          and as the Telegram fallback if `text_html` isn't provided.
+        - `text_html` is the Telegram parse_mode="HTML" rendering with
+          <b>/<blockquote> markup; pass it whenever the channel can render
+          rich text.
+        - `attachment_payloads` is the per-file payload list produced by
+          CanvasService._build_attachment_payloads. Each notifier handles
+          its own preview-batch + original-file reply chain.
+
+        Routing:
+        - Telegram: settings.TELEGRAM_TOPIC_MAP[routing_key] for topic id
+        - Discord:  settings.DISCORD_CHANNEL_MAP[routing_key] for channel id
+        """
+        results: Dict[str, Any] = {}
+
+        telegram = self.telegram
+        if telegram and telegram.is_enabled():
+            topic_id = settings.TELEGRAM_TOPIC_MAP.get(routing_key)
+            try:
+                results["telegram"] = await telegram.send_canvas_message(
+                    session,
+                    text_html or text,
+                    topic_id=topic_id,
+                    attachment_payloads=attachment_payloads,
+                    use_html=bool(text_html),
+                    title=title,
+                    url=url,
+                    attachments=attachments,
+                    event_kind=event_kind,
+                    is_modified=is_modified,
+                )
+            except Exception as e:
+                logger.error(f"[NOTIFICATION] Telegram canvas send failed: {e}")
+                results["telegram"] = None
+
+        discord = self.discord
+        if discord and discord.is_enabled():
+            channel_id = settings.DISCORD_CHANNEL_MAP.get(routing_key)
+            if not channel_id:
+                logger.warning(
+                    f"[NOTIFICATION] DISCORD_CHANNEL_MAP has no '{routing_key}' "
+                    "key; skipping Discord canvas message."
+                )
+                results["discord"] = None
+            else:
+                try:
+                    results["discord"] = await discord.send_canvas_message(
+                        session,
+                        text,
+                        channel_id=channel_id,
+                        event_kind=event_kind,
+                        attachment_payloads=attachment_payloads,
+                        title=title,
+                        url=url,
+                        attachments=attachments,
+                        is_modified=is_modified,
+                    )
+                except Exception as e:
+                    logger.error(f"[NOTIFICATION] Discord canvas send failed: {e}")
+                    results["discord"] = None
+
+        return results
+
     # =========================================================================
     # Backward Compatibility - Legacy Methods
     # These delegate to the new Strategy-based implementation
@@ -218,14 +297,18 @@ class NotificationService:
             return await telegram.send_menu_notification(session, notice, menu_data)
         return None
     
-    def generate_clean_diff(self, old_text: str, new_text: str) -> str:
+    def generate_clean_diff(
+        self, old_text: str, new_text: str, inline_style: Optional[str] = None
+    ) -> str:
         """
         Legacy method - Generates a clean diff.
         Delegates to first available channel (all use same base method).
         """
         if self._channels:
-            return self._channels[0].generate_clean_diff(old_text, new_text)
+            return self._channels[0].generate_clean_diff(
+                old_text, new_text, inline_style=inline_style
+            )
         
         # Fallback
         from services.notification.formatters import generate_clean_diff
-        return generate_clean_diff(old_text, new_text)
+        return generate_clean_diff(old_text, new_text, inline_style=inline_style)

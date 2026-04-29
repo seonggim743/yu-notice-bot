@@ -147,6 +147,213 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                     return None
         return None
 
+    async def send_canvas_message(
+        self,
+        session: aiohttp.ClientSession,
+        text: str,
+        topic_id: Optional[int] = None,
+        attachment_payloads: Optional[List[Dict[str, Any]]] = None,
+        use_html: bool = False,
+        title: Optional[str] = None,
+        url: Optional[str] = None,
+        attachments: Optional[List[Any]] = None,
+        event_kind: Optional[str] = None,
+        is_modified: Optional[bool] = None,
+    ) -> Optional[int]:
+        """Send a Canvas notification. Returns Telegram message_id.
+
+        When `use_html` is True the message is sent with parse_mode="HTML"
+        so <b>/<blockquote> tags render. Caller must have escaped any
+        user-supplied content (canvas_formatter handles this).
+
+        For each entry in `attachment_payloads` we send:
+        1. preview image batches (≤10 photos per Telegram media group)
+           with caption "📑 [미리보기] {filename} (N/M)"
+        2. the original file as a sendDocument reply with caption
+           "📎 [원본] {filename} ({size})"
+
+        All extra messages are sent as replies to the main message so
+        Telegram threads them visually.
+        """
+        if not text:
+            return None
+        text = self._format_canvas_text(
+            text,
+            use_html=use_html,
+            title=title,
+            url=url,
+            event_kind=event_kind,
+            is_modified=is_modified,
+        )
+        payload = {
+            "chat_id": self.chat_id,
+            "text": text,
+            "disable_web_page_preview": True,
+        }
+        if use_html:
+            payload["parse_mode"] = "HTML"
+        if topic_id:
+            payload["message_thread_id"] = topic_id
+        inline_keyboard = self._canvas_attachment_keyboard(
+            attachments, attachment_payloads
+        )
+        if inline_keyboard:
+            payload["reply_markup"] = json.dumps({"inline_keyboard": inline_keyboard})
+        result = await self._send_telegram_api(session, "sendMessage", payload=payload)
+        if not (result and result.get("ok")):
+            return None
+
+        message_id = result.get("result", {}).get("message_id")
+        if attachment_payloads and message_id:
+            for entry in attachment_payloads:
+                await self._send_canvas_attachment_entry(
+                    session, entry, topic_id, message_id
+                )
+        return message_id
+
+    def _format_canvas_text(
+        self,
+        text: str,
+        use_html: bool,
+        title: Optional[str],
+        url: Optional[str],
+        event_kind: Optional[str],
+        is_modified: Optional[bool],
+    ) -> str:
+        prefix = self._canvas_status_prefix(event_kind, is_modified)
+        if prefix and not text.startswith(prefix):
+            text = f"{prefix} {text}"
+
+        if not (use_html and title and url):
+            return text
+
+        safe_title = html.escape(title, quote=False)
+        safe_url = html.escape(url, quote=True)
+        linked_title = f'<a href="{safe_url}"><b>{safe_title}</b></a>'
+        return text.replace(f"<b>{safe_title}</b>", linked_title, 1)
+
+    @staticmethod
+    def _canvas_status_prefix(
+        event_kind: Optional[str], is_modified: Optional[bool]
+    ) -> str:
+        if is_modified is True or event_kind in {
+            "assignment_modified",
+            "due_date_changed",
+        }:
+            return "🔄"
+        if event_kind in {"new_assignment", "new_announcement"}:
+            return "🆕"
+        return ""
+
+    @staticmethod
+    def _canvas_attachment_keyboard(
+        attachments: Optional[List[Any]],
+        attachment_payloads: Optional[List[Dict[str, Any]]],
+    ) -> Optional[List[List[Dict[str, str]]]]:
+        buttons = []
+        for att in attachments or []:
+            name = getattr(att, "display_name", "") or "첨부파일"
+            att_url = getattr(att, "url", "")
+            if att_url:
+                buttons.append({"text": name, "url": att_url})
+
+        if not buttons:
+            for entry in attachment_payloads or []:
+                name = entry.get("source_filename") or "첨부파일"
+                att_url = entry.get("source_url")
+                if att_url:
+                    buttons.append({"text": name, "url": att_url})
+
+        return [[button] for button in buttons] if buttons else None
+
+    async def _send_canvas_attachment_entry(
+        self,
+        session: aiohttp.ClientSession,
+        entry: Dict[str, Any],
+        topic_id: Optional[int],
+        reply_to_message_id: int,
+    ) -> None:
+        """Send one source-file's previews + original file as replies."""
+        source_filename = entry.get("source_filename") or "첨부파일"
+        previews = entry.get("preview_images") or []
+        original_data = entry.get("original_data")
+        source_size = int(entry.get("source_size") or 0)
+
+        # 1. Preview chunks (Telegram media group max 10).
+        chunks = [previews[i : i + 10] for i in range(0, len(previews), 10)] or []
+        total_chunks = len(chunks)
+        for chunk_idx, chunk in enumerate(chunks):
+            caption = self._preview_caption(source_filename, chunk_idx, total_chunks)
+            form = MultipartWriter("form-data")
+            self._add_text_part(form, "chat_id", self.chat_id)
+            self._add_text_part(form, "reply_to_message_id", reply_to_message_id)
+            if topic_id:
+                self._add_text_part(form, "message_thread_id", topic_id)
+
+            media = []
+            for idx, image in enumerate(chunk):
+                field_name = f"preview_{idx}"
+                item = {"type": "photo", "media": f"attach://{field_name}"}
+                # Telegram puts the album-level caption on the first item.
+                if idx == 0:
+                    item["caption"] = caption
+                media.append(item)
+                self._add_file_part(
+                    form,
+                    field_name,
+                    image["data"],
+                    image.get("filename") or f"preview_{idx + 1}.jpg",
+                    content_type="image/jpeg",
+                )
+            self._add_text_part(form, "media", json.dumps(media))
+            await self._send_telegram_api(session, "sendMediaGroup", data=form)
+
+        # 2. Original file (skip if missing or larger than Telegram's limit).
+        if original_data and source_size <= constants.TELEGRAM_FILE_SIZE_LIMIT:
+            doc_form = MultipartWriter("form-data")
+            self._add_text_part(doc_form, "chat_id", self.chat_id)
+            self._add_text_part(doc_form, "reply_to_message_id", reply_to_message_id)
+            if topic_id:
+                self._add_text_part(doc_form, "message_thread_id", topic_id)
+            self._add_text_part(
+                doc_form,
+                "caption",
+                self._original_caption(source_filename, source_size),
+            )
+            self._add_file_part(
+                doc_form,
+                "document",
+                original_data,
+                source_filename,
+            )
+            await self._send_telegram_api(session, "sendDocument", data=doc_form)
+        elif original_data:
+            logger.info(
+                f"[NOTIFIER] Skipping original-file forward for {source_filename}: "
+                f"{source_size} bytes exceeds Telegram limit "
+                f"{constants.TELEGRAM_FILE_SIZE_LIMIT}"
+            )
+
+    @staticmethod
+    def _preview_caption(filename: str, chunk_idx: int, total_chunks: int) -> str:
+        suffix = f" ({chunk_idx + 1}/{total_chunks})" if total_chunks > 1 else ""
+        return f"📑 [미리보기] {filename}{suffix}"
+
+    @staticmethod
+    def _original_caption(filename: str, size_bytes: int) -> str:
+        return f"📎 [원본] {filename} ({TelegramNotifier._format_byte_size(size_bytes)})"
+
+
+    @staticmethod
+    def _format_byte_size(size_bytes: int) -> str:
+        """Render a byte count as 1.2KB / 3.4MB."""
+        if size_bytes < 1024:
+            return f"{size_bytes}B"
+        kb = size_bytes / 1024
+        if kb < 1024:
+            return f"{kb:.0f}KB"
+        return f"{kb / 1024:.1f}MB"
+
     async def send_telegram(
         self,
         session: aiohttp.ClientSession,
@@ -450,6 +657,7 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                                 for i in range(0, len(att.preview_images), 10)
                             ]
 
+                            total_chunks = len(preview_chunks)
                             for chunk_idx, chunk in enumerate(preview_chunks):
                                 media = []
                                 form = MultipartWriter("form-data")
@@ -469,9 +677,16 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                                         "type": "photo",
                                         "media": f"attach://{field_name}",
                                     }
-                                    # Caption only on the very first image of the first chunk
-                                    if chunk_idx == 0 and idx == 0:
-                                        media_item["caption"] = f"📑 [미리보기] {att.name}"
+                                    # Per-chunk caption with (N/M) suffix when split.
+                                    if idx == 0:
+                                        suffix = (
+                                            f" ({chunk_idx + 1}/{total_chunks})"
+                                            if total_chunks > 1
+                                            else ""
+                                        )
+                                        media_item["caption"] = (
+                                            f"📑 [미리보기] {att.name}{suffix}"
+                                        )
                                         media_item["parse_mode"] = "HTML"
                                     media.append(media_item)
 
@@ -530,44 +745,19 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
             new_content = notice.change_details.get("new_content")
 
             if old_content and new_content:
-                if old_content and new_content:
-                    diff_text = self.generate_clean_diff(old_content, new_content)
+                diff_text = self.generate_clean_diff(
+                    old_content, new_content, inline_style="telegram"
+                )
 
-                    if diff_text:
-                        chunks = split_diff(diff_text, _TELEGRAM_DIFF_CHUNK_LIMIT)
-                        for idx, chunk in enumerate(chunks):
-                            header = (
-                                "🔍 <b>상세 변경 내용</b>"
-                                if len(chunks) == 1
-                                else f"🔍 <b>상세 변경 내용 ({idx + 1}/{len(chunks)})</b>"
-                            )
-                            detail_msg = f"{header}\n<pre>{html.escape(chunk)}</pre>"
-                            reply_payload = {
-                                "chat_id": self.chat_id,
-                                "text": detail_msg,
-                                "reply_to_message_id": main_msg_id,
-                                "parse_mode": "HTML",
-                            }
-                            if topic_id:
-                                reply_payload["message_thread_id"] = topic_id
-
-                            result = await self._send_telegram_api(session, "sendMessage", payload=reply_payload)
-                            if result:
-                                if idx < len(chunks) - 1:
-                                    await asyncio.sleep(0.2)
-                            elif len(chunks) == 1:
-                                # Single-chunk path: fall back to a short notice
-                                fallback_msg = (
-                                    "⚠️ 상세 변경 내용을 불러올 수 없습니다. <b>원본 공지 링크</b>를 확인해주세요."
-                                )
-                                reply_payload["text"] = fallback_msg
-                                await self._send_telegram_api(session, "sendMessage", payload=reply_payload)
-
-                    else:
-                        # Diff generation failed but content changed
-                        detail_msg = (
-                            "⚠️ 내용이 변경되었으나 상세 비교를 생성할 수 없습니다."
+                if diff_text:
+                    chunks = split_diff(diff_text, _TELEGRAM_DIFF_CHUNK_LIMIT)
+                    for idx, chunk in enumerate(chunks):
+                        header = (
+                            "🔍 <b>상세 변경 내용</b>"
+                            if len(chunks) == 1
+                            else f"🔍 <b>상세 변경 내용 ({idx + 1}/{len(chunks)})</b>"
                         )
+                        detail_msg = f"{header}\n{chunk}"
                         reply_payload = {
                             "chat_id": self.chat_id,
                             "text": detail_msg,
@@ -576,8 +766,40 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                         }
                         if topic_id:
                             reply_payload["message_thread_id"] = topic_id
-                        
-                        await self._send_telegram_api(session, "sendMessage", payload=reply_payload)
+
+                        result = await self._send_telegram_api(
+                            session, "sendMessage", payload=reply_payload
+                        )
+                        if result:
+                            if idx < len(chunks) - 1:
+                                await asyncio.sleep(0.2)
+                        elif len(chunks) == 1:
+                            # Single-chunk path: fall back to a short notice
+                            fallback_msg = (
+                                "⚠️ 상세 변경 내용을 불러올 수 없습니다. <b>원본 공지 링크</b>를 확인해주세요."
+                            )
+                            reply_payload["text"] = fallback_msg
+                            await self._send_telegram_api(
+                                session, "sendMessage", payload=reply_payload
+                            )
+
+                else:
+                    # Diff generation failed but content changed
+                    detail_msg = (
+                        "⚠️ 내용이 변경되었으나 상세 비교를 생성할 수 없습니다."
+                    )
+                    reply_payload = {
+                        "chat_id": self.chat_id,
+                        "text": detail_msg,
+                        "reply_to_message_id": main_msg_id,
+                        "parse_mode": "HTML",
+                    }
+                    if topic_id:
+                        reply_payload["message_thread_id"] = topic_id
+
+                    await self._send_telegram_api(
+                        session, "sendMessage", payload=reply_payload
+                    )
 
         return main_msg_id
 

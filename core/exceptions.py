@@ -167,3 +167,26 @@ class MissingConfigException(ConfigurationException):
     """Exception when required configuration is missing."""
 
     pass
+
+
+# =============================================================================
+# Canvas LMS Exceptions
+# =============================================================================
+
+
+class CanvasException(BotException):
+    """Base exception for Canvas LMS integration errors."""
+
+    pass
+
+
+class CanvasAuthException(CanvasException):
+    """Canvas API token invalid (401) or lacking permission (403)."""
+
+    pass
+
+
+class CanvasRateLimitException(CanvasException):
+    """Canvas API rate limit hit (429); details may include retry_after."""
+
+    pass

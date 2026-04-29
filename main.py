@@ -39,6 +39,34 @@ from core.interfaces import INotificationService
 from services.scraper_service import ScraperService
 
 
+def _build_canvas_service(
+    notification_service: INotificationService,
+    error_notifier: ErrorNotifier = None,
+    file_service=None,
+    ai_service=None,
+):
+    """Construct CanvasService when CANVAS_ENABLED is set; else return None."""
+    if not settings.CANVAS_ENABLED:
+        return None
+    if not (settings.CANVAS_API_URL and settings.CANVAS_API_TOKEN):
+        logger.warning(
+            "[CANVAS] CANVAS_ENABLED=true but API URL/token missing; skipping."
+        )
+        return None
+    from repositories.canvas_repo import CanvasRepository
+    from services.canvas.canvas_service import CanvasService
+
+    return CanvasService(
+        repo=CanvasRepository(),
+        api_url=settings.CANVAS_API_URL,
+        api_token=settings.CANVAS_API_TOKEN,
+        notifier=notification_service,
+        file_service=file_service,
+        ai_service=ai_service,
+        error_notifier=error_notifier,
+    )
+
+
 class Bot:
     """
     Main Bot class that orchestrates the scraping loop.
@@ -48,6 +76,8 @@ class Bot:
     - HashCalculator: Content hashing for change detection
     - ChangeDetector: Modification detection with AI diff summaries
     - AttachmentProcessor: File download, text extraction, preview generation
+
+    When CANVAS_ENABLED is set, also runs CanvasService in the same loop.
 
     Supports dependency injection for testability.
     """
@@ -59,6 +89,7 @@ class Bot:
         scraper: ScraperService = None,
         error_notifier: ErrorNotifier = None,
         notification_service: INotificationService = None,
+        canvas_service=None,
     ):
         """
         Initialize the Bot.
@@ -68,15 +99,27 @@ class Bot:
             no_ai_mode: If True, skips AI analysis
             scraper: Optional custom ScraperService instance (for DI/testing)
             error_notifier: Optional ErrorNotifier instance (for DI/testing)
-            notification_service: Optional NotificationService to inject into ScraperService.
-                Ignored if `scraper` is provided.
+            notification_service: Optional NotificationService to inject into
+                ScraperService and CanvasService. Ignored if `scraper` /
+                `canvas_service` are provided directly.
+            canvas_service: Optional CanvasService instance. If None and
+                init_mode=False, one is built from settings when
+                CANVAS_ENABLED is set.
         """
+        self.error_notifier = error_notifier or get_error_notifier()
         self.scraper = scraper or ScraperService(
             init_mode=init_mode,
             no_ai_mode=no_ai_mode,
             notifier=notification_service,
         )
-        self.error_notifier = error_notifier or get_error_notifier()
+        self.canvas_service = canvas_service
+        if self.canvas_service is None and not init_mode:
+            self.canvas_service = _build_canvas_service(
+                notification_service,
+                error_notifier=self.error_notifier,
+                file_service=getattr(self.scraper, "file_service", None),
+                ai_service=getattr(self.scraper, "analyzer", None),
+            )
         self.running = True
         self.error_count = 0
         self.MAX_CONSECUTIVE_ERRORS = 5
@@ -174,6 +217,16 @@ class Bot:
         while self.running:
             try:
                 await self.scraper.run()
+                if self.canvas_service is not None:
+                    try:
+                        await self.canvas_service.run()
+                        await self.canvas_service.run_reminders()
+                    except Exception as canvas_err:
+                        # Canvas failures are isolated from the scraper loop
+                        # so a Canvas outage doesn't block notice scraping.
+                        logger.error(
+                            f"[CANVAS] poll failed: {canvas_err}", exc_info=True
+                        )
                 self.error_count = 0  # Reset on successful run
 
             except KeyboardInterrupt:
@@ -329,6 +382,11 @@ if __name__ == "__main__":
         type=str,
         help="Run scraper for a specific target only (e.g., yu_news)",
     )
+    parser.add_argument(
+        "--canvas-only",
+        action="store_true",
+        help="Skip the scraper and only run CanvasService.run() + run_reminders() once",
+    )
     args = parser.parse_args()
 
     # ==========================================================================
@@ -355,13 +413,29 @@ if __name__ == "__main__":
         logger.info("🚀 Starting in INIT MODE (Database Seeding)")
         logger.info("AI analysis and Notifications will be DISABLED.")
 
-    if args.once or args.init or args.test_url:
+    if args.once or args.init or args.test_url or args.canvas_only:
         # Run once logic
         try:
             if args.once:
                 logger.info("Running in --once mode")
 
-            if args.test_url:
+            if args.canvas_only:
+                if bot.canvas_service is None:
+                    logger.critical(
+                        "--canvas-only requires CANVAS_ENABLED=true and "
+                        "CANVAS_API_URL/CANVAS_API_TOKEN to be set."
+                    )
+                    exit_code = 1
+                else:
+                    logger.info("🎓 Running in --canvas-only mode (scraper skipped)")
+
+                    async def _canvas_only_run():
+                        await bot.canvas_service.run()
+                        await bot.canvas_service.run_reminders()
+
+                    asyncio.run(_canvas_only_run())
+                    logger.info("Canvas run completed successfully")
+            elif args.test_url:
                 logger.info(f"🧪 Running Test Notification for: {args.test_url}")
                 asyncio.run(bot.scraper.run_test(args.test_url))
             else:
@@ -369,13 +443,13 @@ if __name__ == "__main__":
                 if not success:
                     exit_code = 1
 
-            logger.info("Run completed successfully")
+                logger.info("Run completed successfully")
         except Exception as e:
             logger.critical(f"Run failed: {e}", exc_info=True)
             # Send error notification
             asyncio.run(
                 error_notifier.send_critical_error(
-                    "Bot run failed in --once/--init mode",
+                    "Bot run failed in --once/--init/--canvas-only mode",
                     exception=e,
                     severity=ErrorSeverity.CRITICAL,
                 )

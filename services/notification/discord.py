@@ -22,10 +22,21 @@ from services.notification.diff_chunker import split_diff
 from services.notification.formatters import create_discord_embed, format_change_summary
 from services.tag_matcher import TagMatcher
 
-# Discord embed field max is 1024; reserve room for the ```diff\n...\n``` wrapper.
-_DISCORD_DIFF_CHUNK_LIMIT = constants.DISCORD_MAX_EMBED_LENGTH - 74
+# Discord embed field max is 1024; inline bold diff is sent as plain field text.
+_DISCORD_DIFF_CHUNK_LIMIT = constants.DISCORD_MAX_EMBED_LENGTH
 
 logger = get_logger(__name__)
+
+
+def _format_byte_size_discord(size_bytes: int) -> str:
+    """Render a byte count as 1.2KB / 3.4MB. Mirrors telegram._format_byte_size
+    so caption text stays consistent across channels."""
+    if size_bytes < 1024:
+        return f"{size_bytes}B"
+    kb = size_bytes / 1024
+    if kb < 1024:
+        return f"{kb:.0f}KB"
+    return f"{kb / 1024:.1f}MB"
 
 
 class DiscordNotifier(BaseNotifier, NotificationChannel):
@@ -74,7 +85,237 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
     def is_enabled(self) -> bool:
         """Check if Discord is configured and enabled."""
         return bool(settings.DISCORD_BOT_TOKEN and settings.DISCORD_CHANNEL_MAP)
-    
+
+    async def send_canvas_message(
+        self,
+        session: aiohttp.ClientSession,
+        text: str,
+        channel_id: Optional[str] = None,
+        event_kind: Optional[str] = None,
+        attachment_payloads: Optional[List[Dict[str, Any]]] = None,
+        title: Optional[str] = None,
+        url: Optional[str] = None,
+        attachments: Optional[List[Any]] = None,
+        is_modified: Optional[bool] = None,
+    ) -> Optional[str]:
+        """Send a Canvas notification embed. Returns Discord message id.
+
+        For each entry in `attachment_payloads`:
+        1. preview image batches (≤10 files per Discord message) sent as
+           replies with content "📑 [미리보기] {filename} (N/M)"
+        2. original file sent as a reply with content
+           "📎 [원본] {filename} ({size})"
+        """
+        if not text or not channel_id:
+            return None
+        message_url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+        auth_headers = {
+            "Authorization": f"Bot {settings.DISCORD_BOT_TOKEN}",
+        }
+        json_headers = {
+            **auth_headers,
+            "Content-Type": "application/json",
+        }
+        description = self._truncate_canvas_description(text)
+        embed = {
+            "description": description,
+            "color": self._canvas_embed_color(event_kind),
+            "timestamp": get_utc_now().isoformat(),
+        }
+        if title:
+            embed["title"] = (
+                "⚠️ 공지사항 수정 알림"
+                if self._canvas_is_modified(event_kind, is_modified)
+                else self._truncate_canvas_title(title)
+            )
+        if url:
+            embed["url"] = url
+
+        attachment_field = self._canvas_attachment_field(
+            attachments, attachment_payloads
+        )
+        if attachment_field:
+            embed["fields"] = [attachment_field]
+
+        payload = {"embeds": [embed]}
+        async with self._discord_request(
+            session, "POST", message_url, headers=json_headers, json=payload
+        ) as resp:
+            if resp.status not in (200, 201):
+                logger.error(
+                    f"[NOTIFIER] Discord canvas send failed (status {resp.status}): "
+                    f"{await resp.text()}"
+                )
+                return None
+            data = await resp.json()
+            message_id = data.get("id")
+
+        if attachment_payloads and message_id:
+            for entry in attachment_payloads:
+                await self._send_canvas_attachment_entry(
+                    session, channel_id, auth_headers, entry, message_id
+                )
+        return message_id
+
+    async def _send_canvas_attachment_entry(
+        self,
+        session: aiohttp.ClientSession,
+        channel_id: str,
+        auth_headers: Dict[str, str],
+        entry: Dict[str, Any],
+        reply_to_id: str,
+    ) -> None:
+        """Send one source-file's previews + original file as Discord replies."""
+        source_filename = entry.get("source_filename") or "첨부파일"
+        previews = entry.get("preview_images") or []
+        original_data = entry.get("original_data")
+        source_size = int(entry.get("source_size") or 0)
+
+        url = f"https://discord.com/api/v10/channels/{channel_id}/messages"
+
+        # 1. Preview chunks (Discord allows up to 10 files per message).
+        chunks = [previews[i : i + 10] for i in range(0, len(previews), 10)] or []
+        total_chunks = len(chunks)
+        for chunk_idx, chunk in enumerate(chunks):
+            content = self._preview_caption(source_filename, chunk_idx, total_chunks)
+            form = MultipartWriter("form-data")
+            payload = self._canvas_reply_payload(channel_id, reply_to_id, content)
+            self._add_text_part(form, "payload_json", json.dumps(payload))
+            for idx, image in enumerate(chunk):
+                self._add_file_part(
+                    form,
+                    f"files[{idx}]",
+                    image["data"],
+                    image.get("filename") or f"preview_{idx + 1}.jpg",
+                )
+            try:
+                async with self._discord_request(
+                    session, "POST", url, headers=auth_headers, data=form
+                ) as resp:
+                    if resp.status not in (200, 201, 204):
+                        logger.error(
+                            f"[NOTIFIER] Discord preview send failed: {await resp.text()}"
+                        )
+            except Exception as e:
+                logger.error(f"[NOTIFIER] Discord preview send error: {e}")
+
+        # 2. Original file (skip if missing or larger than Discord's limit).
+        if original_data and source_size <= constants.DISCORD_FILE_SIZE_LIMIT:
+            content = self._original_caption(source_filename, source_size)
+            form = MultipartWriter("form-data")
+            payload = self._canvas_reply_payload(channel_id, reply_to_id, content)
+            self._add_text_part(form, "payload_json", json.dumps(payload))
+            self._add_file_part(form, "files[0]", original_data, source_filename)
+            try:
+                async with self._discord_request(
+                    session, "POST", url, headers=auth_headers, data=form
+                ) as resp:
+                    if resp.status not in (200, 201, 204):
+                        logger.error(
+                            f"[NOTIFIER] Discord original-file send failed: {await resp.text()}"
+                        )
+            except Exception as e:
+                logger.error(f"[NOTIFIER] Discord original-file send error: {e}")
+        elif original_data:
+            logger.info(
+                f"[NOTIFIER] Skipping original-file forward for {source_filename}: "
+                f"{source_size} bytes exceeds Discord limit "
+                f"{constants.DISCORD_FILE_SIZE_LIMIT}"
+            )
+
+    @staticmethod
+    def _preview_caption(filename: str, chunk_idx: int, total_chunks: int) -> str:
+        suffix = f" ({chunk_idx + 1}/{total_chunks})" if total_chunks > 1 else ""
+        return f"📑 [미리보기] {filename}{suffix}"
+
+    @staticmethod
+    def _original_caption(filename: str, size_bytes: int) -> str:
+        return f"📎 [원본] {filename} ({_format_byte_size_discord(size_bytes)})"
+
+    @staticmethod
+    def _canvas_reply_payload(
+        channel_id: str, reply_to_id: str, content: str
+    ) -> Dict[str, Any]:
+        """Build a Discord reply payload for Canvas attachment follow-ups."""
+        return {
+            "content": content,
+            "message_reference": {
+                "message_id": str(reply_to_id),
+                "channel_id": str(channel_id),
+                "fail_if_not_exists": False,
+            },
+            "allowed_mentions": {"replied_user": False},
+        }
+
+    @staticmethod
+    def _canvas_is_modified(
+        event_kind: Optional[str], is_modified: Optional[bool]
+    ) -> bool:
+        return bool(
+            is_modified is True
+            or event_kind in {"assignment_modified", "due_date_changed"}
+        )
+
+    @staticmethod
+    def _truncate_canvas_title(title: str) -> str:
+        return title if len(title) <= 256 else title[:253].rstrip() + "..."
+
+    def _canvas_attachment_field(
+        self,
+        attachments: Optional[List[Any]],
+        attachment_payloads: Optional[List[Dict[str, Any]]],
+    ) -> Optional[Dict[str, Any]]:
+        lines = []
+        for att in attachments or []:
+            name = getattr(att, "display_name", "") or "첨부파일"
+            att_url = getattr(att, "url", "")
+            if att_url:
+                lines.append(f"{self._attachment_emoji(name)} [{name}]({att_url})")
+
+        if not lines:
+            for entry in attachment_payloads or []:
+                name = entry.get("source_filename") or "첨부파일"
+                att_url = entry.get("source_url")
+                if att_url:
+                    lines.append(f"{self._attachment_emoji(name)} [{name}]({att_url})")
+
+        if not lines:
+            return None
+        return {
+            "name": "📎 첨부파일",
+            "value": "\n".join(lines)[: constants.DISCORD_MAX_EMBED_LENGTH],
+            "inline": False,
+        }
+
+    @staticmethod
+    def _attachment_emoji(filename: str) -> str:
+        ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else "default"
+        return constants.FILE_EMOJI_MAP.get(ext, constants.FILE_EMOJI_MAP["default"])
+
+    @staticmethod
+    def _canvas_embed_color(event_kind: Optional[str]) -> int:
+        """Map Canvas event kind to Discord embed color."""
+        if event_kind == "new_assignment":
+            return 0x3498DB  # blue
+        if event_kind in {"assignment_modified", "due_date_changed"}:
+            return 0xE67E22  # orange
+        if event_kind == "new_announcement":
+            return 0x2ECC71  # green
+        if event_kind == "grade_registered":
+            return 0x9B59B6  # purple
+        if event_kind in {"deadline_reminder", "unsubmitted_warning"}:
+            return 0xE74C3C  # red
+        return 0x95A5A6  # neutral grey
+
+    @staticmethod
+    def _truncate_canvas_description(text: str) -> str:
+        """Discord embed descriptions cap at 4096 characters."""
+        limit = 4096
+        suffix = "\n\n...open Canvas for the full content."
+        if len(text) <= limit:
+            return text
+        return text[: limit - len(suffix)].rstrip() + suffix
+
     async def send_notice(
         self,
         session: aiohttp.ClientSession,
@@ -228,7 +469,9 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
             new_content = notice.change_details.get("new_content")
 
             if old_content and new_content:
-                diff_text = self.generate_clean_diff(old_content, new_content)
+                diff_text = self.generate_clean_diff(
+                    old_content, new_content, inline_style="discord"
+                )
 
                 if diff_text:
                     chunks = split_diff(diff_text, _DISCORD_DIFF_CHUNK_LIMIT)
@@ -241,7 +484,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                         embed["fields"].append(
                             {
                                 "name": name,
-                                "value": f"```diff\n{chunk}\n```",
+                                "value": chunk,
                                 "inline": False,
                             }
                         )
@@ -371,7 +614,9 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                 new_content = notice.change_details.get("new_content")
 
                 if old_content and new_content:
-                    diff_text = self.generate_clean_diff(old_content, new_content)
+                    diff_text = self.generate_clean_diff(
+                        old_content, new_content, inline_style="discord"
+                    )
 
                     if diff_text:
                         chunks = split_diff(diff_text, _DISCORD_DIFF_CHUNK_LIMIT)
@@ -384,7 +629,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                             update_embed["fields"].append(
                                 {
                                     "name": name,
-                                    "value": f"```diff\n{chunk}\n```",
+                                    "value": chunk,
                                     "inline": False,
                                 }
                             )
