@@ -44,7 +44,6 @@ jobs:
           DISCORD_WEBHOOK_MAP: ${{ secrets.DISCORD_WEBHOOK_MAP || '{}' }}
           DISCORD_CHANNEL_MAP: ${{ secrets.DISCORD_CHANNEL_MAP || '{}' }}
           DISCORD_TAG_MAP: ${{ secrets.DISCORD_TAG_MAP || '{}' }}
-          CANVAS_TOKEN: ${{ secrets.CANVAS_TOKEN }}
           GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
           YU_EOULLIM_ID: ${{ secrets.YU_EOULLIM_ID }}
           YU_EOULLIM_PW: ${{ secrets.YU_EOULLIM_PW }}
@@ -64,7 +63,7 @@ jobs:
           -e DISCORD_WEBHOOK_MAP="$DISCORD_WEBHOOK_MAP" \
           -e DISCORD_CHANNEL_MAP="$DISCORD_CHANNEL_MAP" \
           -e DISCORD_TAG_MAP="$DISCORD_TAG_MAP" \
-          -e CANVAS_TOKEN="$CANVAS_TOKEN" \
+          -e CANVAS_ENABLED=false \
           -e GEMINI_MODEL="$GEMINI_MODEL" \
           -v ${{ github.workspace }}:/app \
           ghcr.io/$IMAGE_NAME:latest \
