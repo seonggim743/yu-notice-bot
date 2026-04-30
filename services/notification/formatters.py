@@ -29,6 +29,8 @@ INLINE_DIFF_MIN_RATIO = 0.45
 INLINE_DIFF_MIN_SPAN = 2
 CONTEXT_DIFF_CHARS = 30
 CONTEXT_DIFF_GROUP_EQUAL_LIMIT = 6
+FORCE_CONTEXT_DIFF_MIN_LINE_LENGTH = 200
+FORCE_CONTEXT_DIFF_MIN_RATIO = 0.9
 TELEGRAM_QUOTE_LENGTH = 500
 DISCORD_QUOTE_LENGTH = 1000
 REVISED_BODY_QUOTE_LENGTH = 500
@@ -104,9 +106,11 @@ def _context_diff_lines(
         return None
 
     matcher = difflib.SequenceMatcher(None, old_line, new_line)
-    if matcher.ratio() < INLINE_DIFF_MIN_RATIO:
+    ratio = matcher.ratio()
+    if ratio < INLINE_DIFF_MIN_RATIO:
         return None
 
+    force_context = _should_force_context_diff(old_line, new_line, ratio)
     groups = _context_token_change_groups(old_line, new_line)
     if not groups:
         groups = _context_change_groups(matcher.get_opcodes())
@@ -121,7 +125,8 @@ def _context_diff_lines(
         old_segment = old_line[old_start:old_end]
         new_segment = new_line[new_start:new_end]
         if not (
-            _has_meaningful_span(old_segment) or _has_meaningful_span(new_segment)
+            _has_context_meaningful_span(old_segment, force_context)
+            or _has_context_meaningful_span(new_segment, force_context)
         ):
             continue
 
@@ -152,6 +157,22 @@ def _context_diff_lines(
         )
 
     return lines or None
+
+
+def _should_force_context_diff(old_line: str, new_line: str, ratio: float) -> bool:
+    return (
+        "\n" not in old_line
+        and "\n" not in new_line
+        and len(old_line) >= FORCE_CONTEXT_DIFF_MIN_LINE_LENGTH
+        and len(new_line) >= FORCE_CONTEXT_DIFF_MIN_LINE_LENGTH
+        and ratio >= FORCE_CONTEXT_DIFF_MIN_RATIO
+    )
+
+
+def _has_context_meaningful_span(text: str, force_context: bool) -> bool:
+    if force_context:
+        return len(re.sub(r"\s+", "", text)) >= 1
+    return _has_meaningful_span(text)
 
 
 def _context_token_change_groups(

@@ -75,6 +75,24 @@ class TestFormatters:
         assert any("[25 → 26]" in line for line in lines)
         assert any("[2026.05.10. → 2026.05.11.]" in line for line in lines)
 
+    def test_generate_clean_diff_long_single_line_one_digit_change_uses_context(self):
+        """Long one-line notices should not fall back to full red/green blocks."""
+        old = (
+            "[가상회사] 채용설명회(테스트센터 A강의실) 진로취업지원팀 취업을 준비하는 재학생 및 "
+            "취업준비 중인 졸업생,휴학생 등을 대상으로 채용정보 공유 접수기간 : 2026-04-28 15:10 ~ "
+            "2026-05-05 23:59 오프라인 강의 접수 현황 : 4 / 40 온라인 강의 접수 현황 : 0 / 신청불가 "
+            "장소 : 테스트센터 A강의실 프로그램 일자 및 시간 선택 프로그램 일자 및 시간 선택 "
+            "2026-05-08 ~ 2026-05-08 , 14:00 ~ 15:00 신청하기 찜하기 프로그램 개요 세부내용"
+        )
+        new = old.replace("현황 : 4 / 40", "현황 : 5 / 40")
+
+        diff = formatters.generate_clean_diff(old, new, inline_style="telegram")
+
+        assert "🔴" not in diff and "🟢" not in diff
+        assert "[4 → 5]" in diff
+        assert "접수 현황" in diff
+        assert "/ 40 온라인" in diff
+
     def test_generate_clean_diff_short_lines_stay_line_level(self):
         """Short replacements should stay as plain line-level diff"""
         diff = formatters.generate_clean_diff(
