@@ -3,7 +3,11 @@ import urllib.parse
 from aiohttp import MultipartWriter
 
 from services.notification.base import BaseNotifier
-from services.notification.discord import DiscordNotifier, _discord_code_block
+from services.notification.discord import (
+    DiscordNotifier,
+    _discord_code_block,
+    _discord_updated_summary,
+)
 
 
 def test_file_part_includes_utf8_filename_star_for_korean_names():
@@ -36,3 +40,9 @@ def test_discord_code_block_wraps_modified_details():
     block = _discord_code_block("🔴 이전\n🟢 이후")
 
     assert block == "```text\n🔴 이전\n🟢 이후\n```"
+
+
+def test_discord_updated_summary_adds_bullets():
+    summary = _discord_updated_summary("첫 번째 요약\n- 이미 있는 요약")
+
+    assert summary == "- 첫 번째 요약\n- 이미 있는 요약"

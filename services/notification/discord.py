@@ -23,6 +23,7 @@ from services.notification.formatters import (
     create_discord_embed,
     create_revised_body_quote_field,
     format_change_summary,
+    format_summary_lines,
 )
 from services.tag_matcher import TagMatcher
 
@@ -47,6 +48,10 @@ def _discord_code_block(text: str) -> str:
     """Wrap text in a Discord code block without allowing fence injection."""
     safe_text = text.replace("```", "`\u200b``")
     return f"```text\n{safe_text}\n```"
+
+
+def _discord_updated_summary(summary: str) -> str:
+    return format_summary_lines(summary)[:1000]
 
 
 class DiscordNotifier(BaseNotifier, NotificationChannel):
@@ -616,7 +621,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                 update_embed["fields"].append(
                     {
                         "name": "📝 요약 (업데이트)",
-                        "value": notice.summary[:1000],
+                        "value": _discord_updated_summary(notice.summary),
                         "inline": False,
                     }
                 )
