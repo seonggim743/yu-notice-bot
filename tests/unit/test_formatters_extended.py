@@ -36,3 +36,15 @@ class TestFormattersExtended:
         assert "➕ **첨부 추가**: file1.hwp" in result
         assert "➖ **첨부 삭제**: file2.pdf" in result
         assert "📎 **첨부파일 내용 변경**" in result
+
+    def test_format_change_summary_html_bold_for_telegram(self):
+        changes = {
+            "content": "변경 요약",
+            "attachments_added": ["자료<1>.pdf"],
+        }
+
+        result = format_change_summary(changes, style="html")
+
+        assert "📝 <b>내용 변경</b>: 변경 요약" in result
+        assert "➕ <b>첨부 추가</b>: 자료&lt;1&gt;.pdf" in result
+        assert "**내용 변경**" not in result

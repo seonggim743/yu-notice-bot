@@ -553,35 +553,46 @@ def format_date(dt_str: str) -> str:
         return dt_str
 
 
-def format_change_summary(changes: Dict[str, Any]) -> str:
+def format_change_summary(changes: Dict[str, Any], style: str = "markdown") -> str:
     """
     Format granular changes into a summary string.
     """
+    def bold(label: str) -> str:
+        if style == "html":
+            return f"<b>{label}</b>"
+        return f"**{label}**"
+
+    def value(text: Any) -> str:
+        text = str(text)
+        if style == "html":
+            return html.escape(text, quote=False)
+        return text
+
     lines = []
     if "title" in changes:
-        lines.append(f"📝 **제목 변경**: {changes['title']}")
+        lines.append(f"📝 {bold('제목 변경')}: {value(changes['title'])}")
     
     # AI Summary for content
     if "content" in changes:
-        lines.append(f"📝 **내용 변경**: {changes['content']}")
+        lines.append(f"📝 {bold('내용 변경')}: {value(changes['content'])}")
         
     # Granular Attachment Changes
     if "attachments_added" in changes:
         for f in changes["attachments_added"]:
-             lines.append(f"➕ **첨부 추가**: {f}")
+             lines.append(f"➕ {bold('첨부 추가')}: {value(f)}")
     if "attachments_removed" in changes:
         for f in changes["attachments_removed"]:
-             lines.append(f"➖ **첨부 삭제**: {f}")
+             lines.append(f"➖ {bold('첨부 삭제')}: {value(f)}")
              
     # Fallback for generic attachment change
     if "attachments" in changes and not ("attachments_added" in changes or "attachments_removed" in changes):
-        lines.append(f"📎 **첨부파일 변경**: {changes['attachments']}")
+        lines.append(f"📎 {bold('첨부파일 변경')}: {value(changes['attachments'])}")
 
     if "image" in changes:
-        lines.append("🖼️ **이미지 변경됨**")
+        lines.append(f"🖼️ {bold('이미지 변경됨')}")
         
     if "attachment_text" in changes:
-        lines.append(f"📎 **첨부파일 내용 변경**: (상세 내용 확인 필요)")
+        lines.append(f"📎 {bold('첨부파일 내용 변경')}: (상세 내용 확인 필요)")
         
     return "\n".join(lines)
 
@@ -728,7 +739,7 @@ def create_telegram_message(notice, is_new: bool, modified_reason: str = "", cha
 
     # [NEW] Change Summary Header
     if not is_new and changes:
-        change_summary = format_change_summary(changes)
+        change_summary = format_change_summary(changes, style="html")
         if change_summary:
             msg += f"<b>[변경 요약]</b>\n{change_summary}\n\n"
     elif not is_new and modified_reason:
