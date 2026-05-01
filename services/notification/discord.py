@@ -26,8 +26,8 @@ from services.notification.formatters import (
 )
 from services.tag_matcher import TagMatcher
 
-# Discord embed field max is 1024; inline bold diff is sent as plain field text.
-_DISCORD_DIFF_CHUNK_LIMIT = constants.DISCORD_MAX_EMBED_LENGTH
+# Discord embed field max is 1024; reserve room for the fenced code block.
+_DISCORD_DIFF_CHUNK_LIMIT = constants.DISCORD_MAX_EMBED_LENGTH - 12
 
 logger = get_logger(__name__)
 
@@ -41,6 +41,12 @@ def _format_byte_size_discord(size_bytes: int) -> str:
     if kb < 1024:
         return f"{kb:.0f}KB"
     return f"{kb / 1024:.1f}MB"
+
+
+def _discord_code_block(text: str) -> str:
+    """Wrap text in a Discord code block without allowing fence injection."""
+    safe_text = text.replace("```", "`\u200b``")
+    return f"```text\n{safe_text}\n```"
 
 
 class DiscordNotifier(BaseNotifier, NotificationChannel):
@@ -488,7 +494,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                         embed["fields"].append(
                             {
                                 "name": name,
-                                "value": chunk,
+                                "value": _discord_code_block(chunk),
                                 "inline": False,
                             }
                         )
@@ -636,7 +642,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                             update_embed["fields"].append(
                                 {
                                     "name": name,
-                                    "value": chunk,
+                                    "value": _discord_code_block(chunk),
                                     "inline": False,
                                 }
                             )

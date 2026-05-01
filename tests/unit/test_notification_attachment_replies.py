@@ -3,7 +3,7 @@ import urllib.parse
 from aiohttp import MultipartWriter
 
 from services.notification.base import BaseNotifier
-from services.notification.discord import DiscordNotifier
+from services.notification.discord import DiscordNotifier, _discord_code_block
 
 
 def test_file_part_includes_utf8_filename_star_for_korean_names():
@@ -30,3 +30,9 @@ def test_discord_reply_payload_references_original_message():
         "fail_if_not_exists": False,
     }
     assert payload["allowed_mentions"] == {"replied_user": False}
+
+
+def test_discord_code_block_wraps_modified_details():
+    block = _discord_code_block("🔴 이전\n🟢 이후")
+
+    assert block == "```text\n🔴 이전\n🟢 이후\n```"

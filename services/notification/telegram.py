@@ -25,8 +25,8 @@ from services.file.image import ImageHandler
 
 from services.notification.dev_notifier import DevNotifier
 
-# Telegram messages cap at 4096; reserve room for the header/code wrapper.
-_TELEGRAM_DIFF_CHUNK_LIMIT = constants.TELEGRAM_MAX_MESSAGE_LENGTH - 96
+# Telegram messages cap at 4096; reserve room for the header/block quote wrapper.
+_TELEGRAM_DIFF_CHUNK_LIMIT = constants.TELEGRAM_MAX_MESSAGE_LENGTH - 128
 
 logger = get_logger(__name__)
 
@@ -747,7 +747,7 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                             if len(chunks) == 1
                             else f"🔍 <b>상세 변경 내용 ({idx + 1}/{len(chunks)})</b>"
                         )
-                        detail_msg = f"{header}\n{chunk}"
+                        detail_msg = f"{header}\n<blockquote>{chunk}</blockquote>"
                         if (
                             revised_body_quote
                             and idx == len(chunks) - 1

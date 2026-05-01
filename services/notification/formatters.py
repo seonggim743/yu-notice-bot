@@ -506,7 +506,7 @@ def format_telegram_revised_body_quote(raw_text: str) -> str:
     if not quote:
         return ""
     escaped = html.escape(quote, quote=False)
-    return f"📝 <b>수정 후 원문</b>\n<blockquote>{escaped}</blockquote>"
+    return f"📝 <b>수정 후 원문</b>\n<pre>{escaped}</pre>"
 
 
 def create_revised_body_quote_field(raw_text: str) -> Optional[Dict[str, Any]]:

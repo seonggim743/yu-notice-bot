@@ -274,11 +274,11 @@ class TestFormatters:
         assert "\n" in quote
         assert len(quote) <= 500
 
-    def test_telegram_revised_body_quote_uses_blockquote(self):
+    def test_telegram_revised_body_quote_uses_pre(self):
         block = formatters.format_telegram_revised_body_quote("<p>수정 후 <b>본문</b></p>")
 
         assert "📝 <b>수정 후 원문</b>" in block
-        assert "<blockquote>수정 후 본문</blockquote>" in block
+        assert "<pre>수정 후 본문</pre>" in block
 
     def test_create_revised_body_quote_field(self):
         field = formatters.create_revised_body_quote_field("<p>수정 후 본문</p>")
