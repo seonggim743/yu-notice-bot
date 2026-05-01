@@ -709,7 +709,7 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                                     # Small delay between chunks to prevent rate limiting (even with retries)
                                     await asyncio.sleep(1.0)
 
-        # 2.2 Send Attachments as MediaGroup (All Together)
+        # 2.2 Send original attachments as replies after previews
         if main_msg_id and notice.attachments:
             collected_files = await self.downloader.download_attachments(
                 session,
@@ -718,29 +718,14 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                 referer=notice.url,
             )
 
-            # Send all files as MediaGroup
-            if collected_files:
-                media = []
-                form = MultipartWriter("form-data")
-
-                for idx, (filename, filedata) in enumerate(collected_files):
-                    field_name = f"doc{idx}"
-                    self._add_file_part(form, field_name, filedata, filename)
-                    media.append(
-                        {"type": "document", "media": f"attach://{field_name}"}
-                    )
-
-                self._add_text_part(form, "media", json.dumps(media))
-                self._add_text_part(form, "chat_id", str(self.chat_id))
-                if topic_id:
-                    self._add_text_part(form, "message_thread_id", str(topic_id))
-                self._add_text_part(form, "reply_to_message_id", str(main_msg_id))
-
-                result = await self._send_telegram_api(session, "sendMediaGroup", data=form)
-                if result:
-                    logger.info(
-                        f"[NOTIFIER] Sent {len(collected_files)} files as MediaGroup"
-                    )
+            for filename, filedata in collected_files:
+                await self._send_original_document_reply(
+                    session=session,
+                    filename=filename,
+                    filedata=filedata,
+                    topic_id=topic_id,
+                    reply_to_message_id=main_msg_id,
+                )
 
         # 2.3 Send Detailed Change Content (if modified)
         if main_msg_id and modified_reason and notice.change_details:
@@ -829,6 +814,31 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                     )
 
         return main_msg_id
+
+    async def _send_original_document_reply(
+        self,
+        session: aiohttp.ClientSession,
+        filename: str,
+        filedata: bytes,
+        topic_id: Optional[int],
+        reply_to_message_id: int,
+    ) -> None:
+        """Send one original attachment as a document reply."""
+        form = MultipartWriter("form-data")
+        self._add_text_part(form, "chat_id", str(self.chat_id))
+        self._add_text_part(form, "reply_to_message_id", str(reply_to_message_id))
+        if topic_id:
+            self._add_text_part(form, "message_thread_id", str(topic_id))
+        self._add_text_part(
+            form,
+            "caption",
+            self._original_caption(filename, len(filedata)),
+        )
+        self._add_file_part(form, "document", filedata, filename)
+
+        result = await self._send_telegram_api(session, "sendDocument", data=form)
+        if result:
+            logger.info(f"[NOTIFIER] Sent original attachment reply: {filename}")
 
     async def send_menu_notification(
         self, session: aiohttp.ClientSession, notice: Notice, menu_data: Dict[str, Any]

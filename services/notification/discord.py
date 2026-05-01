@@ -686,10 +686,21 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                             )
                         )
 
+                        update_message_id = None
+                        try:
+                            update_message_id = (await resp.json()).get("id")
+                        except Exception:
+                            update_message_id = None
+                        reply_anchor_id = update_message_id or existing_thread_id
+
                         if pdf_previews and should_send_previews:
                             for group in pdf_previews:
                                 await self._send_discord_pdf_preview_group(
-                                    session, existing_thread_id, group, headers
+                                    session,
+                                    existing_thread_id,
+                                    group,
+                                    headers,
+                                    reply_to_id=reply_anchor_id,
                                 )
 
                         # Send remaining files if any (Attachments)
@@ -700,6 +711,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                                 files_for_attachments,
                                 headers,
                                 is_thread=True,
+                                reply_to_id=reply_anchor_id,
                             )
 
                         return existing_thread_id
@@ -808,7 +820,11 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                     if created_thread_id and pdf_previews:
                         for group in pdf_previews:
                             await self._send_discord_pdf_preview_group(
-                                session, created_thread_id, group, headers
+                                session,
+                                created_thread_id,
+                                group,
+                                headers,
+                                reply_to_id=created_message_id,
                             )
 
                     # If we have attachments, send them to the thread (AFTER previews)
@@ -819,6 +835,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                             files_for_attachments,
                             headers,
                             is_thread=True,
+                            reply_to_id=created_message_id,
                         )
 
                     return created_thread_id
@@ -1013,9 +1030,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
             batch = files[batch_idx : batch_idx + 10]
 
             form = MultipartWriter("form-data")
-            payload = {}
-            if reply_to_id and not is_thread:
-                payload["message_reference"] = {"message_id": reply_to_id}
+            payload = self._discord_reply_payload(reply_to_id)
 
             self._add_text_part(form, "payload_json", json.dumps(payload))
 
@@ -1035,7 +1050,12 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                 logger.error(f"[NOTIFIER] Error sending reply attachments: {e}")
 
     async def _send_discord_pdf_preview_group(
-        self, session: aiohttp.ClientSession, thread_id: str, group: dict, headers: dict
+        self,
+        session: aiohttp.ClientSession,
+        thread_id: str,
+        group: dict,
+        headers: dict,
+        reply_to_id: Optional[str] = None,
     ):
         """Send a group of Discord PDF preview images as a single message."""
         try:
@@ -1046,7 +1066,8 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
             caption = f"📑 [미리보기] {original_filename}"
 
             form = MultipartWriter("form-data")
-            self._add_text_part(form, "payload_json", json.dumps({"content": caption}))
+            payload = self._discord_reply_payload(reply_to_id, content=caption)
+            self._add_text_part(form, "payload_json", json.dumps(payload))
 
             # Add all images in the group
             for idx, img in enumerate(group["images"]):
@@ -1063,3 +1084,19 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                     )
         except Exception as e:
             logger.error(f"[NOTIFIER] Error sending Discord PDF preview group: {e}")
+
+    @staticmethod
+    def _discord_reply_payload(
+        reply_to_id: Optional[str],
+        content: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        if content is not None:
+            payload["content"] = content
+        if reply_to_id:
+            payload["message_reference"] = {
+                "message_id": str(reply_to_id),
+                "fail_if_not_exists": False,
+            }
+            payload["allowed_mentions"] = {"replied_user": False}
+        return payload
