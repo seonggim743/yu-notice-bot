@@ -145,11 +145,9 @@ def _context_diff_lines(
                 [
                     prefix,
                     _format_diff_line(before, inline_style),
-                    "[",
-                    _format_diff_line(old_segment, inline_style),
-                    " → ",
-                    _format_diff_line(new_segment, inline_style),
-                    "]",
+                    _format_context_replacement(
+                        old_segment, new_segment, inline_style
+                    ),
                     _format_diff_line(after, inline_style),
                     suffix,
                 ]
@@ -388,6 +386,16 @@ def _format_diff_line(text: str, inline_style: Optional[str]) -> str:
     return text
 
 
+def _format_context_replacement(
+    old_segment: str, new_segment: str, inline_style: Optional[str]
+) -> str:
+    old_text = _format_diff_line(old_segment, inline_style)
+    new_text = _format_diff_line(new_segment, inline_style)
+    if inline_style == "telegram":
+        return f"❌<s>{old_text}</s>❌ → ✅<u>{new_text}</u>✅"
+    return f"❌{old_text}❌ → ✅{new_text}✅"
+
+
 def get_category_emoji(category: str) -> str:
     """Get emoji for category."""
     return CATEGORY_EMOJIS.get(category, "📢")
@@ -491,29 +499,98 @@ def get_notice_quote_text(
 
 
 def format_revised_body_quote(
-    raw_text: str, max_length: int = REVISED_BODY_QUOTE_LENGTH
+    raw_text: str, max_length: Optional[int] = None
 ) -> str:
     """Format the revised body for compact modified-notice detail replies."""
     text = strip_html_text(raw_text)
     if not text:
         return ""
     text = _break_long_text_by_sentence(text)
-    return truncate_text(text, max_length)
+    if max_length:
+        return truncate_text(text, max_length)
+    return text
+
+
+def split_text_chunks(text: str, max_length: int) -> list[str]:
+    """Split text for chat platform limits while preserving line boundaries."""
+    if not text:
+        return []
+    if max_length <= 0:
+        raise ValueError("max_length must be positive")
+    if len(text) <= max_length:
+        return [text]
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+
+    for line in text.splitlines(keepends=True):
+        if len(line) > max_length:
+            if current:
+                chunks.append("".join(current).rstrip())
+                current = []
+                current_len = 0
+            for idx in range(0, len(line), max_length):
+                chunks.append(line[idx : idx + max_length].rstrip())
+            continue
+
+        if current_len + len(line) > max_length:
+            chunks.append("".join(current).rstrip())
+            current = [line]
+            current_len = len(line)
+        else:
+            current.append(line)
+            current_len += len(line)
+
+    if current:
+        chunks.append("".join(current).rstrip())
+    return [chunk for chunk in chunks if chunk]
+
+
+def format_telegram_revised_body_quote_parts(
+    raw_text: str,
+    max_length: int = constants.TELEGRAM_MAX_MESSAGE_LENGTH,
+) -> list[str]:
+    quote = format_revised_body_quote(raw_text)
+    if not quote:
+        return []
+
+    # Leave room for the title and <pre> wrapper.
+    body_limit = max_length - 96
+    chunks = split_text_chunks(quote, body_limit)
+    total = len(chunks)
+    parts = []
+    for idx, chunk in enumerate(chunks):
+        title = "수정 후 원문" if total == 1 else f"수정 후 원문 ({idx + 1}/{total})"
+        escaped = html.escape(chunk, quote=False)
+        parts.append(f"📝 <b>{title}</b>\n<pre>{escaped}</pre>")
+    return parts
 
 
 def format_telegram_revised_body_quote(raw_text: str) -> str:
-    quote = format_revised_body_quote(raw_text)
-    if not quote:
-        return ""
-    escaped = html.escape(quote, quote=False)
-    return f"📝 <b>수정 후 원문</b>\n<blockquote>{escaped}</blockquote>"
+    return "\n\n".join(format_telegram_revised_body_quote_parts(raw_text))
 
 
 def create_revised_body_quote_field(raw_text: str) -> Optional[Dict[str, Any]]:
+    fields = create_revised_body_quote_fields(raw_text)
+    return fields[0] if fields else None
+
+
+def create_revised_body_quote_fields(
+    raw_text: str,
+    max_length: int = 1000,
+) -> list[Dict[str, Any]]:
     quote = format_revised_body_quote(raw_text)
     if not quote:
-        return None
-    return {"name": "📝 수정 후 원문", "value": quote, "inline": False}
+        return []
+
+    chunks = split_text_chunks(quote, max_length)
+    total = len(chunks)
+    fields = []
+    for idx, chunk in enumerate(chunks):
+        name = "📝 수정 후 원문" if total == 1 else f"📝 수정 후 원문 ({idx + 1}/{total})"
+        fields.append({"name": name, "value": chunk, "inline": False})
+    return fields
 
 
 def _break_long_text_by_sentence(text: str) -> str:
@@ -545,35 +622,46 @@ def format_date(dt_str: str) -> str:
         return dt_str
 
 
-def format_change_summary(changes: Dict[str, Any]) -> str:
+def format_change_summary(changes: Dict[str, Any], style: str = "markdown") -> str:
     """
     Format granular changes into a summary string.
     """
+    def bold(label: str) -> str:
+        if style == "html":
+            return f"<b>{label}</b>"
+        return f"**{label}**"
+
+    def value(text: Any) -> str:
+        text = str(text)
+        if style == "html":
+            return html.escape(text, quote=False)
+        return text
+
     lines = []
     if "title" in changes:
-        lines.append(f"📝 **제목 변경**: {changes['title']}")
+        lines.append(f"📝 {bold('제목 변경')}: {value(changes['title'])}")
     
     # AI Summary for content
     if "content" in changes:
-        lines.append(f"📝 **내용 변경**: {changes['content']}")
+        lines.append(f"📝 {bold('내용 변경')}: {value(changes['content'])}")
         
     # Granular Attachment Changes
     if "attachments_added" in changes:
         for f in changes["attachments_added"]:
-             lines.append(f"➕ **첨부 추가**: {f}")
+             lines.append(f"➕ {bold('첨부 추가')}: {value(f)}")
     if "attachments_removed" in changes:
         for f in changes["attachments_removed"]:
-             lines.append(f"➖ **첨부 삭제**: {f}")
+             lines.append(f"➖ {bold('첨부 삭제')}: {value(f)}")
              
     # Fallback for generic attachment change
     if "attachments" in changes and not ("attachments_added" in changes or "attachments_removed" in changes):
-        lines.append(f"📎 **첨부파일 변경**: {changes['attachments']}")
+        lines.append(f"📎 {bold('첨부파일 변경')}: {value(changes['attachments'])}")
 
     if "image" in changes:
-        lines.append("🖼️ **이미지 변경됨**")
+        lines.append(f"🖼️ {bold('이미지 변경됨')}")
         
     if "attachment_text" in changes:
-        lines.append(f"📎 **첨부파일 내용 변경**: (상세 내용 확인 필요)")
+        lines.append(f"📎 {bold('첨부파일 내용 변경')}: (상세 내용 확인 필요)")
         
     return "\n".join(lines)
 
@@ -720,7 +808,7 @@ def create_telegram_message(notice, is_new: bool, modified_reason: str = "", cha
 
     # [NEW] Change Summary Header
     if not is_new and changes:
-        change_summary = format_change_summary(changes)
+        change_summary = format_change_summary(changes, style="html")
         if change_summary:
             msg += f"<b>[변경 요약]</b>\n{change_summary}\n\n"
     elif not is_new and modified_reason:

@@ -21,13 +21,14 @@ from services.notification.base import BaseNotifier, NotificationChannel
 from services.notification.diff_chunker import split_diff
 from services.notification.formatters import (
     create_discord_embed,
-    create_revised_body_quote_field,
+    create_revised_body_quote_fields,
     format_change_summary,
+    format_summary_lines,
 )
 from services.tag_matcher import TagMatcher
 
-# Discord embed field max is 1024; inline bold diff is sent as plain field text.
-_DISCORD_DIFF_CHUNK_LIMIT = constants.DISCORD_MAX_EMBED_LENGTH
+# Discord embed field max is 1024; reserve room for the fenced code block.
+_DISCORD_DIFF_CHUNK_LIMIT = constants.DISCORD_MAX_EMBED_LENGTH - 12
 
 logger = get_logger(__name__)
 
@@ -41,6 +42,16 @@ def _format_byte_size_discord(size_bytes: int) -> str:
     if kb < 1024:
         return f"{kb:.0f}KB"
     return f"{kb / 1024:.1f}MB"
+
+
+def _discord_code_block(text: str) -> str:
+    """Wrap text in a Discord code block without allowing fence injection."""
+    safe_text = text.replace("```", "`\u200b``")
+    return f"```text\n{safe_text}\n```"
+
+
+def _discord_updated_summary(summary: str) -> str:
+    return format_summary_lines(summary)[:1000]
 
 
 class DiscordNotifier(BaseNotifier, NotificationChannel):
@@ -488,13 +499,13 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                         embed["fields"].append(
                             {
                                 "name": name,
-                                "value": chunk,
+                                "value": _discord_code_block(chunk),
                                 "inline": False,
                             }
                         )
-                    revised_field = create_revised_body_quote_field(new_content)
-                    if revised_field:
-                        embed["fields"].append(revised_field)
+                    embed["fields"].extend(
+                        create_revised_body_quote_fields(new_content)
+                    )
 
         # Add attachment links as the last field (before footer)
         if notice.attachments:
@@ -610,7 +621,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                 update_embed["fields"].append(
                     {
                         "name": "📝 요약 (업데이트)",
-                        "value": notice.summary[:1000],
+                        "value": _discord_updated_summary(notice.summary),
                         "inline": False,
                     }
                 )
@@ -636,16 +647,17 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                             update_embed["fields"].append(
                                 {
                                     "name": name,
-                                    "value": chunk,
+                                    "value": _discord_code_block(chunk),
                                     "inline": False,
                                 }
                             )
-                    revised_field = create_revised_body_quote_field(new_content)
-                    if revised_field:
-                        update_embed["fields"].append(revised_field)
+                    update_embed["fields"].extend(
+                        create_revised_body_quote_fields(new_content)
+                    )
 
             # Prepare Payload
-            payload = {"embeds": [update_embed]}
+            update_embeds = self._split_embed(update_embed)
+            payload = {"embeds": [update_embeds[0]]}
 
             has_files_now = bool(embed_image_data)
 
@@ -670,6 +682,21 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                 async with self._discord_request(session, "POST", reply_url, headers=headers, **kwargs) as resp:
                     if resp.status in [200, 201]:
                         logger.info("[NOTIFIER] Discord update reply sent.")
+                        update_message_id = None
+                        try:
+                            update_message_id = (await resp.json()).get("id")
+                        except Exception:
+                            update_message_id = None
+                        reply_anchor_id = update_message_id or existing_thread_id
+
+                        for followup_embed in update_embeds[1:]:
+                            await self._send_discord_reply_embed(
+                                session,
+                                existing_thread_id,
+                                followup_embed,
+                                headers,
+                                reply_to_id=reply_anchor_id,
+                            )
 
                         # Send PDF previews if available AND relevant changes occurred
                         # Condition: New post OR Attachments changed OR Attachment Text changed
@@ -689,7 +716,11 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                         if pdf_previews and should_send_previews:
                             for group in pdf_previews:
                                 await self._send_discord_pdf_preview_group(
-                                    session, existing_thread_id, group, headers
+                                    session,
+                                    existing_thread_id,
+                                    group,
+                                    headers,
+                                    reply_to_id=reply_anchor_id,
                                 )
 
                         # Send remaining files if any (Attachments)
@@ -700,6 +731,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                                 files_for_attachments,
                                 headers,
                                 is_thread=True,
+                                reply_to_id=reply_anchor_id,
                             )
 
                         return existing_thread_id
@@ -808,7 +840,11 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                     if created_thread_id and pdf_previews:
                         for group in pdf_previews:
                             await self._send_discord_pdf_preview_group(
-                                session, created_thread_id, group, headers
+                                session,
+                                created_thread_id,
+                                group,
+                                headers,
+                                reply_to_id=created_message_id,
                             )
 
                     # If we have attachments, send them to the thread (AFTER previews)
@@ -819,6 +855,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                             files_for_attachments,
                             headers,
                             is_thread=True,
+                            reply_to_id=created_message_id,
                         )
 
                     return created_thread_id
@@ -913,7 +950,9 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
             total += len(field.get("value", ""))
         return total
 
-    def _split_embed(self, embed: Dict, max_chars: int = 5800) -> List[Dict]:
+    def _split_embed(
+        self, embed: Dict, max_chars: int = 5800, max_fields: int = 25
+    ) -> List[Dict]:
         """
         Splits a single large embed into multiple smaller embeds if it exceeds limits.
         Keeps Title/Desc/Author/Footer on the first embed.
@@ -940,7 +979,10 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
         # Fill first embed
         for field in all_fields:
             field_len = len(field.get("name", "")) + len(field.get("value", ""))
-            if current_len + field_len < max_chars:
+            if (
+                current_len + field_len < max_chars
+                and len(first_embed["fields"]) < max_fields
+            ):
                 first_embed["fields"].append(field)
                 current_len += field_len
             else:
@@ -966,7 +1008,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                 field = remaining_fields[0]
                 field_len = len(field.get("name", "")) + len(field.get("value", ""))
                 
-                if current_len + field_len < max_chars:
+                if current_len + field_len < max_chars and len(batch_fields) < max_fields:
                     batch_fields.append(remaining_fields.pop(0))
                     current_len += field_len
                 else:
@@ -1013,9 +1055,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
             batch = files[batch_idx : batch_idx + 10]
 
             form = MultipartWriter("form-data")
-            payload = {}
-            if reply_to_id and not is_thread:
-                payload["message_reference"] = {"message_id": reply_to_id}
+            payload = self._discord_reply_payload(reply_to_id)
 
             self._add_text_part(form, "payload_json", json.dumps(payload))
 
@@ -1035,7 +1075,12 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                 logger.error(f"[NOTIFIER] Error sending reply attachments: {e}")
 
     async def _send_discord_pdf_preview_group(
-        self, session: aiohttp.ClientSession, thread_id: str, group: dict, headers: dict
+        self,
+        session: aiohttp.ClientSession,
+        thread_id: str,
+        group: dict,
+        headers: dict,
+        reply_to_id: Optional[str] = None,
     ):
         """Send a group of Discord PDF preview images as a single message."""
         try:
@@ -1046,7 +1091,8 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
             caption = f"📑 [미리보기] {original_filename}"
 
             form = MultipartWriter("form-data")
-            self._add_text_part(form, "payload_json", json.dumps({"content": caption}))
+            payload = self._discord_reply_payload(reply_to_id, content=caption)
+            self._add_text_part(form, "payload_json", json.dumps(payload))
 
             # Add all images in the group
             for idx, img in enumerate(group["images"]):
@@ -1063,3 +1109,19 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                     )
         except Exception as e:
             logger.error(f"[NOTIFIER] Error sending Discord PDF preview group: {e}")
+
+    @staticmethod
+    def _discord_reply_payload(
+        reply_to_id: Optional[str],
+        content: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {}
+        if content is not None:
+            payload["content"] = content
+        if reply_to_id:
+            payload["message_reference"] = {
+                "message_id": str(reply_to_id),
+                "fail_if_not_exists": False,
+            }
+            payload["allowed_mentions"] = {"replied_user": False}
+        return payload

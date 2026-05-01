@@ -45,8 +45,8 @@ class TestFormatters:
         diff = formatters.generate_clean_diff(old, new, inline_style="telegram")
 
         assert "🔴" not in diff and "🟢" not in diff
-        assert "<u>" not in diff and "</u>" not in diff
-        assert "[" in diff and " → " in diff and "]" in diff
+        assert "❌<s>" in diff and "</s>❌ → ✅<u>" in diff and "</u>✅" in diff
+        assert "[" not in diff and "]" not in diff
         assert "제초제" in diff
         assert "수목" in diff
 
@@ -59,7 +59,8 @@ class TestFormatters:
 
         assert "🔴" not in diff and "🟢" not in diff
         assert "**" not in diff
-        assert "[" in diff and " → " in diff and "]" in diff
+        assert "❌" in diff and " → " in diff and "✅" in diff
+        assert "[" not in diff and "]" not in diff
         assert "제초제" in diff
         assert "수목" in diff
 
@@ -72,8 +73,8 @@ class TestFormatters:
 
         lines = diff.splitlines()
         assert len(lines) == 2
-        assert any("[25 → 26]" in line for line in lines)
-        assert any("[2026.05.10. → 2026.05.11.]" in line for line in lines)
+        assert any("❌25❌ → ✅26✅" in line for line in lines)
+        assert any("❌2026.05.10.❌ → ✅2026.05.11.✅" in line for line in lines)
 
     def test_generate_clean_diff_long_single_line_one_digit_change_uses_context(self):
         """Long one-line notices should not fall back to full red/green blocks."""
@@ -89,7 +90,7 @@ class TestFormatters:
         diff = formatters.generate_clean_diff(old, new, inline_style="telegram")
 
         assert "🔴" not in diff and "🟢" not in diff
-        assert "[4 → 5]" in diff
+        assert "❌<s>4</s>❌ → ✅<u>5</u>✅" in diff
         assert "접수 현황" in diff
         assert "/ 40 온라인" in diff
 
@@ -264,7 +265,6 @@ class TestFormatters:
         assert "\n" in quote
         assert "img" not in quote
         assert "alert" not in quote
-        assert len(quote) <= 500
 
     def test_format_revised_body_quote_wraps_long_text_without_sentences(self):
         raw = "가" * 220
@@ -272,13 +272,19 @@ class TestFormatters:
         quote = formatters.format_revised_body_quote(raw)
 
         assert "\n" in quote
-        assert len(quote) <= 500
 
-    def test_telegram_revised_body_quote_uses_blockquote(self):
+    def test_format_revised_body_quote_does_not_truncate_by_default(self):
+        raw = "가" * 700
+
+        quote = formatters.format_revised_body_quote(raw)
+
+        assert len(quote.replace("\n", "")) == 700
+
+    def test_telegram_revised_body_quote_uses_pre(self):
         block = formatters.format_telegram_revised_body_quote("<p>수정 후 <b>본문</b></p>")
 
         assert "📝 <b>수정 후 원문</b>" in block
-        assert "<blockquote>수정 후 본문</blockquote>" in block
+        assert "<pre>수정 후 본문</pre>" in block
 
     def test_create_revised_body_quote_field(self):
         field = formatters.create_revised_body_quote_field("<p>수정 후 본문</p>")
@@ -288,3 +294,20 @@ class TestFormatters:
             "value": "수정 후 본문",
             "inline": False,
         }
+
+    def test_create_revised_body_quote_fields_splits_long_body(self):
+        fields = formatters.create_revised_body_quote_fields("가" * 250, max_length=80)
+
+        assert len(fields) > 1
+        assert fields[0]["name"].startswith("📝 수정 후 원문 (1/")
+        assert all(len(field["value"]) <= 80 for field in fields)
+
+    def test_telegram_revised_body_quote_parts_split_long_body(self):
+        parts = formatters.format_telegram_revised_body_quote_parts(
+            "가" * 250, max_length=180
+        )
+
+        assert len(parts) > 1
+        assert parts[0].startswith("📝 <b>수정 후 원문 (1/")
+        assert all(len(part) <= 180 for part in parts)
+        assert "<pre>" in parts[0]
