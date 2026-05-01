@@ -145,11 +145,9 @@ def _context_diff_lines(
                 [
                     prefix,
                     _format_diff_line(before, inline_style),
-                    "[",
-                    _format_diff_line(old_segment, inline_style),
-                    " → ",
-                    _format_diff_line(new_segment, inline_style),
-                    "]",
+                    _format_context_replacement(
+                        old_segment, new_segment, inline_style
+                    ),
                     _format_diff_line(after, inline_style),
                     suffix,
                 ]
@@ -386,6 +384,16 @@ def _format_diff_line(text: str, inline_style: Optional[str]) -> str:
     if inline_style == "telegram":
         return html.escape(text, quote=False)
     return text
+
+
+def _format_context_replacement(
+    old_segment: str, new_segment: str, inline_style: Optional[str]
+) -> str:
+    old_text = _format_diff_line(old_segment, inline_style)
+    new_text = _format_diff_line(new_segment, inline_style)
+    if inline_style == "telegram":
+        return f"❌<s>{old_text}</s>❌ → ✅<u>{new_text}</u>✅"
+    return f"❌{old_text}❌ → ✅{new_text}✅"
 
 
 def get_category_emoji(category: str) -> str:

@@ -45,8 +45,8 @@ class TestFormatters:
         diff = formatters.generate_clean_diff(old, new, inline_style="telegram")
 
         assert "🔴" not in diff and "🟢" not in diff
-        assert "<u>" not in diff and "</u>" not in diff
-        assert "[" in diff and " → " in diff and "]" in diff
+        assert "❌<s>" in diff and "</s>❌ → ✅<u>" in diff and "</u>✅" in diff
+        assert "[" not in diff and "]" not in diff
         assert "제초제" in diff
         assert "수목" in diff
 
@@ -59,7 +59,8 @@ class TestFormatters:
 
         assert "🔴" not in diff and "🟢" not in diff
         assert "**" not in diff
-        assert "[" in diff and " → " in diff and "]" in diff
+        assert "❌" in diff and " → " in diff and "✅" in diff
+        assert "[" not in diff and "]" not in diff
         assert "제초제" in diff
         assert "수목" in diff
 
@@ -72,8 +73,8 @@ class TestFormatters:
 
         lines = diff.splitlines()
         assert len(lines) == 2
-        assert any("[25 → 26]" in line for line in lines)
-        assert any("[2026.05.10. → 2026.05.11.]" in line for line in lines)
+        assert any("❌25❌ → ✅26✅" in line for line in lines)
+        assert any("❌2026.05.10.❌ → ✅2026.05.11.✅" in line for line in lines)
 
     def test_generate_clean_diff_long_single_line_one_digit_change_uses_context(self):
         """Long one-line notices should not fall back to full red/green blocks."""
@@ -89,7 +90,7 @@ class TestFormatters:
         diff = formatters.generate_clean_diff(old, new, inline_style="telegram")
 
         assert "🔴" not in diff and "🟢" not in diff
-        assert "[4 → 5]" in diff
+        assert "❌<s>4</s>❌ → ✅<u>5</u>✅" in diff
         assert "접수 현황" in diff
         assert "/ 40 온라인" in diff
 
