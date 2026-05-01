@@ -21,7 +21,7 @@ from services.notification.base import BaseNotifier, NotificationChannel
 from services.notification.diff_chunker import split_diff
 from services.notification.formatters import (
     create_discord_embed,
-    create_revised_body_quote_field,
+    create_revised_body_quote_fields,
     format_change_summary,
     format_summary_lines,
 )
@@ -503,9 +503,9 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                                 "inline": False,
                             }
                         )
-                    revised_field = create_revised_body_quote_field(new_content)
-                    if revised_field:
-                        embed["fields"].append(revised_field)
+                    embed["fields"].extend(
+                        create_revised_body_quote_fields(new_content)
+                    )
 
         # Add attachment links as the last field (before footer)
         if notice.attachments:
@@ -651,12 +651,13 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                                     "inline": False,
                                 }
                             )
-                    revised_field = create_revised_body_quote_field(new_content)
-                    if revised_field:
-                        update_embed["fields"].append(revised_field)
+                    update_embed["fields"].extend(
+                        create_revised_body_quote_fields(new_content)
+                    )
 
             # Prepare Payload
-            payload = {"embeds": [update_embed]}
+            update_embeds = self._split_embed(update_embed)
+            payload = {"embeds": [update_embeds[0]]}
 
             has_files_now = bool(embed_image_data)
 
@@ -681,6 +682,21 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                 async with self._discord_request(session, "POST", reply_url, headers=headers, **kwargs) as resp:
                     if resp.status in [200, 201]:
                         logger.info("[NOTIFIER] Discord update reply sent.")
+                        update_message_id = None
+                        try:
+                            update_message_id = (await resp.json()).get("id")
+                        except Exception:
+                            update_message_id = None
+                        reply_anchor_id = update_message_id or existing_thread_id
+
+                        for followup_embed in update_embeds[1:]:
+                            await self._send_discord_reply_embed(
+                                session,
+                                existing_thread_id,
+                                followup_embed,
+                                headers,
+                                reply_to_id=reply_anchor_id,
+                            )
 
                         # Send PDF previews if available AND relevant changes occurred
                         # Condition: New post OR Attachments changed OR Attachment Text changed
@@ -696,13 +712,6 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                                 ]
                             )
                         )
-
-                        update_message_id = None
-                        try:
-                            update_message_id = (await resp.json()).get("id")
-                        except Exception:
-                            update_message_id = None
-                        reply_anchor_id = update_message_id or existing_thread_id
 
                         if pdf_previews and should_send_previews:
                             for group in pdf_previews:
@@ -941,7 +950,9 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
             total += len(field.get("value", ""))
         return total
 
-    def _split_embed(self, embed: Dict, max_chars: int = 5800) -> List[Dict]:
+    def _split_embed(
+        self, embed: Dict, max_chars: int = 5800, max_fields: int = 25
+    ) -> List[Dict]:
         """
         Splits a single large embed into multiple smaller embeds if it exceeds limits.
         Keeps Title/Desc/Author/Footer on the first embed.
@@ -968,7 +979,10 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
         # Fill first embed
         for field in all_fields:
             field_len = len(field.get("name", "")) + len(field.get("value", ""))
-            if current_len + field_len < max_chars:
+            if (
+                current_len + field_len < max_chars
+                and len(first_embed["fields"]) < max_fields
+            ):
                 first_embed["fields"].append(field)
                 current_len += field_len
             else:
@@ -994,7 +1008,7 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
                 field = remaining_fields[0]
                 field_len = len(field.get("name", "")) + len(field.get("value", ""))
                 
-                if current_len + field_len < max_chars:
+                if current_len + field_len < max_chars and len(batch_fields) < max_fields:
                     batch_fields.append(remaining_fields.pop(0))
                     current_len += field_len
                 else:

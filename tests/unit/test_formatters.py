@@ -265,7 +265,6 @@ class TestFormatters:
         assert "\n" in quote
         assert "img" not in quote
         assert "alert" not in quote
-        assert len(quote) <= 500
 
     def test_format_revised_body_quote_wraps_long_text_without_sentences(self):
         raw = "가" * 220
@@ -273,7 +272,13 @@ class TestFormatters:
         quote = formatters.format_revised_body_quote(raw)
 
         assert "\n" in quote
-        assert len(quote) <= 500
+
+    def test_format_revised_body_quote_does_not_truncate_by_default(self):
+        raw = "가" * 700
+
+        quote = formatters.format_revised_body_quote(raw)
+
+        assert len(quote.replace("\n", "")) == 700
 
     def test_telegram_revised_body_quote_uses_pre(self):
         block = formatters.format_telegram_revised_body_quote("<p>수정 후 <b>본문</b></p>")
@@ -289,3 +294,20 @@ class TestFormatters:
             "value": "수정 후 본문",
             "inline": False,
         }
+
+    def test_create_revised_body_quote_fields_splits_long_body(self):
+        fields = formatters.create_revised_body_quote_fields("가" * 250, max_length=80)
+
+        assert len(fields) > 1
+        assert fields[0]["name"].startswith("📝 수정 후 원문 (1/")
+        assert all(len(field["value"]) <= 80 for field in fields)
+
+    def test_telegram_revised_body_quote_parts_split_long_body(self):
+        parts = formatters.format_telegram_revised_body_quote_parts(
+            "가" * 250, max_length=180
+        )
+
+        assert len(parts) > 1
+        assert parts[0].startswith("📝 <b>수정 후 원문 (1/")
+        assert all(len(part) <= 180 for part in parts)
+        assert "<pre>" in parts[0]

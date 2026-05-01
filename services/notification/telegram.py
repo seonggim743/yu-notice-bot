@@ -19,7 +19,7 @@ from services.notification.base import BaseNotifier, NotificationChannel
 from services.notification.diff_chunker import split_diff
 from services.notification.formatters import (
     create_telegram_message,
-    format_telegram_revised_body_quote,
+    format_telegram_revised_body_quote_parts,
 )
 from services.file.image import ImageHandler
 
@@ -739,7 +739,9 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
 
                 if diff_text:
                     chunks = split_diff(diff_text, _TELEGRAM_DIFF_CHUNK_LIMIT)
-                    revised_body_quote = format_telegram_revised_body_quote(new_content)
+                    revised_body_parts = format_telegram_revised_body_quote_parts(
+                        new_content
+                    )
                     revised_quote_sent = False
                     for idx, chunk in enumerate(chunks):
                         header = (
@@ -749,12 +751,12 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                         )
                         detail_msg = f"{header}\n<blockquote>{chunk}</blockquote>"
                         if (
-                            revised_body_quote
+                            len(revised_body_parts) == 1
                             and idx == len(chunks) - 1
-                            and len(detail_msg) + len(revised_body_quote) + 2
+                            and len(detail_msg) + len(revised_body_parts[0]) + 2
                             <= constants.TELEGRAM_MAX_MESSAGE_LENGTH
                         ):
-                            detail_msg += f"\n\n{revised_body_quote}"
+                            detail_msg += f"\n\n{revised_body_parts[0]}"
                         reply_payload = {
                             "chat_id": self.chat_id,
                             "text": detail_msg,
@@ -768,8 +770,8 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                             session, "sendMessage", payload=reply_payload
                         )
                         if result:
-                            if revised_body_quote and idx == len(chunks) - 1:
-                                revised_quote_sent = revised_body_quote in detail_msg
+                            if revised_body_parts and idx == len(chunks) - 1:
+                                revised_quote_sent = revised_body_parts[0] in detail_msg
                             if idx < len(chunks) - 1:
                                 await asyncio.sleep(0.2)
                         elif len(chunks) == 1:
@@ -782,18 +784,20 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                                 session, "sendMessage", payload=reply_payload
                             )
 
-                    if revised_body_quote and not revised_quote_sent:
-                        quote_payload = {
-                            "chat_id": self.chat_id,
-                            "text": revised_body_quote,
-                            "reply_to_message_id": main_msg_id,
-                            "parse_mode": "HTML",
-                        }
-                        if topic_id:
-                            quote_payload["message_thread_id"] = topic_id
-                        await self._send_telegram_api(
-                            session, "sendMessage", payload=quote_payload
-                        )
+                    if revised_body_parts and not revised_quote_sent:
+                        for part in revised_body_parts:
+                            quote_payload = {
+                                "chat_id": self.chat_id,
+                                "text": part,
+                                "reply_to_message_id": main_msg_id,
+                                "parse_mode": "HTML",
+                            }
+                            if topic_id:
+                                quote_payload["message_thread_id"] = topic_id
+                            await self._send_telegram_api(
+                                session, "sendMessage", payload=quote_payload
+                            )
+                            await asyncio.sleep(0.2)
 
                 else:
                     # Diff generation failed but content changed
