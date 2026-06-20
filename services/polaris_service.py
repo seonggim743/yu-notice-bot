@@ -379,11 +379,7 @@ if __name__ == "__main__":
             for downloaded_file in downloaded_files:
                 if downloaded_file.lower().endswith(".zip"):
                     logger.info(f"[POLARIS] Extracting ZIP: {downloaded_file}")
-                    with zipfile.ZipFile(downloaded_file, 'r') as zip_ref:
-                        zip_ref.extractall(output_dir)
-                        for name in zip_ref.namelist():
-                            if name.lower().endswith(('.jpg', '.jpeg', '.png')):
-                                extracted_files.append(os.path.join(output_dir, name))
+                    extracted_files.extend(self._extract_zip_images(downloaded_file, output_dir))
                 elif downloaded_file.lower().endswith(('.jpg', '.jpeg', '.png')):
                     extracted_files.append(downloaded_file)
 
@@ -394,3 +390,40 @@ if __name__ == "__main__":
             logger.error(f"[POLARIS] Conversion error: {e}")
             self._circuit_open = True
             return []
+
+    @staticmethod
+    def _extract_zip_images(zip_path: str, output_dir: str) -> List[str]:
+        """Extract only image files from a Polaris ZIP without overwriting inputs."""
+        extracted_files = []
+
+        with zipfile.ZipFile(zip_path, "r") as zip_ref:
+            for index, info in enumerate(zip_ref.infolist(), start=1):
+                if info.is_dir():
+                    continue
+
+                normalized_name = info.filename.replace("\\", "/")
+                ext = os.path.splitext(normalized_name)[1].lower()
+                if ext not in (".jpg", ".jpeg", ".png"):
+                    continue
+
+                basename = os.path.basename(normalized_name)
+                safe_name = "".join(
+                    ch if ch.isalnum() or ch in "._- " else "_"
+                    for ch in basename
+                ).strip(" .")
+                if not safe_name:
+                    safe_name = f"polaris_page_{index}{ext}"
+
+                target_path = os.path.join(output_dir, safe_name)
+                stem, suffix = os.path.splitext(safe_name)
+                duplicate_index = 2
+                while os.path.exists(target_path):
+                    target_path = os.path.join(output_dir, f"{stem}_{duplicate_index}{suffix}")
+                    duplicate_index += 1
+
+                with zip_ref.open(info) as source, open(target_path, "wb") as target:
+                    target.write(source.read())
+
+                extracted_files.append(target_path)
+
+        return extracted_files
