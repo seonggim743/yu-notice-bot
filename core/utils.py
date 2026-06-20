@@ -8,7 +8,9 @@ import functools
 from datetime import datetime, timezone
 from typing import Optional, Callable, Any, TypeVar, Tuple
 from urllib.parse import unquote
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+import pytz
 
 from core.logger import get_logger
 
@@ -17,9 +19,20 @@ logger = get_logger(__name__)
 # Type variable for generic async function return type
 T = TypeVar('T')
 
-# Standard timezone constants
-KST = ZoneInfo("Asia/Seoul")
 UTC = timezone.utc
+
+
+def _load_kst_timezone():
+    """Load KST using zoneinfo, falling back on pytz on Windows without tzdata."""
+    try:
+        return ZoneInfo("Asia/Seoul")
+    except ZoneInfoNotFoundError:
+        logger.warning("[TIMEZONE] tzdata not found; falling back to pytz Asia/Seoul")
+        return pytz.timezone("Asia/Seoul")
+
+
+# Standard timezone constants
+KST = _load_kst_timezone()
 
 
 def get_now() -> datetime:

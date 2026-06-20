@@ -164,14 +164,20 @@ class FileService(BaseFileHandler):
         except Exception as e:
             logger.error(f"[FILE] Polaris conversion error: {e}")
 
-        # Priority 2: Text Extraction Fallback
+        # Priority 2: Direct LibreOffice conversion
+        if soffice_cmd:
+            pdf_data = self._convert_office_to_pdf(file_data, filename, "hwpx", temp_dir, env, soffice_cmd)
+            if pdf_data:
+                return pdf_data
+
+        # Priority 3: Text Extraction Fallback
         if soffice_cmd:
             return self._fallback_text_to_pdf(file_data, filename, temp_dir, env, soffice_cmd)
-        
+
         return None
 
     def _convert_office_to_pdf(self, file_data: bytes, filename: str, ext: str, temp_dir: str, env: dict, soffice_cmd: str) -> Optional[bytes]:
-        """Direct LibreOffice conversion for DOCX, XLSX, etc."""
+        """Direct LibreOffice conversion for DOCX, XLSX, HWPX, etc."""
         if not soffice_cmd:
             logger.warning(f"[FILE] LibreOffice not found. Skipping PDF conversion for {filename}.")
             return None
