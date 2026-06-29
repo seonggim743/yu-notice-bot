@@ -712,6 +712,24 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
                                     # Small delay between chunks to prevent rate limiting (even with retries)
                                     await asyncio.sleep(1.0)
 
+        # Existing content-only single-image notices already dual-send the
+        # original in their branch above. Every other content-image path
+        # reaches here, including notices that also have PDF/HWP previews.
+        already_sent_single_content_original = (
+            len(content_images_to_send) == 1 and not pdf_previews_to_send
+        )
+        if (
+            main_msg_id
+            and content_images_to_send
+            and not already_sent_single_content_original
+        ):
+            await self._send_original_content_image_documents(
+                session=session,
+                content_images=content_images_to_send,
+                topic_id=topic_id,
+                reply_to_message_id=main_msg_id,
+            )
+
         # 2.2 Send original attachments as replies after previews
         if main_msg_id and notice.attachments:
             collected_files = await self.downloader.download_attachments(
@@ -846,6 +864,48 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
         result = await self._send_telegram_api(session, "sendDocument", data=form)
         if result:
             logger.info(f"[NOTIFIER] Sent original attachment reply: {filename}")
+
+    async def _send_original_content_image_documents(
+        self,
+        session: aiohttp.ClientSession,
+        content_images: List[Dict[str, Any]],
+        topic_id: Optional[int],
+        reply_to_message_id: int,
+    ) -> None:
+        """Send downloaded inline content images as original document replies."""
+        for img in content_images:
+            original_data = img.get("original_data")
+            if not original_data:
+                continue
+
+            filename = "original_" + img.get("filename", "image.jpg")
+            if len(original_data) > constants.TELEGRAM_FILE_SIZE_LIMIT:
+                logger.warning(
+                    f"[TELEGRAM] Skipping original content image {filename}: "
+                    f"{len(original_data)} bytes exceeds Telegram limit "
+                    f"{constants.TELEGRAM_FILE_SIZE_LIMIT}"
+                )
+                continue
+
+            doc_form = MultipartWriter("form-data")
+            self._add_file_part(doc_form, "document", original_data, filename)
+            self._add_text_part(doc_form, "caption", "📂 원본 이미지 파일")
+            self._add_text_part(doc_form, "chat_id", str(self.chat_id))
+            self._add_text_part(
+                doc_form, "reply_to_message_id", str(reply_to_message_id)
+            )
+            if topic_id:
+                self._add_text_part(
+                    doc_form, "message_thread_id", str(topic_id)
+                )
+
+            result = await self._send_telegram_api(
+                session, "sendDocument", data=doc_form
+            )
+            if result:
+                logger.info(
+                    "[TELEGRAM] Sent original image as document (Dual Send)"
+                )
 
     async def send_menu_notification(
         self, session: aiohttp.ClientSession, notice: Notice, menu_data: Dict[str, Any]
