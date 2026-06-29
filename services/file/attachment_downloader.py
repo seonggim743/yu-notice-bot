@@ -7,7 +7,7 @@ module centralizes that flow so each notifier only deals in
 (filename, bytes) tuples and applies its own platform-specific wrapping
 (image optimization, MultipartWriter shape, etc.) on top.
 """
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 import aiohttp
 import asyncio
@@ -69,13 +69,15 @@ class AttachmentDownloader:
             )
             if data is None:
                 continue
+
             file_data, content_disposition = data
             actual_filename = parse_content_disposition(
                 content_disposition, fallback_name=att.name
             )
             results.append((actual_filename, file_data))
             logger.info(
-                f"[DOWNLOADER] Got attachment '{actual_filename}' ({len(file_data)} bytes)"
+                f"[DOWNLOADER] Got attachment '{actual_filename}' "
+                f"({len(file_data)} bytes)"
             )
 
         return results
@@ -86,40 +88,44 @@ class AttachmentDownloader:
         image_urls: List[str],
         referer: str = "",
         max_count: int = 10,
-        timeout_seconds: int = 10,
+        timeout_seconds: int = 30,
+        file_size_limit: Optional[int] = None,
     ) -> List[Tuple[int, bytes]]:
         """Download up to max_count content images.
 
         Returns a list of (original_index, data) tuples. Failed downloads
-        are skipped silently after a logged error. No retries — content
-        images are best-effort and a missing one should not block the
-        notification.
+        are skipped after logged retry attempts. Content images are
+        best-effort and a missing one should not block the notification.
         """
         if not image_urls:
             return []
 
         results: List[Tuple[int, bytes]] = []
-        headers = {"Referer": referer, "User-Agent": settings.USER_AGENT}
+        headers = {
+            "Referer": referer,
+            "User-Agent": settings.USER_AGENT,
+            "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+            "Connection": "keep-alive",
+        }
 
         for idx, image_url in enumerate(image_urls[:max_count]):
-            try:
-                async with session.get(
-                    image_url,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=timeout_seconds),
-                ) as resp:
-                    if resp.status == 200:
-                        data = await resp.read()
-                        results.append((idx, data))
-                        logger.info(
-                            f"[DOWNLOADER] Got content image {idx + 1}/{len(image_urls)}"
-                        )
-                    else:
-                        logger.warning(
-                            f"[DOWNLOADER] Image {idx} returned status {resp.status}"
-                        )
-            except Exception as e:
-                logger.error(f"[DOWNLOADER] Image {idx} failed: {e}")
+            data = await self._fetch_with_retry(
+                session,
+                image_url,
+                headers,
+                file_size_limit,
+                label=f"content image {idx}",
+                timeout_seconds=timeout_seconds,
+            )
+            if data is None:
+                continue
+
+            file_data, _ = data
+            results.append((idx, file_data))
+            logger.info(
+                f"[DOWNLOADER] Got content image {idx + 1}/{len(image_urls)} "
+                f"({len(file_data)} bytes)"
+            )
 
         return results
 
@@ -128,8 +134,9 @@ class AttachmentDownloader:
         session: aiohttp.ClientSession,
         url: str,
         headers: dict,
-        file_size_limit: int,
+        file_size_limit: Optional[int],
         label: str,
+        timeout_seconds: int = 30,
     ):
         """Fetch a single URL with retry/abort policy.
 
@@ -141,28 +148,45 @@ class AttachmentDownloader:
                 async with session.get(
                     url,
                     headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=30),
+                    timeout=aiohttp.ClientTimeout(total=timeout_seconds),
                 ) as file_resp:
                     if file_resp.status == 200:
                         file_data = await file_resp.read()
-                        if len(file_data) > file_size_limit:
+                        if (
+                            file_size_limit is not None
+                            and len(file_data) > file_size_limit
+                        ):
                             logger.warning(
                                 f"[DOWNLOADER] {label} exceeds size limit "
                                 f"({len(file_data)} > {file_size_limit}), skipping"
                             )
                             return None
+
                         return file_data, file_resp.headers.get(
                             "Content-Disposition", ""
                         )
+
                     if file_resp.status in (404, 403):
                         logger.warning(
                             f"[DOWNLOADER] {label} status {file_resp.status}, no retry"
                         )
                         return None
+
+                    logger.warning(
+                        f"[DOWNLOADER] {label} returned status {file_resp.status} "
+                        f"(attempt {attempt}/{self.max_retries})"
+                    )
                     if attempt < self.max_retries:
                         await asyncio.sleep(self.retry_delay)
             except Exception as e:
-                logger.error(f"[DOWNLOADER] Error downloading {label}: {e}")
+                logger.error(
+                    f"[DOWNLOADER] Error downloading {label} "
+                    f"(attempt {attempt}/{self.max_retries}): {type(e).__name__}: {e}"
+                )
                 if attempt < self.max_retries:
                     await asyncio.sleep(self.retry_delay)
+
+        logger.warning(
+            f"[DOWNLOADER] {label} failed after {self.max_retries} attempt(s)"
+        )
         return None

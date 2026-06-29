@@ -533,7 +533,10 @@ class DiscordNotifier(BaseNotifier, NotificationChannel):
 
         if notice.image_urls and should_send_content_images:
             downloaded_images = await self.downloader.download_content_images(
-                session, notice.image_urls, referer=notice.url
+                session,
+                notice.image_urls,
+                referer=notice.url,
+                file_size_limit=constants.DISCORD_FILE_SIZE_LIMIT,
             )
             for idx, image_data in downloaded_images:
                 content_images.append(

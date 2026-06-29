@@ -416,7 +416,10 @@ class TelegramNotifier(BaseNotifier, NotificationChannel):
         
         if notice.image_urls and should_send_content_images:
             downloaded_images = await self.downloader.download_content_images(
-                session, notice.image_urls, referer=notice.url
+                session,
+                notice.image_urls,
+                referer=notice.url,
+                file_size_limit=constants.TELEGRAM_FILE_SIZE_LIMIT,
             )
             for slot, (idx, original_data) in enumerate(downloaded_images):
                 # Optimize for Telegram (Resize if too big)
