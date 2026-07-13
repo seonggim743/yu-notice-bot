@@ -29,10 +29,11 @@ class AuthService:
                 headless=True,
                 args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
             )
-            # Create context with ignore_https_errors to fix connection reset
+            # Keep TLS certificate validation enabled because this context
+            # handles university SSO credentials.
             context = await browser.new_context(
                 user_agent=settings.USER_AGENT,
-                ignore_https_errors=True,
+                ignore_https_errors=False,
                 accept_downloads=True
             )
             page = await context.new_page()
@@ -133,7 +134,7 @@ class AuthService:
             )
             context = await browser.new_context(
                 user_agent=settings.USER_AGENT,
-                ignore_https_errors=True,
+                ignore_https_errors=False,
                 accept_downloads=True
             )
             page = await context.new_page()

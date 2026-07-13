@@ -81,7 +81,9 @@ async def main():
     discord_channel_id = discord_map.get("dev") or os.getenv("DISCORD_DEV_CHANNEL_ID")
     telegram_topic_id = telegram_map.get("dev") or os.getenv("TELEGRAM_DEV_TOPIC_ID")
 
-    if not discord_channel_id and not telegram_topic_id:
+    has_discord_target = bool(discord_token and discord_channel_id)
+    has_telegram_target = bool(telegram_token and telegram_chat_id)
+    if not has_discord_target and not has_telegram_target:
         print("No dev channels configured (check maps or env vars).")
         return
 
@@ -129,7 +131,7 @@ async def main():
                 send_discord(session, discord_token, discord_channel_id, discord_embed)
             )
 
-        if telegram_token and telegram_chat_id and telegram_topic_id:
+        if telegram_token and telegram_chat_id:
             tasks.append(
                 send_telegram(
                     session,

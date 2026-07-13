@@ -30,6 +30,14 @@ WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_site
 ON notification_deliveries(site_key, status);
 
+-- The outbox contains serialized notice payloads and is an internal service
+-- implementation detail. RLS provides defense in depth even if table grants
+-- are changed later; the service role bypasses RLS.
+ALTER TABLE notification_deliveries ENABLE ROW LEVEL SECURITY;
+
+REVOKE ALL ON TABLE notification_deliveries FROM anon, authenticated;
+GRANT ALL ON TABLE notification_deliveries TO service_role;
+
 CREATE OR REPLACE FUNCTION persist_notice_with_deliveries(
     p_notice JSONB,
     p_attachments JSONB[],
@@ -162,3 +170,15 @@ $$;
 
 COMMENT ON TABLE notification_deliveries IS
 'Durable per-channel notification outbox. Pending rows retry until sent or superseded by a newer notice version.';
+
+-- PostgreSQL grants function execution to PUBLIC by default. Only the backend
+-- service role should be able to persist notices or mutate delivery state.
+REVOKE EXECUTE ON FUNCTION persist_notice_with_deliveries(JSONB, JSONB[], JSONB[])
+FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION persist_notice_with_deliveries(JSONB, JSONB[], JSONB[])
+TO service_role;
+
+REVOKE EXECUTE ON FUNCTION complete_notification_delivery(UUID, JSONB)
+FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION complete_notification_delivery(UUID, JSONB)
+TO service_role;

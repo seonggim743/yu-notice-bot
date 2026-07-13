@@ -12,6 +12,7 @@ class DevNotifier:
     def __init__(self):
         self.platform = settings.DEV_PLATFORM.lower()
         self.telegram_token = settings.TELEGRAM_TOKEN
+        self.discord_token = settings.DISCORD_BOT_TOKEN
         
         # Resolve Channel/Topic ID from Maps
         if self.platform == "telegram":
@@ -65,13 +66,13 @@ class DevNotifier:
                 logger.info("[DEV] Alert sent to Telegram")
 
     async def _send_discord(self, session: aiohttp.ClientSession, text: str):
-        if not self.channel_id:
+        if not self.discord_token or not self.channel_id:
             return
 
         # Assuming Bot Token based send to channel
         url = f"https://discord.com/api/v10/channels/{self.channel_id}/messages"
         headers = {
-            "Authorization": f"Bot {settings.DISCORD_TOKEN}",
+            "Authorization": f"Bot {self.discord_token}",
             "Content-Type": "application/json",
         }
         payload = {"content": f"🚨 **SYSTEM ALERT**\n\n{text}"}

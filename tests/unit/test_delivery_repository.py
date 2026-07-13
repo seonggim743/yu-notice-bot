@@ -134,3 +134,7 @@ def test_migration_supersedes_older_pending_versions_and_completes_ids_atomicall
     assert "CREATE OR REPLACE FUNCTION complete_notification_delivery" in sql
     assert "message_ids = jsonb_set" in sql
     assert "discord_thread_id = p_external_message_id" in sql
+    assert "ALTER TABLE notification_deliveries ENABLE ROW LEVEL SECURITY" in sql
+    assert "REVOKE ALL ON TABLE notification_deliveries FROM anon, authenticated" in sql
+    assert sql.count("FROM PUBLIC, anon, authenticated") == 2
+    assert sql.count("TO service_role") == 3

@@ -12,9 +12,21 @@ class _FakeResponse:
         self.status = status
         self._data = data
         self.headers = headers or {}
+        self.content = _FakeContent([data])
 
     async def read(self):
         return self._data
+
+
+class _FakeContent:
+    def __init__(self, chunks):
+        self.chunks = chunks
+        self.yield_count = 0
+
+    async def iter_chunked(self, _size):
+        for chunk in self.chunks:
+            self.yield_count += 1
+            yield chunk
 
 
 class _FakeContext:
@@ -100,4 +112,45 @@ async def test_content_image_respects_file_size_limit(attachment_downloader_cls)
     )
 
     assert result == []
+    assert session.get.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_size_limit_stops_stream_before_remaining_chunks(
+    attachment_downloader_cls,
+):
+    response = _FakeResponse(200)
+    response.content = _FakeContent([b"abc", b"def", b"not-consumed"])
+    session = Mock()
+    session.get = Mock(return_value=_FakeContext(response))
+    downloader = attachment_downloader_cls(max_retries=2, retry_delay=0)
+
+    result = await downloader.download_content_images(
+        session,
+        ["https://example.com/image.jpg"],
+        file_size_limit=5,
+    )
+
+    assert result == []
+    assert response.content.yield_count == 2
+    assert session.get.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_oversized_content_length_is_rejected_before_streaming(
+    attachment_downloader_cls,
+):
+    response = _FakeResponse(200, b"not-consumed", {"Content-Length": "100"})
+    session = Mock()
+    session.get = Mock(return_value=_FakeContext(response))
+    downloader = attachment_downloader_cls(max_retries=2, retry_delay=0)
+
+    result = await downloader.download_content_images(
+        session,
+        ["https://example.com/image.jpg"],
+        file_size_limit=5,
+    )
+
+    assert result == []
+    assert response.content.yield_count == 0
     assert session.get.call_count == 1

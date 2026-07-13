@@ -105,6 +105,8 @@ WHERE status = 'pending';
 CREATE INDEX IF NOT EXISTS idx_notification_deliveries_site
 ON notification_deliveries(site_key, status);
 
+ALTER TABLE notification_deliveries ENABLE ROW LEVEL SECURITY;
+
 -- =====================================================
 -- 3. Token Usage Tracking
 -- =====================================================

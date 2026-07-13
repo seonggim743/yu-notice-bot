@@ -151,15 +151,10 @@ class AttachmentDownloader:
                     timeout=aiohttp.ClientTimeout(total=timeout_seconds),
                 ) as file_resp:
                     if file_resp.status == 200:
-                        file_data = await file_resp.read()
-                        if (
-                            file_size_limit is not None
-                            and len(file_data) > file_size_limit
-                        ):
-                            logger.warning(
-                                f"[DOWNLOADER] {label} exceeds size limit "
-                                f"({len(file_data)} > {file_size_limit}), skipping"
-                            )
+                        file_data = await self._read_with_limit(
+                            file_resp, file_size_limit, label
+                        )
+                        if file_data is None:
                             return None
 
                         return file_data, file_resp.headers.get(
@@ -190,3 +185,38 @@ class AttachmentDownloader:
             f"[DOWNLOADER] {label} failed after {self.max_retries} attempt(s)"
         )
         return None
+
+    async def _read_with_limit(
+        self,
+        response: aiohttp.ClientResponse,
+        file_size_limit: Optional[int],
+        label: str,
+    ) -> Optional[bytes]:
+        """Read a response without buffering more than the configured limit."""
+        if file_size_limit is None:
+            return await response.read()
+
+        content_length = response.headers.get("Content-Length")
+        if content_length:
+            try:
+                if int(content_length) > file_size_limit:
+                    logger.warning(
+                        f"[DOWNLOADER] {label} exceeds size limit "
+                        f"({content_length} > {file_size_limit}), skipping"
+                    )
+                    return None
+            except ValueError:
+                # Invalid or misleading headers must not bypass the streaming cap.
+                pass
+
+        data = bytearray()
+        async for chunk in response.content.iter_chunked(64 * 1024):
+            if len(data) + len(chunk) > file_size_limit:
+                logger.warning(
+                    f"[DOWNLOADER] {label} exceeds size limit while streaming "
+                    f"(> {file_size_limit}), skipping"
+                )
+                return None
+            data.extend(chunk)
+
+        return bytes(data)
