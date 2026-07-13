@@ -76,6 +76,35 @@ CREATE TABLE IF NOT EXISTS attachments (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- Durable per-channel notification outbox. See migration 006 for RPCs.
+CREATE TABLE IF NOT EXISTS notification_deliveries (
+    id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+    notice_id UUID NOT NULL REFERENCES notices(id) ON DELETE CASCADE,
+    site_key TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    channel TEXT NOT NULL CHECK (channel IN ('telegram', 'discord')),
+    event_type TEXT NOT NULL CHECK (event_type IN ('new', 'modified')),
+    payload JSONB NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'sent', 'superseded')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_error TEXT,
+    alerted_at TIMESTAMPTZ,
+    external_message_id JSONB,
+    sent_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (notice_id, content_hash, channel)
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_due
+ON notification_deliveries(next_attempt_at)
+WHERE status = 'pending';
+
+CREATE INDEX IF NOT EXISTS idx_notification_deliveries_site
+ON notification_deliveries(site_key, status);
+
 -- =====================================================
 -- 3. Token Usage Tracking
 -- =====================================================

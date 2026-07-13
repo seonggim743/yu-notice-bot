@@ -1,9 +1,15 @@
 import pytest
 import asyncio
+import os
 from typing import Dict, Any
 from unittest.mock import Mock, AsyncMock
 from datetime import datetime
 import json
+
+# Keep configuration imports hermetic during test collection. Individual tests
+# override values when they need channel or AI behavior.
+os.environ.setdefault("SUPABASE_URL", "https://test.supabase.co")
+os.environ.setdefault("SUPABASE_KEY", "test-service-role-key")
 
 # =============================================================================
 # Pytest Configuration

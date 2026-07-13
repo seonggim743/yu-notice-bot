@@ -37,7 +37,6 @@ class SensitiveDataFilter(logging.Filter):
             r"(DISCORD_WEBHOOK_URL=|https://discord\.com/api/webhooks/)[0-9]+/[A-Za-z0-9_-]+",
             r"\1***MASKED***",
         ),
-        (r"(CANVAS_TOKEN=)[A-Za-z0-9]{50,}", r"\1***MASKED***"),
         (r"https://[a-z0-9-]+\.supabase\.co", r"***SUPABASE_URL***"),
     ]
 

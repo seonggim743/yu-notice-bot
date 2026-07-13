@@ -74,6 +74,10 @@ class NotificationChannel(ABC):
         """
         pass
 
+    def can_deliver(self, site_key: str) -> bool:
+        """Return whether this channel has a concrete route for the site."""
+        return self.is_enabled()
+
 
 class BaseNotifier:
     """

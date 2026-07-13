@@ -31,7 +31,7 @@ jobs:
         SUPABASE_KEY: "dummy_key"
         GEMINI_API_KEY: "dummy_key"
         TELEGRAM_TOKEN: "dummy_token"
-        TELEGRAM_CHAT_ID: "dummy_id"
+        CHAT_ID: "dummy_id"
         DISCORD_BOT_TOKEN: "dummy_token"
       run: |
         pytest tests/

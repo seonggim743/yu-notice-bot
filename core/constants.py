@@ -95,23 +95,6 @@ FILENAME_TRUNCATE_LENGTH = 20
 AI_TEXT_TRUNCATE_LIMIT = 8000
 
 # =============================================================================
-# Canvas LMS Settings
-# =============================================================================
-# Tiers for assignment deadline reminders (hours before due_at).
-CANVAS_REMINDER_HOURS = [72, 24, 3]
-
-# Reference map of event-kind → emoji prefix used by canvas_formatter.
-# Kept here so any future channel that needs to react to event types has
-# a single source of truth.
-CANVAS_EMOJI_MAP = {
-    "assignment_new": "📝",
-    "assignment_modified": "✏️",
-    "announcement": "📢",
-    "grade": "📊",
-    "deadline_reminder": "⏰",
-}
-
-# =============================================================================
 # File Extension Emojis
 # =============================================================================
 FILE_EMOJI_MAP = {

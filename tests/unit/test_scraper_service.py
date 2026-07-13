@@ -9,7 +9,7 @@ Tests cover:
 """
 
 import pytest
-from unittest.mock import Mock, patch, AsyncMock
+from unittest.mock import Mock, patch, AsyncMock, MagicMock
 from services.scraper_service import ScraperService
 from models.notice import Notice
 from core.exceptions import NetworkException
@@ -22,7 +22,19 @@ class TestScraperService:
     @pytest.fixture
     def scraper_service(self):
         """Create ScraperService instance"""
-        return ScraperService()
+        analyzer = MagicMock()
+        analyzer.ai = MagicMock()
+        target_manager = MagicMock()
+        target_manager.get_targets.return_value = []
+        return ScraperService(
+            notifier=MagicMock(),
+            file_service=MagicMock(),
+            repo=MagicMock(),
+            error_notifier=MagicMock(),
+            target_manager=target_manager,
+            analyzer=analyzer,
+            delivery_service=MagicMock(),
+        )
 
     @pytest.fixture
     def sample_html(self):
@@ -129,6 +141,7 @@ class TestScraperService:
         mock_response = AsyncMock()
         mock_response.status = 200
         mock_response.text = AsyncMock(return_value="<html>Test</html>")
+        mock_response.raise_for_status = Mock()
 
         with patch("aiohttp.ClientSession") as mock_session_cls:
             mock_session = AsyncMock()
@@ -194,7 +207,9 @@ class TestScraperService:
 
         # Mock AI diff summary
         with patch.object(
-            scraper_service.analyzer.ai, "get_diff_summary", return_value="Content changed"
+            scraper_service.analyzer,
+            "get_diff_summary",
+            new=AsyncMock(return_value="Content changed"),
         ):
             changes = await scraper_service.change_detector.detect_modifications(new_notice, old_notice)
 
