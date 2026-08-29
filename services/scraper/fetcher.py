@@ -5,6 +5,7 @@ Refactored to use async_retry decorator for clean retry logic.
 import aiohttp
 import asyncio
 from typing import Optional, Dict, Any
+from urllib.parse import urlparse, urlunparse
 
 from core.config import settings
 from core.logger import get_logger
@@ -20,6 +21,40 @@ TRANSIENT_EXCEPTIONS = (
     aiohttp.ServerDisconnectedError,
     aiohttp.ClientConnectionError,
 )
+
+# GitHub-hosted runners get TCP RST on these CMS vhosts; www.yu.ac.kr is the
+# same origin and is reachable. Match hostname exactly (not substring).
+CMS_HOST_ALIASES = {
+    "hcms.yu.ac.kr": "www.yu.ac.kr",
+    "computer.yu.ac.kr": "www.yu.ac.kr",
+    "swedu.yu.ac.kr": "www.yu.ac.kr",
+}
+
+
+def canonicalize_cms_url(url: str) -> str:
+    """Rewrite known CMS vhost aliases to www.yu.ac.kr.
+
+    Only the hostname is compared and replaced. Scheme, userinfo, port, path,
+    query, and fragment are preserved. Unrelated or substring hosts are unchanged.
+    """
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        return url
+
+    canonical_host = CMS_HOST_ALIASES.get(hostname.lower())
+    if not canonical_host:
+        return url
+
+    userinfo = ""
+    if parsed.username:
+        userinfo = parsed.username
+        if parsed.password:
+            userinfo += f":{parsed.password}"
+        userinfo += "@"
+    port = f":{parsed.port}" if parsed.port else ""
+    netloc = f"{userinfo}{canonical_host}{port}"
+    return urlunparse(parsed._replace(netloc=netloc))
 
 
 class NoticeFetcher:
@@ -72,7 +107,13 @@ class NoticeFetcher:
             NetworkException: On network errors after retries exhausted
             ScraperException: On unexpected errors
         """
-        return await self._fetch_url_with_retry(session, url)
+        try:
+            return await self._fetch_url_with_retry(session, url)
+        except TRANSIENT_EXCEPTIONS as e:
+            raise NetworkException(
+                f"Network error fetching {url}: {e}",
+                {"url": url, "error": str(e)},
+            ) from e
     
     @async_retry(
         max_retries=3,
@@ -81,6 +122,7 @@ class NoticeFetcher:
     )
     async def _fetch_url_with_retry(self, session: aiohttp.ClientSession, url: str) -> str:
         """Internal method with retry decorator applied."""
+        url = canonicalize_cms_url(url)
         try:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
                 # Handle HTTP errors
@@ -141,6 +183,7 @@ class NoticeFetcher:
             "Referer": referer,
             "User-Agent": settings.USER_AGENT,
         }
+        url = canonicalize_cms_url(url)
         try:
             async with session.head(url, headers=headers, timeout=5) as resp:
                 return {
@@ -191,7 +234,8 @@ class NoticeFetcher:
             "Referer": referer,
             "User-Agent": settings.USER_AGENT,
         }
-        
+        url = canonicalize_cms_url(url)
+
         async with session.get(url, headers=headers) as resp:
             # Fail fast on 403/404
             if resp.status in [403, 404]:

@@ -96,6 +96,10 @@ async def main():
     server_url = os.getenv("GITHUB_SERVER_URL", "https://github.com")
     run_url = f"{server_url}/{repo}/actions/runs/{run_id}"
 
+    # Discord embed field max is 1024. The ```log wrapper is 11 chars, so the
+    # inner snippet must stay at or below 1013. Telegram keeps the original.
+    discord_log_snippet = log_snippet[:1013]
+
     # Discord Embed
     discord_embed = {
         "title": "🚨 Bot Scraper Failed",
@@ -106,7 +110,7 @@ async def main():
             {"name": "Run", "value": f"[#{run_number}]({run_url})", "inline": True},
             {
                 "name": "Error Logs (Last 20 lines)",
-                "value": f"```log\n{log_snippet}\n```",
+                "value": f"```log\n{discord_log_snippet}\n```",
             },
         ],
     }

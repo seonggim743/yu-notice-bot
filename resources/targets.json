@@ -1,8 +1,8 @@
 [
   {
     "key": "yu_news",
-    "url": "https://hcms.yu.ac.kr/main/intro/yu-news.do",
-    "base_url": "https://hcms.yu.ac.kr/main/intro/yu-news.do",
+    "url": "https://www.yu.ac.kr/main/intro/yu-news.do",
+    "base_url": "https://www.yu.ac.kr/main/intro/yu-news.do",
     "list_selector": "table tbody tr",
     "title_selector": "a",
     "link_selector": "a",
@@ -21,8 +21,8 @@
   },
   {
     "key": "bachelor_guide",
-    "url": "https://hcms.yu.ac.kr/main/bachelor/bachelor-guide.do?mode=list&articleLimit=30",
-    "base_url": "https://hcms.yu.ac.kr/main/bachelor/bachelor-guide.do",
+    "url": "https://www.yu.ac.kr/main/bachelor/bachelor-guide.do?mode=list&articleLimit=30",
+    "base_url": "https://www.yu.ac.kr/main/bachelor/bachelor-guide.do",
     "list_selector": "table tbody tr",
     "title_selector": "a",
     "link_selector": "a",
@@ -91,8 +91,8 @@
   },
   {
     "key": "computer_notice",
-    "url": "https://computer.yu.ac.kr/computer/notice/notice.do",
-    "base_url": "https://computer.yu.ac.kr/computer/notice/notice.do",
+    "url": "https://www.yu.ac.kr/computer/notice/notice.do",
+    "base_url": "https://www.yu.ac.kr/computer/notice/notice.do",
     "list_selector": "table tbody tr",
     "title_selector": "a",
     "link_selector": "a",
@@ -101,8 +101,8 @@
   },
   {
     "key": "swedu_notice",
-    "url": "https://swedu.yu.ac.kr/swedu/notice/notice.do",
-    "base_url": "https://swedu.yu.ac.kr/swedu/notice/notice.do",
+    "url": "https://www.yu.ac.kr/swedu/notice/notice.do",
+    "base_url": "https://www.yu.ac.kr/swedu/notice/notice.do",
     "list_selector": "table tbody tr",
     "title_selector": "a",
     "link_selector": "a",
