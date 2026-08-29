@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 from core.config import settings
 from core.logger import get_logger
-from core.exceptions import NetworkException, ScraperException
+from core.exceptions import ConfigurationException, NetworkException
 from core.interfaces import INotificationService, IFileService, INoticeRepository
 from core import constants
 from core.performance import get_performance_monitor
@@ -16,6 +16,8 @@ from core.error_notifier import ErrorNotifier, ErrorSeverity, get_error_notifier
 
 from models.notice import Notice
 from repositories.notice_repo import NoticeRepository
+from repositories.delivery_repo import DeliveryRepository
+from services.delivery_service import DeliveryService
 from services.notification_service import NotificationService
 from services.file_service import FileService
 from services.auth_service import AuthService
@@ -70,6 +72,7 @@ class ScraperService:
         parser: Optional[NoticeParser] = None,
         analyzer: Optional[ContentAnalyzer] = None,
         auth_service: Optional[AuthService] = None,
+        delivery_service: Optional[DeliveryService] = None,
     ):
         """
         Initialize ScraperService with optional dependency injection.
@@ -102,6 +105,18 @@ class ScraperService:
         self.file_service = file_service or FileService()
         self.repo = repo or NoticeRepository()
         self.error_notifier = error_notifier or get_error_notifier()
+        if delivery_service is not None:
+            self.delivery_service = delivery_service
+        elif isinstance(self.repo, NoticeRepository):
+            self.delivery_service = DeliveryService(
+                self.notifier,
+                repo=DeliveryRepository(db=self.repo.db),
+                error_notifier=self.error_notifier,
+            )
+        else:
+            # Test doubles can inject their own delivery coordinator without
+            # accidentally opening a production database connection.
+            self.delivery_service = None
         
         # Internal components
         self.fetcher = fetcher or NoticeFetcher()
@@ -176,6 +191,11 @@ class ScraperService:
                     success = await self._process_yutopia_targets(
                         session, yutopia_targets, success
                     )
+
+                if not self.init_mode:
+                    self._require_delivery_service()
+                    await self.delivery_service.dispatch_due(session)
+                    self.delivery_service.purge_completed(retention_days=30)
             
             logger.info(f"[SCRAPER] Complete. Success: {success}")
             monitor.log_summary()
@@ -410,13 +430,29 @@ class ScraperService:
             item.change_details = changes
             modified_reason = self._build_modified_reason(changes)
         
-        # Save to DB
-        notice_id = self.repo.upsert_notice(item)
-        
-        if notice_id:
-            await self._send_notifications(
-                session, item, is_new, modified_reason, old_notice, changes
+        # Notice state and its currently routable channel deliveries must be
+        # committed together. A database/outbox failure aborts this target.
+        self._require_delivery_service()
+        deliveries = self.delivery_service.prepare_deliveries(
+            item,
+            old_notice,
+            event_type="new" if is_new else "modified",
+            modified_reason=modified_reason,
+            changes=changes,
+        )
+        if not deliveries:
+            raise ConfigurationException(
+                f"No notification route is available for target '{item.site_key}'"
             )
+        notice_id = self.repo.persist_notice_with_deliveries(item, deliveries)
+
+        # Delivery failures stay pending and do not fail the scrape. Failures
+        # to read or update the outbox remain fatal and propagate.
+        await self.delivery_service.dispatch_due(
+            session,
+            notice_id=notice_id,
+            notice_override=item,
+        )
         
         await asyncio.sleep(self.NOTICE_PROCESS_DELAY)
     
@@ -473,45 +509,13 @@ class ScraperService:
             reasons.append(f"첨부파일 목록 변경 ({changes['attachments']})")
         return ", ".join(reasons) if reasons else "내용 변경됨"
     
-    async def _send_notifications(
-        self,
-        session: aiohttp.ClientSession,
-        item: Notice,
-        is_new: bool,
-        modified_reason: str,
-        old_notice: Optional[Notice],
-        changes: Optional[Dict]
-    ) -> None:
-        """Sends notifications via Telegram and Discord."""
-        notice_id = self.repo.get_notice_id(item.site_key, item.article_id)
-        
-        # Telegram
-        existing_message_id = None
-        if not is_new and old_notice:
-            existing_message_id = old_notice.message_ids.get("telegram") if old_notice.message_ids else None
-        
-        msg_id = await self.notifier.send_telegram(
-            session, item, is_new, modified_reason,
-            existing_message_id=existing_message_id,
-            changes=changes
-        )
-        if msg_id and notice_id:
-            self.repo.update_message_ids(notice_id, "telegram", msg_id)
-        
-        # Discord
-        existing_thread_id = None
-        if not is_new and old_notice:
-            existing_thread_id = old_notice.discord_thread_id
-        
-        discord_thread_id = await self.notifier.send_discord(
-            session, item, is_new, modified_reason,
-            existing_thread_id=existing_thread_id,
-            changes=changes
-        )
-        if discord_thread_id and notice_id:
-            self.repo.update_discord_thread_id(notice_id, discord_thread_id)
+    def _require_delivery_service(self) -> None:
+        if self.delivery_service is None:
+            raise ConfigurationException(
+                "A delivery service is required for non-initialization scraping"
+            )
     
-    async def run_test(self, test_url: str) -> None:
+    async def run_test(self, test_url: str) -> bool:
         """
         Forces a notification for a specific URL.
         Useful for testing the full pipeline.
@@ -534,7 +538,7 @@ class ScraperService:
         
         if not target:
             logger.error("[TEST] No targets available")
-            return
+            return False
         
         session = await self.fetcher.create_session()
         
@@ -584,13 +588,21 @@ class ScraperService:
                     logger.info(f"[TEST] Processing {len(item.attachments)} attachments...")
                     await self.attachment_processor.process_attachments(session, item)
                 
-                # Send notifications
-                await self.notifier.send_telegram(
-                    session, item, is_new=True, modified_reason="[TEST RUN]"
-                )
-                await self.notifier.send_discord(
-                    session, item, is_new=True, modified_reason="[TEST RUN]"
-                )
-                
+                # Test mode deliberately bypasses database/outbox persistence.
+                results = {}
+                for channel in self.notifier.eligible_channels(item.site_key):
+                    results[channel] = await self.notifier.deliver_notice(
+                        channel=channel,
+                        session=session,
+                        notice=item,
+                        is_new=True,
+                        modified_reason="[TEST RUN]",
+                    )
+                failed = [name for name, result in results.items() if not result.success]
+                if failed:
+                    logger.warning(f"[TEST] Notification failed for: {failed}")
+                return bool(results) and not failed
+
             except Exception as e:
                 logger.error(f"[TEST] Failed: {e}")
+                return False

@@ -57,19 +57,25 @@ async def test_discord_embed():
         mock_response.status = 200
         mock_response.json = AsyncMock(return_value={"id": "msg_123"})
         mock_response.read = AsyncMock(return_value=b"")
+        mock_response.headers = {}
 
         mock_session.post.return_value.__aenter__.return_value = mock_response
+        mock_session.request.return_value.__aenter__.return_value = mock_response
         mock_session.get.return_value.__aenter__.return_value.status = (
             404  # Fail downloads
         )
 
-        # Run send_discord
+        # Run through the unified delivery interface
         print("Sending Discord notification...")
-        await service.send_discord(mock_session, notice, is_new=True)
+        result = await service.deliver_notice(
+            "discord", mock_session, notice, is_new=True
+        )
+        assert result.success is True
+        assert result.external_id == "msg_123"
 
         # Inspect calls to session.post
         found_embed = False
-        for call in mock_session.post.call_args_list:
+        for call in mock_session.request.call_args_list:
             args, kwargs = call
 
             payload = None

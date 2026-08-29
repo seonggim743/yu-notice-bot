@@ -6,44 +6,28 @@ from typing import Protocol, Optional, List, Dict, Any, runtime_checkable
 import aiohttp
 
 from models.notice import Notice
+from models.delivery import DeliveryResult
 
 
 @runtime_checkable
 class INotificationService(Protocol):
     """Interface for notification services."""
 
-    async def send_telegram(
+    def eligible_channels(self, site_key: str) -> List[str]:
+        """Returns channels that are fully routable for a site."""
+        ...
+
+    async def deliver_notice(
         self,
+        channel: str,
         session: aiohttp.ClientSession,
         notice: Notice,
         is_new: bool,
         modified_reason: str = "",
-        existing_message_id: Optional[int] = None,
+        existing_message_id: Optional[Any] = None,
         changes: Optional[Dict] = None,
-    ) -> Optional[int]:
-        """Sends a notice to Telegram. Returns message ID if successful."""
-        ...
-
-    async def send_discord(
-        self,
-        session: aiohttp.ClientSession,
-        notice: Notice,
-        is_new: bool,
-        modified_reason: str = "",
-        existing_thread_id: str = None,
-        changes: Optional[Dict] = None,
-    ) -> Optional[str]:
-        """Sends a notice to Discord. Returns thread/message ID if successful."""
-        ...
-
-    async def send_menu_notification(
-        self, session: aiohttp.ClientSession, notice: Notice, menu_data: Dict[str, Any]
-    ) -> None:
-        """Sends menu notification to Telegram."""
-        ...
-
-    def generate_clean_diff(self, old_text: str, new_text: str) -> str:
-        """Generates a clean diff between two texts."""
+    ) -> DeliveryResult:
+        """Delivers a notice through one named channel."""
         ...
 
 
@@ -88,16 +72,22 @@ class IFileService(Protocol):
 class INoticeRepository(Protocol):
     """Interface for notice data repository."""
 
-    async def get_notice(self, site_key: str, article_id: str) -> Optional[Notice]:
+    def get_last_processed_ids(self, site_key: str, limit: int = 1000) -> Dict[str, str]:
+        """Gets known notice IDs and hashes for a site."""
+        ...
+
+    def get_notice(self, site_key: str, article_id: str) -> Optional[Notice]:
         """Gets a notice by site key and article ID."""
         ...
 
-    async def save_notice(self, notice: Notice) -> bool:
-        """Saves a notice to the repository."""
+    def upsert_notice(self, notice: Notice) -> str:
+        """Saves a notice without generating notifications."""
         ...
 
-    async def notice_exists(self, site_key: str, article_id: str) -> bool:
-        """Checks if a notice exists."""
+    def persist_notice_with_deliveries(
+        self, notice: Notice, deliveries: List[Dict[str, Any]]
+    ) -> str:
+        """Atomically saves a notice and its delivery rows."""
         ...
 
 

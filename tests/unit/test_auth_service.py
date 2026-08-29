@@ -67,7 +67,7 @@ def _build_playwright_stack(*, page_url: str, cookies):
     pw_cm.__aenter__ = AsyncMock(return_value=p)
     pw_cm.__aexit__ = AsyncMock(return_value=None)
 
-    return (lambda: pw_cm), page
+    return (lambda: pw_cm), page, browser
 
 
 @pytest.fixture
@@ -80,7 +80,7 @@ def credentials_set(monkeypatch):
 @pytest.mark.asyncio
 async def test_eoullim_login_success(monkeypatch, credentials_set):
     """ssotoken cookie present → login succeeds and full cookie dict is returned."""
-    factory, _ = _build_playwright_stack(
+    factory, _, _ = _build_playwright_stack(
         page_url="https://portal.yu.ac.kr/sso/login_process.jsp",
         cookies=[
             {"name": "ssotoken", "value": "tok-xyz", "domain": ".yu.ac.kr"},
@@ -98,7 +98,7 @@ async def test_eoullim_login_success(monkeypatch, credentials_set):
 @pytest.mark.asyncio
 async def test_eoullim_login_no_ssotoken(monkeypatch, credentials_set):
     """Form submitted but ssotoken absent (e.g. wrong password) → None."""
-    factory, _ = _build_playwright_stack(
+    factory, _, _ = _build_playwright_stack(
         page_url="https://portal.yu.ac.kr/sso/login.jsp?error=1",
         cookies=[
             {"name": "JSESSIONID", "value": "abc", "domain": "portal.yu.ac.kr"},
@@ -115,7 +115,7 @@ async def test_eoullim_login_no_ssotoken(monkeypatch, credentials_set):
 @pytest.mark.asyncio
 async def test_eoullim_login_no_cookies(monkeypatch, credentials_set):
     """Empty cookie jar (no ssotoken either) → None."""
-    factory, _ = _build_playwright_stack(
+    factory, _, _ = _build_playwright_stack(
         page_url="https://join.yu.ac.kr/main",
         cookies=[],
     )
@@ -130,7 +130,7 @@ async def test_eoullim_login_no_cookies(monkeypatch, credentials_set):
 @pytest.mark.asyncio
 async def test_eoullim_login_goto_timeout(monkeypatch, credentials_set):
     """page.goto raises (timeout / network) → method returns None, no crash."""
-    factory, page = _build_playwright_stack(
+    factory, page, _ = _build_playwright_stack(
         page_url="about:blank",
         cookies=[],
     )
@@ -164,7 +164,7 @@ async def test_eoullim_login_skipped_without_credentials(monkeypatch):
 @pytest.mark.asyncio
 async def test_yutopia_login_no_ssotoken(monkeypatch, credentials_set):
     """Sibling test for the YUtopia branch — same ssotoken-check failure path."""
-    factory, _ = _build_playwright_stack(
+    factory, _, _ = _build_playwright_stack(
         page_url="https://portal.yu.ac.kr/sso/login.jsp?error=2",
         cookies=[],
     )
@@ -174,3 +174,20 @@ async def test_yutopia_login_no_ssotoken(monkeypatch, credentials_set):
     cookies = await svc.get_yutopia_cookies()
 
     assert cookies is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method_name", ["get_eoullim_cookies", "get_yutopia_cookies"])
+async def test_sso_browser_context_keeps_tls_verification_enabled(
+    monkeypatch, credentials_set, method_name
+):
+    factory, _, browser = _build_playwright_stack(
+        page_url="https://portal.yu.ac.kr/sso/login_process.jsp",
+        cookies=[{"name": "ssotoken", "value": "token", "domain": ".yu.ac.kr"}],
+    )
+    monkeypatch.setattr("services.auth_service.async_playwright", factory)
+
+    await getattr(AuthService(), method_name)()
+
+    _, kwargs = browser.new_context.await_args
+    assert kwargs["ignore_https_errors"] is False

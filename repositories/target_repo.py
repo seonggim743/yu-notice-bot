@@ -20,8 +20,8 @@ class TargetRepository:
         return [
             {
                 "key": "yu_news",
-                "url": "https://hcms.yu.ac.kr/main/intro/yu-news.do",
-                "base_url": "https://hcms.yu.ac.kr/main/intro/yu-news.do",
+                "url": "https://www.yu.ac.kr/main/intro/yu-news.do",
+                "base_url": "https://www.yu.ac.kr/main/intro/yu-news.do",
                 "parser": HTMLParser("table tbody tr", "a", "a", ".b-view-content"),
             },
             {
@@ -32,14 +32,14 @@ class TargetRepository:
             },
             {
                 "key": "bachelor_guide",
-                "url": "https://hcms.yu.ac.kr/main/bachelor/bachelor-guide.do?mode=list&articleLimit=30",
-                "base_url": "https://hcms.yu.ac.kr/main/bachelor/bachelor-guide.do",
+                "url": "https://www.yu.ac.kr/main/bachelor/bachelor-guide.do?mode=list&articleLimit=30",
+                "base_url": "https://www.yu.ac.kr/main/bachelor/bachelor-guide.do",
                 "parser": HTMLParser("table tbody tr", "a", "a", ".b-view-content"),
             },
             {
                 "key": "calendar",
-                "url": "https://hcms.yu.ac.kr/main/bachelor/calendar.do",
-                "base_url": "https://hcms.yu.ac.kr/main/bachelor/calendar.do",
+                "url": "https://www.yu.ac.kr/main/bachelor/calendar.do",
+                "base_url": "https://www.yu.ac.kr/main/bachelor/calendar.do",
                 "parser": HTMLParser("table tbody tr", "a", "a", ".b-view-content"),
             },
             {

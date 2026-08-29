@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from models.notice import Notice
+from core.exceptions import DatabaseException
 from services.scraper_service import ScraperService
 
 
@@ -59,14 +60,19 @@ def _build_scraper(*, processed_ids, old_notice=None, detect_modifications_resul
     repo = MagicMock()
     repo.get_last_processed_ids = MagicMock(return_value=processed_ids)
     repo.get_notice = MagicMock(return_value=old_notice)
-    repo.upsert_notice = MagicMock(return_value="notice-uuid-1")
-    repo.get_notice_id = MagicMock(return_value="notice-uuid-1")
-    repo.update_message_ids = MagicMock()
-    repo.update_discord_thread_id = MagicMock()
+    repo.persist_notice_with_deliveries = MagicMock(return_value="notice-uuid-1")
 
     notifier = MagicMock()
-    notifier.send_telegram = AsyncMock(return_value=12345)
-    notifier.send_discord = AsyncMock(return_value="discord-thread-1")
+    notifier.eligible_channels = MagicMock(return_value=["telegram", "discord"])
+
+    delivery_service = MagicMock()
+    delivery_service.prepare_deliveries = MagicMock(
+        return_value=[
+            {"channel": "telegram", "event_type": "new", "payload": {}},
+            {"channel": "discord", "event_type": "new", "payload": {}},
+        ]
+    )
+    delivery_service.dispatch_due = AsyncMock(return_value=2)
 
     change_detector = MagicMock()
     change_detector.should_process_article = AsyncMock(return_value=True)
@@ -95,6 +101,7 @@ def _build_scraper(*, processed_ids, old_notice=None, detect_modifications_resul
         fetcher=fetcher,
         parser=parser,
         analyzer=analyzer,
+        delivery_service=delivery_service,
     )
     return scraper, {
         "fetcher": fetcher,
@@ -104,6 +111,7 @@ def _build_scraper(*, processed_ids, old_notice=None, detect_modifications_resul
         "notifier": notifier,
         "change_detector": change_detector,
         "hash_calculator": hash_calculator,
+        "delivery_service": delivery_service,
     }
 
 
@@ -129,10 +137,13 @@ async def test_new_notice_full_pipeline():
     mocks["parser"].parse_detail.assert_called_once()
     # AI analysis ran (no_ai_mode=False, no skip)
     mocks["analyzer"].analyze_notice.assert_awaited_once()
-    # upsert and both notifications fired
-    mocks["repo"].upsert_notice.assert_called_once()
-    mocks["notifier"].send_telegram.assert_awaited_once()
-    mocks["notifier"].send_discord.assert_awaited_once()
+    # notice and channel deliveries are persisted atomically, then dispatched
+    mocks["repo"].persist_notice_with_deliveries.assert_called_once()
+    mocks["delivery_service"].dispatch_due.assert_awaited_once_with(
+        session,
+        notice_id="notice-uuid-1",
+        notice_override=mocks["repo"].persist_notice_with_deliveries.call_args.args[0],
+    )
     # is_new path: did not call get_notice or change_detector
     mocks["repo"].get_notice.assert_not_called()
     mocks["change_detector"].should_process_article.assert_not_called()
@@ -169,14 +180,87 @@ async def test_modified_notice_full_pipeline():
     # Existing-record path: change_detector consulted twice
     mocks["change_detector"].should_process_article.assert_awaited_once()
     mocks["change_detector"].detect_modifications.assert_awaited_once()
-    # Hash differs ("new-hash" vs "old-hash") so we proceed to AI + upsert
+    # Hash differs ("new-hash" vs "old-hash") so we proceed to AI + outbox persistence
     mocks["analyzer"].analyze_notice.assert_awaited_once()
-    mocks["repo"].upsert_notice.assert_called_once()
-    # Notifications still go out
-    mocks["notifier"].send_telegram.assert_awaited_once()
-    mocks["notifier"].send_discord.assert_awaited_once()
-    # The is_new flag passed to send_telegram should be False
-    _, send_kwargs = mocks["notifier"].send_telegram.call_args
-    assert send_kwargs.get("changes") == {
+    mocks["repo"].persist_notice_with_deliveries.assert_called_once()
+    # The modification details are captured in the durable delivery payload.
+    _, prepare_kwargs = mocks["delivery_service"].prepare_deliveries.call_args
+    assert prepare_kwargs["event_type"] == "modified"
+    assert prepare_kwargs["changes"] == {
         "title": "'Old Title' -> 'Scholarship Announcement'"
     }
+
+
+@pytest.mark.asyncio
+async def test_database_read_failure_never_classifies_or_notifies():
+    scraper, mocks = _build_scraper(processed_ids={})
+    mocks["repo"].get_last_processed_ids.side_effect = DatabaseException("db down")
+    target = {
+        "key": "yu_news",
+        "url": "https://www.yu.ac.kr/main/intro/yu-news.do",
+        "base_url": "https://www.yu.ac.kr",
+        "parser": MagicMock(),
+    }
+
+    with pytest.raises(DatabaseException, match="db down"):
+        await scraper.process_target(MagicMock(), target)
+
+    mocks["parser"].parse_detail.assert_not_called()
+    mocks["repo"].persist_notice_with_deliveries.assert_not_called()
+    mocks["delivery_service"].dispatch_due.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_url_mode_sends_directly_without_creating_outbox_rows():
+    target = {
+        "key": "yu_news",
+        "url": "https://www.yu.ac.kr/main/intro/yu-news.do",
+        "base_url": "https://www.yu.ac.kr",
+        "parser": MagicMock(),
+    }
+    target_manager = MagicMock()
+    target_manager.load_targets = MagicMock()
+    target_manager.get_targets.return_value = [target]
+
+    session = MagicMock()
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=None)
+    fetcher = MagicMock()
+    fetcher.create_session = AsyncMock(return_value=session)
+    fetcher.fetch_url = AsyncMock(return_value="<detail/>")
+
+    notice = Notice(
+        site_key="yu_news",
+        article_id="test",
+        title="Direct test",
+        content="A sufficiently long direct test notice",
+        url="https://www.yu.ac.kr/main/intro/yu-news.do?articleNo=1",
+    )
+    parser = MagicMock()
+    parser.parse_detail.return_value = notice
+    analyzer = MagicMock()
+    analyzer.analyze_notice = AsyncMock(return_value=notice)
+    notifier = MagicMock()
+    notifier.eligible_channels.return_value = ["telegram"]
+    notifier.deliver_notice = AsyncMock(return_value=MagicMock(success=True))
+    repo = MagicMock()
+    delivery_service = MagicMock()
+
+    scraper = ScraperService(
+        notifier=notifier,
+        repo=repo,
+        target_manager=target_manager,
+        fetcher=fetcher,
+        parser=parser,
+        analyzer=analyzer,
+        delivery_service=delivery_service,
+        file_service=MagicMock(),
+        error_notifier=MagicMock(),
+    )
+
+    assert await scraper.run_test(notice.url) is True
+
+    notifier.deliver_notice.assert_awaited_once()
+    repo.persist_notice_with_deliveries.assert_not_called()
+    delivery_service.prepare_deliveries.assert_not_called()
+    delivery_service.dispatch_due.assert_not_called()

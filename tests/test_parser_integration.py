@@ -12,7 +12,7 @@ def test_parse_yu_news_list(yu_news_html):
     # Selectors from scraper_service.py for yu_news
     parser = HTMLParser("table tbody tr", "a", "a", ".b-view-content")
     
-    items = parser.parse_list(yu_news_html, "yu_news", "https://hcms.yu.ac.kr/main/intro/yu-news.do")
+    items = parser.parse_list(yu_news_html, "yu_news", "https://www.yu.ac.kr/main/intro/yu-news.do")
     
     assert len(items) == 2
     

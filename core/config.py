@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Dict, List, Optional, Union
 from pydantic import Field, field_validator
 import json
@@ -6,12 +6,19 @@ from core import constants
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+        extra="ignore",
+    )
+
     # --- Supabase ---
     SUPABASE_URL: str = Field(..., description="Supabase Project URL")
     SUPABASE_KEY: str = Field(..., description="Supabase Service Role Key")
 
     # --- AI ---
-    GEMINI_API_KEY: str = Field(..., description="Google Gemini API Key")
+    GEMINI_API_KEY: Optional[str] = Field(None, description="Google Gemini API Key")
     GEMINI_MODEL: str = Field("gemini-2.5-flash", description="AI Model Name")
 
     # --- Telegram (Optional) ---
@@ -78,12 +85,6 @@ class Settings(BaseSettings):
     # --- Eoullim Login ---
     YU_EOULLIM_ID: Optional[str] = Field(None, description="Eoullim ID")
     YU_EOULLIM_PW: Optional[str] = Field(None, description="Eoullim Password")
-
-    # --- Canvas LMS Integration ---
-    CANVAS_API_URL: str = Field("", description="Canvas LMS base URL")
-    CANVAS_API_TOKEN: str = Field("", description="Canvas API access token")
-    CANVAS_ENABLED: bool = Field(False, description="Enable Canvas integration")
-    CANVAS_POLL_INTERVAL: int = Field(1800, description="Canvas polling interval in seconds")
 
     @field_validator("TELEGRAM_TOPIC_MAP", mode="before")
     @classmethod
@@ -169,41 +170,34 @@ class Settings(BaseSettings):
             self.TELEGRAM_ERROR_TOPIC_ID = self.TELEGRAM_TOPIC_MAP.get("dev")
 
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = True
-        extra = "ignore"
-
-    def validate_all(self) -> List[str]:
+    def validate_all(
+        self, *, init_mode: bool = False, no_ai_mode: bool = False
+    ) -> List[str]:
         """
         Validate all configuration settings.
         Returns a list of warning/error messages.
         """
         errors = []
 
-        # Critical
+        # Critical database settings
         if not self.SUPABASE_URL:
-            errors.append("❌ SUPABASE_URL is missing")
+            errors.append("ERROR: SUPABASE_URL is missing")
         if not self.SUPABASE_KEY:
-            errors.append("❌ SUPABASE_KEY is missing")
-        if not self.TELEGRAM_TOKEN:
-            errors.append("❌ TELEGRAM_TOKEN is missing")
-        if not self.TELEGRAM_CHAT_ID:
-            errors.append("❌ TELEGRAM_CHAT_ID is missing")
+            errors.append("ERROR: SUPABASE_KEY is missing")
 
-        # Warnings
-        if not self.GEMINI_API_KEY:
-            errors.append("⚠️ GEMINI_API_KEY is missing - AI features will be disabled")
+        if not self.GEMINI_API_KEY and not (init_mode or no_ai_mode):
+            errors.append(
+                "ERROR: GEMINI_API_KEY is required unless --init or --no-ai is used"
+            )
 
         if not self.DISCORD_BOT_TOKEN:
             errors.append(
-                "⚠️ DISCORD_BOT_TOKEN is missing - Discord notifications will be disabled"
+                "WARNING: DISCORD_BOT_TOKEN is missing - Discord notifications are disabled"
             )
 
         # URL Validation (Basic)
         if self.SUPABASE_URL and not self.SUPABASE_URL.startswith("https://"):
-            errors.append("❌ SUPABASE_URL must start with https://")
+            errors.append("ERROR: SUPABASE_URL must start with https://")
 
         return errors
 

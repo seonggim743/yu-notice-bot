@@ -24,9 +24,10 @@ class ContentAnalyzer:
         no_ai_mode: bool = False,
         ai_service: Optional[IAIService] = None,
     ):
-        # Inject or create default instance
-        self.ai = ai_service or AIService()
         self.no_ai_mode = no_ai_mode
+        # --no-ai must not initialize the Gemini client at all. This also
+        # allows the mode to start cleanly without GEMINI_API_KEY.
+        self.ai = ai_service or (None if no_ai_mode else AIService())
         self.ai_summary_count = 0
         self.MAX_AI_SUMMARIES = settings.MAX_AI_SUMMARIES
         self.AI_CALL_DELAY = settings.AI_CALL_DELAY
@@ -123,6 +124,9 @@ class ContentAnalyzer:
         """
         Generates a summary of changes between old and new content.
         """
+        if self.no_ai_mode or self.ai is None:
+            return "내용 변경됨 (No-AI Mode)"
+
         if self.ai_summary_count >= self.MAX_AI_SUMMARIES:
              return "내용 변경됨 (AI 한도 초과)"
 

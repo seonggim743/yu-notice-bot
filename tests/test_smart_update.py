@@ -6,7 +6,20 @@ from aiohttp import ClientSession
 
 @pytest.fixture
 def scraper():
-    return ScraperService(no_ai_mode=True)
+    analyzer = MagicMock()
+    analyzer.ai = MagicMock()
+    target_manager = MagicMock()
+    target_manager.get_targets.return_value = []
+    return ScraperService(
+        no_ai_mode=True,
+        notifier=MagicMock(),
+        file_service=MagicMock(),
+        repo=MagicMock(),
+        error_notifier=MagicMock(),
+        target_manager=target_manager,
+        analyzer=analyzer,
+        delivery_service=MagicMock(),
+    )
 
 @pytest.fixture
 def old_notice():
@@ -121,6 +134,7 @@ async def test_head_fail(scraper, old_notice, new_notice):
     session = AsyncMock(spec=ClientSession)
     mock_resp = AsyncMock()
     mock_resp.status = 404 # Not 200
+    mock_resp.headers = {}
     session.head.return_value.__aenter__.return_value = mock_resp
     
     should_process = await scraper.change_detector.should_process_article(session, new_notice, old_notice)

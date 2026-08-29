@@ -1,7 +1,8 @@
-from typing import Dict, Optional, Set, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Tuple
 from supabase import Client
 from models.notice import Notice
 from core.database import Database
+from core.exceptions import DatabaseException
 from core.logger import get_logger
 import json
 
@@ -60,7 +61,10 @@ class NoticeRepository:
             return {row["article_id"]: row["content_hash"] for row in response.data}
         except Exception as e:
             logger.error(f"Failed to fetch last processed IDs for {site_key}: {e}")
-            return {}
+            raise DatabaseException(
+                "Failed to fetch processed notice IDs",
+                {"site_key": site_key, "error": str(e)},
+            ) from e
 
     def get_notice(self, site_key: str, article_id: str) -> Optional[Notice]:
         """
@@ -72,13 +76,13 @@ class NoticeRepository:
                 .select("*")
                 .eq("site_key", site_key)
                 .eq("article_id", article_id)
-                .single()
+                .limit(1)
                 .execute()
             )
             if not response.data:
                 return None
 
-            data = response.data
+            data = response.data[0]
 
             # Fix: Parse embedding if it's a string (pgvector/supabase quirk)
             if isinstance(data.get("embedding"), str):
@@ -108,34 +112,29 @@ class NoticeRepository:
             return Notice(**data)
         except Exception as e:
             logger.error(f"Failed to fetch notice {site_key}/{article_id}: {e}")
-            return None
+            raise DatabaseException(
+                "Failed to fetch notice",
+                {"site_key": site_key, "article_id": article_id, "error": str(e)},
+            ) from e
 
-    def get_notice_id(self, site_key: str, article_id: str) -> Optional[str]:
-        """
-        Fetches just the notice UUID by site_key and article_id.
-        
-        Args:
-            site_key: Site identifier
-            article_id: Article identifier
-            
-        Returns:
-            Notice UUID or None if not found
-        """
-        try:
-            response = (
-                self.db.table("notices")
-                .select("id")
-                .eq("site_key", site_key)
-                .eq("article_id", article_id)
-                .single()
-                .execute()
-            )
-            if response.data:
-                return response.data.get("id")
-            return None
-        except Exception as e:
-            logger.error(f"Failed to fetch notice ID {site_key}/{article_id}: {e}")
-            return None
+    @staticmethod
+    def _serialize_notice(notice: Notice) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+        notice_data = notice.model_dump(
+            mode="json", exclude={"attachments", "change_details"}
+        )
+        if "embedding" in notice_data and not notice_data["embedding"]:
+            notice_data["embedding"] = None
+
+        attachments_data = [
+            {
+                "name": attachment.name,
+                "url": attachment.url,
+                "file_size": attachment.file_size,
+                "etag": attachment.etag,
+            }
+            for attachment in notice.attachments
+        ]
+        return notice_data, attachments_data
 
     def upsert_notice(self, notice: Notice) -> Optional[str]:
         """
@@ -143,31 +142,7 @@ class NoticeRepository:
         Returns the UUID of the inserted/updated record.
         """
         try:
-            # 1. Prepare Notice Data
-            # Exclude attachments as they are passed separately
-            # Exclude change_details as it's not in DB schema
-            notice_data = notice.model_dump(exclude={"attachments", "change_details"})
-
-            # Convert datetime to ISO format
-            if notice_data.get("published_at"):
-                notice_data["published_at"] = notice_data["published_at"].isoformat()
-
-            # Fix: Ensure embedding is valid or None to prevent "vector must have at least 1 dimension"
-            if "embedding" in notice_data and not notice_data["embedding"]:
-                notice_data["embedding"] = None
-
-            # 2. Prepare Attachments Data
-            attachments_data = []
-            if notice.attachments:
-                attachments_data = [
-                    {
-                        "name": a.name,
-                        "url": a.url,
-                        "file_size": a.file_size,
-                        "etag": a.etag,
-                    }
-                    for a in notice.attachments
-                ]
+            notice_data, attachments_data = self._serialize_notice(notice)
 
             # 3. Call RPC
             response = (
@@ -179,46 +154,39 @@ class NoticeRepository:
             )
 
             if not response.data:
-                # RPC returns UUID directly, so response.data should be the UUID string
-                logger.error(f"RPC returned no data for {notice.title}")
-                return None
+                raise RuntimeError("notice upsert RPC returned no notice ID")
 
             return response.data
 
         except Exception as e:
             logger.error(f"Failed to upsert notice {notice.title}: {e}")
-            return None
+            raise DatabaseException(
+                "Failed to persist notice",
+                {"site_key": notice.site_key, "article_id": notice.article_id, "error": str(e)},
+            ) from e
 
-    def update_message_ids(self, notice_id: str, platform: str, message_id: str):
-        """
-        Updates the message_ids JSONB column.
-        """
+    def persist_notice_with_deliveries(
+        self, notice: Notice, deliveries: List[Dict[str, Any]]
+    ) -> str:
+        """Atomically persist a notice version and its channel outbox rows."""
         try:
-            # First fetch existing
-            resp = (
-                self.db.table("notices")
-                .select("message_ids")
-                .eq("id", notice_id)
-                .single()
-                .execute()
+            notice_data, attachments_data = self._serialize_notice(notice)
+            response = self.db.rpc(
+                "persist_notice_with_deliveries",
+                {
+                    "p_notice": notice_data,
+                    "p_attachments": attachments_data,
+                    "p_deliveries": deliveries,
+                },
+            ).execute()
+            if not response.data:
+                raise RuntimeError("notice delivery RPC returned no notice ID")
+            return response.data
+        except Exception as e:
+            logger.error(
+                f"Failed to persist notice deliveries for {notice.title}: {e}"
             )
-            current_ids = resp.data.get("message_ids") or {}
-
-            current_ids[platform] = message_id
-
-            self.db.table("notices").update({"message_ids": current_ids}).eq(
-                "id", notice_id
-            ).execute()
-        except Exception as e:
-            logger.error(f"Failed to update message ID for {notice_id}: {e}")
-
-    def update_discord_thread_id(self, notice_id: str, thread_id: str):
-        """
-        Updates the discord_thread_id column.
-        """
-        try:
-            self.db.table("notices").update({"discord_thread_id": thread_id}).eq(
-                "id", notice_id
-            ).execute()
-        except Exception as e:
-            logger.error(f"Failed to update Discord Thread ID for {notice_id}: {e}")
+            raise DatabaseException(
+                "Failed to persist notice with notification deliveries",
+                {"site_key": notice.site_key, "article_id": notice.article_id, "error": str(e)},
+            ) from e
